@@ -129,7 +129,11 @@ upgrades, devnet resets) are documented in [docs/deployment.md](docs/deployment.
   (~2.5 slots/s) is CU-hungry; the compose file uses `--batch-size=10 --workers=2` (enough to
   outpace block production without hitting the 500 CU/s cap) and lists the public devnet RPC
   as fallback. Sustained tail-following costs roughly 5–7M CU/day, so the free monthly quota
-  lasts under a week of continuous operation. For a long-running deployment consider a paid tier, or swap
+  lasts under a week of continuous operation. In practice, hours of continuous devnet
+  tail-following triggered sustained 429 throttling on the free tier (the node handles it:
+  it throttles, retries, and fails over — indexing slows but stays correct). If that happens,
+  swap the order of the two `--network-endpoint` flags in `docker-compose.yml` to make the
+  public devnet RPC primary, or upgrade the Alchemy plan. For a long-running deployment consider a paid tier, or swap
   endpoint order in `docker-compose.yml` to make the public RPC primary.
 - **Devnet resets**: Solana devnet is periodically reset; if history disappears, wipe and
   reindex (see runbook) — the program's full history is small, so this takes minutes.
