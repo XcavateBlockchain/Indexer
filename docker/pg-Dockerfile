@@ -1,0 +1,8 @@
+# Postgres with the btree_gist extension SubQuery needs for historical
+# (block-range) indexes.
+FROM postgres:16-alpine
+
+COPY docker/load-extensions.sh /docker-entrypoint-initdb.d/
+# Normalize Windows line endings and make executable
+RUN sed -i 's/\r$//' /docker-entrypoint-initdb.d/load-extensions.sh \
+  && chmod +x /docker-entrypoint-initdb.d/load-extensions.sh

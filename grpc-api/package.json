@@ -1,0 +1,26 @@
+{
+  "name": "whitelist-grpc-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "gRPC read API over the SubQuery-indexed whitelist Postgres database",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "gen:types": "proto-loader-gen-types --grpcLib=@grpc/grpc-js --outDir=src/generated --longs=String --enums=String --defaults=true --oneofs=true proto/whitelist.proto proto/health/v1/health.proto",
+    "build": "npm run gen:types && tsc",
+    "start": "node dist/server.js",
+    "dev": "npm run build && npm run start"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.6",
+    "@grpc/proto-loader": "^0.7.13",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,114 @@
+# Data model for the xcavate-whitelist indexer.
+#
+# Current state lives in Config / Admin / RoleAssignment (soft-deleted, so the
+# last known state of a removed admin/role is still queryable). The complete
+# audit trail lives in WhitelistAction (append-only, one row per instruction).
+
+enum Role {
+  REGIONAL_OPERATOR
+  REAL_ESTATE_INVESTOR
+  REAL_ESTATE_DEVELOPER
+  LAWYER
+  LETTING_AGENT
+  SPV_CONFIRMATION
+}
+
+enum Permission {
+  COMPLIANT
+  REVOKED
+}
+
+enum RemovalKind {
+  # Removed by an admin (remove_role)
+  REMOVED
+  # Given up by the holder (renounce_role)
+  RENOUNCED
+}
+
+enum ActionType {
+  CONFIG_INITIALIZED
+  AUTHORITY_UPDATE_PROPOSED
+  AUTHORITY_UPDATED
+  ADMIN_ADDED
+  ADMIN_REMOVED
+  ROLE_ASSIGNED
+  ROLE_REMOVED
+  ROLE_RENOUNCED
+  PERMISSION_UPDATED
+}
+
+"""
+Singleton (id = "config"): the sudo authority that manages whitelist admins.
+"""
+type Config @entity {
+  id: ID!
+  authority: String!
+  "Set while a two-step authority handover is pending."
+  pendingAuthority: String
+  updatedAtBlock: BigInt!
+  updatedAt: Date!
+  updatedInTx: String!
+}
+
+"""
+A whitelist admin (id = admin address). Removal soft-deletes (active = false).
+"""
+type Admin @entity {
+  id: ID!
+  active: Boolean! @index
+  "Sudo authority that registered this admin."
+  addedBy: String!
+  addedAtBlock: BigInt!
+  addedAt: Date!
+  addedInTx: String!
+  removedAtBlock: BigInt
+  removedAt: Date
+  removedInTx: String
+}
+
+"""
+One (user, role) assignment (id = "<user>-<roleIndex>", mirroring the on-chain
+PDA identity). Removal soft-deletes; a later re-assignment reactivates the row
+and resets its audit fields — full history is in WhitelistAction.
+"""
+type RoleAssignment @entity {
+  id: ID!
+  user: String! @index
+  role: Role! @index
+  permission: Permission! @index
+  active: Boolean! @index
+  "Admin who paid the account rent (receives the refund on removal)."
+  rentPayer: String!
+  "Admin who assigned the role."
+  assignedBy: String!
+  assignedAtBlock: BigInt!
+  assignedAt: Date!
+  assignedInTx: String!
+  updatedAtBlock: BigInt!
+  updatedAt: Date!
+  removedAtBlock: BigInt
+  removedAt: Date
+  removedInTx: String
+  removalKind: RemovalKind
+  "Signer that triggered the removal (admin, or the user when renounced)."
+  removedBy: String
+}
+
+"""
+Append-only audit log: one row per successfully indexed whitelist instruction.
+"""
+type WhitelistAction @entity {
+  id: ID!
+  type: ActionType! @index
+  "Address the action is about: role user, admin being added/removed, or proposed/new authority."
+  subject: String @index
+  role: Role
+  permission: Permission
+  "Signer that performed the action."
+  actor: String! @index
+  blockHeight: BigInt!
+  blockTime: Date!
+  txSignature: String! @index
+  "Position of the instruction within its transaction (dot-joined for inner instructions)."
+  instructionIndex: String!
+}

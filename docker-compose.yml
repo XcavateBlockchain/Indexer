@@ -1,0 +1,110 @@
+# Full whitelist-indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API.
+#
+# Local dev:  cp .env.example .env  →  docker compose up --build
+# Production: images are prebuilt by CI (GHCR); the deploy workflow writes an
+# .env on the server that pins NODE_IMAGE / GRPC_IMAGE to immutable sha tags.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: docker/pg-Dockerfile
+    image: ${PG_IMAGE:-whitelist-indexer-postgres:local}
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  subquery-node:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    image: ${NODE_IMAGE:-whitelist-indexer-node:local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DB_USER: postgres
+      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB_DATABASE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+    command:
+      - -f=/app
+      - --db-schema=app
+      # Keyed Alchemy endpoint is injected at runtime so it is never committed
+      # or baked into an image. Public devnet RPC remains as fallback.
+      - --network-endpoint=https://solana-devnet.g.alchemy.com/v2/${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
+      - --network-endpoint=https://api.devnet.solana.com
+      # Small batches: devnet getBlock is CU-expensive on Alchemy's free tier.
+      - --batch-size=2
+      - --workers=1
+      - --unfinalized-blocks=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  graphql-engine:
+    image: subquerynetwork/subql-query:v2.25.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      subquery-node:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRAPHQL_PORT:-3000}:3000"
+    environment:
+      DB_USER: postgres
+      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB_DATABASE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+    command:
+      - --name=app
+      - --playground
+      - --indexer=http://subquery-node:3000
+
+  grpc-api:
+    build:
+      context: ./grpc-api
+    image: ${GRPC_IMAGE:-whitelist-indexer-grpc:local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      subquery-node:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRPC_PORT:-50051}:50051"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB_DATABASE: postgres
+      DB_SCHEMA: app
+      GRPC_PORT: 50051
+
+volumes:
+  pgdata:

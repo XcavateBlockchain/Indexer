@@ -1,0 +1,207 @@
+// Read API for the realxmarket whitelist program, served from data written
+// into Postgres by the SubQuery indexer.
+//
+// Conventions:
+//   - Enums have an *_UNSPECIFIED = 0 default. In request filter fields,
+//     UNSPECIFIED (or an unset `optional` field) means "no filter".
+//   - Block heights are Solana slots, encoded as uint64 (delivered as strings
+//     by the server because it loads protos with longs=String).
+//   - Timestamps are google.protobuf.Timestamp (UTC).
+syntax = "proto3";
+
+package realxmarket.whitelist.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------
+// Enums (mapped 1:1 from the DB enum strings in src/mappers.ts)
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_REGIONAL_OPERATOR = 1;
+  ROLE_REAL_ESTATE_INVESTOR = 2;
+  ROLE_REAL_ESTATE_DEVELOPER = 3;
+  ROLE_LAWYER = 4;
+  ROLE_LETTING_AGENT = 5;
+  ROLE_SPV_CONFIRMATION = 6;
+}
+
+enum Permission {
+  PERMISSION_UNSPECIFIED = 0;
+  PERMISSION_COMPLIANT = 1;
+  PERMISSION_REVOKED = 2;
+}
+
+enum RemovalKind {
+  REMOVAL_KIND_UNSPECIFIED = 0;
+  REMOVAL_KIND_REMOVED = 1;
+  REMOVAL_KIND_RENOUNCED = 2;
+}
+
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_CONFIG_INITIALIZED = 1;
+  ACTION_TYPE_AUTHORITY_UPDATE_PROPOSED = 2;
+  ACTION_TYPE_AUTHORITY_UPDATED = 3;
+  ACTION_TYPE_ADMIN_ADDED = 4;
+  ACTION_TYPE_ADMIN_REMOVED = 5;
+  ACTION_TYPE_ROLE_ASSIGNED = 6;
+  ACTION_TYPE_ROLE_REMOVED = 7;
+  ACTION_TYPE_ROLE_RENOUNCED = 8;
+  ACTION_TYPE_PERMISSION_UPDATED = 9;
+}
+
+// ---------------------------------------------------------------------------
+// Entities
+// ---------------------------------------------------------------------------
+
+message RoleAssignment {
+  // DB id, "<user>-<roleIndex>".
+  string id = 1;
+  string user = 2;
+  Role role = 3;
+  Permission permission = 4;
+  bool active = 5;
+  string rent_payer = 6;
+  string assigned_by = 7;
+  uint64 assigned_at_block = 8;
+  google.protobuf.Timestamp assigned_at = 9;
+  string assigned_in_tx = 10;
+  uint64 updated_at_block = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  // Removal fields are only present when the assignment was removed/renounced.
+  optional uint64 removed_at_block = 13;
+  google.protobuf.Timestamp removed_at = 14;
+  optional string removed_in_tx = 15;
+  RemovalKind removal_kind = 16;
+  optional string removed_by = 17;
+}
+
+message Admin {
+  // Admin address (DB id).
+  string address = 1;
+  bool active = 2;
+  string added_by = 3;
+  uint64 added_at_block = 4;
+  google.protobuf.Timestamp added_at = 5;
+  string added_in_tx = 6;
+  optional uint64 removed_at_block = 7;
+  google.protobuf.Timestamp removed_at = 8;
+  optional string removed_in_tx = 9;
+}
+
+message WhitelistAction {
+  // DB id, "<txSig>-<ixIndex>".
+  string id = 1;
+  ActionType type = 2;
+  optional string subject = 3;
+  // UNSPECIFIED when the action has no role/permission attached.
+  Role role = 4;
+  Permission permission = 5;
+  string actor = 6;
+  uint64 block_height = 7;
+  google.protobuf.Timestamp block_time = 8;
+  string tx_signature = 9;
+  string instruction_index = 10;
+}
+
+// ---------------------------------------------------------------------------
+// Requests / responses
+// ---------------------------------------------------------------------------
+
+message CheckAccessRequest {
+  string user = 1;
+  Role role = 2;
+}
+
+message CheckAccessResponse {
+  // True when an ACTIVE assignment for (user, role) exists.
+  bool has_role = 1;
+  // True when has_role and the assignment's permission is COMPLIANT.
+  bool compliant = 2;
+  // Present only when has_role is true.
+  RoleAssignment assignment = 3;
+}
+
+message ConfigResponse {
+  string authority = 1;
+  optional string pending_authority = 2;
+  uint64 updated_at_block = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  string updated_in_tx = 5;
+}
+
+message GetRoleAssignmentRequest {
+  string user = 1;
+  Role role = 2;
+}
+
+message ListRoleAssignmentsRequest {
+  optional string user = 1;
+  optional Role role = 2;
+  optional Permission permission = 3;
+  optional bool active = 4;
+  // Defaults to 50, capped at 500.
+  uint32 page_size = 5;
+  // 0-based page index.
+  uint32 page = 6;
+}
+
+message ListRoleAssignmentsResponse {
+  repeated RoleAssignment assignments = 1;
+  uint64 total_count = 2;
+}
+
+message ListAdminsRequest {
+  optional bool active = 1;
+  uint32 page_size = 2;
+  uint32 page = 3;
+}
+
+message ListAdminsResponse {
+  repeated Admin admins = 1;
+  uint64 total_count = 2;
+}
+
+message ListActionsRequest {
+  optional string subject = 1;
+  optional string actor = 2;
+  optional ActionType type = 3;
+  optional string tx_signature = 4;
+  uint32 page_size = 5;
+  uint32 page = 6;
+}
+
+message ListActionsResponse {
+  // Ordered by block_height DESC, instruction_index ASC.
+  repeated WhitelistAction actions = 1;
+  uint64 total_count = 2;
+}
+
+message IndexerStatusResponse {
+  // Last Solana slot processed by the indexer (_metadata.lastProcessedHeight).
+  uint64 last_processed_slot = 1;
+  // Chain head slot as seen by the indexer (_metadata.targetHeight).
+  uint64 chain_head_slot = 2;
+  google.protobuf.Timestamp last_processed_at = 3;
+  // indexerHealthy flag AND the database was reachable for this call.
+  bool healthy = 4;
+  // max(0, chain_head_slot - last_processed_slot).
+  uint64 lag_slots = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+service WhitelistService {
+  rpc CheckAccess(CheckAccessRequest) returns (CheckAccessResponse);
+  rpc GetConfig(google.protobuf.Empty) returns (ConfigResponse);
+  rpc GetRoleAssignment(GetRoleAssignmentRequest) returns (RoleAssignment);
+  rpc ListRoleAssignments(ListRoleAssignmentsRequest) returns (ListRoleAssignmentsResponse);
+  rpc ListAdmins(ListAdminsRequest) returns (ListAdminsResponse);
+  rpc ListActions(ListActionsRequest) returns (ListActionsResponse);
+  rpc GetIndexerStatus(google.protobuf.Empty) returns (IndexerStatusResponse);
+}

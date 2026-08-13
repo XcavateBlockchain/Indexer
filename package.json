@@ -1,0 +1,30 @@
+{
+  "name": "realxmarket-whitelist-indexer",
+  "version": "0.1.0",
+  "description": "SubQuery indexer for the xcavate-whitelist program (realXmarket protocol) on Solana devnet",
+  "main": "dist/index.js",
+  "scripts": {
+    "codegen": "subql codegen",
+    "build": "subql build",
+    "start:docker": "docker compose pull && docker compose up --remove-orphans",
+    "dev": "subql codegen && subql build && docker compose up --build --remove-orphans"
+  },
+  "repository": "github:XcavateBlockchain/realxmarket-solana",
+  "license": "GPL-3.0",
+  "files": [
+    "dist",
+    "schema.graphql",
+    "project.yaml"
+  ],
+  "dependencies": {
+    "@solana/kit": "^3.0.2",
+    "@subql/common-solana": "^1.2.0",
+    "@subql/types-solana": "^1.1.0",
+    "text-encoding": "^0.7.0"
+  },
+  "devDependencies": {
+    "@subql/cli": "^5.9.0",
+    "@types/text-encoding": "^0.0.40",
+    "typescript": "^5.6.0"
+  }
+}
