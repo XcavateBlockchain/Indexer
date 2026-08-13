@@ -45,7 +45,14 @@ function log(fields: Record<string, unknown>): void {
 }
 
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  // pg connection failures surface as AggregateError with an empty message.
+  if (err instanceof AggregateError && err.errors.length > 0) {
+    return err.errors.map((e) => errorMessage(e)).join('; ');
+  }
+  if (err instanceof Error) {
+    return err.message !== '' ? err.message : `${err.constructor.name} (no message)`;
+  }
+  return String(err);
 }
 
 // ---------------------------------------------------------------------------

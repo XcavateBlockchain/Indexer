@@ -125,9 +125,10 @@ Reads Postgres directly (`pg` pool, read-only queries against schema `app`).
     ssh to Hetzner → upload compose file → `docker compose pull && up -d`. Secrets:
     `HETZNER_HOST`, `HETZNER_USER`, `HETZNER_SSH_KEY`, `ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`.
 - **Known risks** (documented in README):
-  - Alchemy free tier (30M CU/month, 500 CU/s) vs. devnet's ~2 slots/s of `getBlock` polling —
-    the compose file keeps batch size low; public devnet RPC is configured as a fallback
-    endpoint; long-term either a paid tier or public-RPC-primary is advised.
+  - Alchemy free tier (30M CU/month, 500 CU/s) vs. devnet's ~2.5 slots/s of `getBlock` polling —
+    batch size/workers are tuned to outpace block production while staying under the CU/s cap;
+    public devnet RPC is configured as a fallback endpoint. Sustained tail-following costs
+    ~5–7M CU/day, so long-term either a paid tier or public-RPC-primary is advised.
   - Devnet ledger resets can orphan history; recovery = wipe DB volume and reindex (minutes,
     given the program's small history).
   - `--unfinalized-blocks=true` handles short reorgs.
