@@ -109,6 +109,8 @@ jobs:
           REPO_LC: ${{ needs.build-and-push.outputs.repo_lc }}
           ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          GRAPHQL_PORT: ${{ vars.GRAPHQL_PORT || '3000' }}
+          GRPC_PORT: ${{ vars.GRPC_PORT || '50051' }}
         run: |
           # Secrets are written single-quoted: docker compose's dotenv parser
           # takes single-quoted values literally, so `$`, spaces and `#` in a
@@ -121,14 +123,28 @@ jobs:
             esac
             printf "%s='%s'\n" "$1" "$2"
           }
+          # A typo in a port variable should fail here, with a readable message,
+          # rather than as an opaque compose error midway through the deploy.
+          dotenv_port() {
+            case "$2" in
+              '' | *[!0-9]* )
+                echo "::error::$1 must be a port number, got '$2'" >&2
+                exit 1;;
+            esac
+            if [ "$2" -lt 1 ] || [ "$2" -gt 65535 ]; then
+              echo "::error::$1 must be within 1-65535, got '$2'" >&2
+              exit 1
+            fi
+            printf '%s=%s\n' "$1" "$2"
+          }
           {
             dotenv_secret ALCHEMY_API_KEY "$ALCHEMY_API_KEY"
             dotenv_secret POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
             echo "PG_IMAGE=ghcr.io/$REPO_LC/postgres:${{ github.sha }}"
             echo "NODE_IMAGE=ghcr.io/$REPO_LC/node:${{ github.sha }}"
             echo "GRPC_IMAGE=ghcr.io/$REPO_LC/grpc:${{ github.sha }}"
-            echo "GRAPHQL_PORT=3000"
-            echo "GRPC_PORT=50051"
+            dotenv_port GRAPHQL_PORT "$GRAPHQL_PORT"
+            dotenv_port GRPC_PORT "$GRPC_PORT"
           } > server.env
 
       - name: Upload compose file and .env

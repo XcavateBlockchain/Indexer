@@ -30,7 +30,9 @@ chmod 600 /home/deploy/.ssh/authorized_keys
 
 Firewall (ufw or Hetzner Cloud firewall): allow `22` (SSH) and `50051` (gRPC). Port `3000`
 (GraphQL playground) is optional — leave it closed unless you want the playground public;
-Postgres is never exposed (it has no published port).
+Postgres is never exposed (it has no published port). If either published port is already
+taken on the server, move it with the `GRAPHQL_PORT`/`GRPC_PORT` repository variables below
+rather than editing the compose file.
 
 ## 2. GitHub repository secrets
 
@@ -46,6 +48,21 @@ Postgres is never exposed (it has no published port).
 | `ALCHEMY_API_KEY` | Alchemy key with Solana Devnet enabled |
 | `POSTGRES_PASSWORD` | Any strong password (stack-internal only) |
 | `GHCR_PULL_TOKEN` | Optional: PAT with `read:packages`, only needed while the GHCR images are private. Alternatively make the three packages public and omit this. |
+
+### Repository variables
+
+Same page, **Variables** tab. Both are optional and change only the *host* port that the
+service is published on — the container-internal ports stay `3000`/`50051`, so healthchecks
+and inter-service URLs are unaffected. Use these when a port is already taken on the server
+(`Bind for 0.0.0.0:3000 failed: port is already allocated`).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `GRAPHQL_PORT` | `3000` | Host port for the GraphQL playground |
+| `GRPC_PORT` | `50051` | Host port for the gRPC API |
+
+Must be a bare port number in `1-65535`; the deploy fails fast with a clear error otherwise.
+Changing `GRPC_PORT` means clients and the firewall rule must follow it.
 
 ## 3. Deploying
 
