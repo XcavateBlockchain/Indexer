@@ -61,9 +61,11 @@ What the workflow does:
 3. `docker compose pull && docker compose up -d --remove-orphans`, then verifies the node's
    `/ready` endpoint and prunes old images.
 
-**Rollback**: re-run the deploy workflow from the last good commit (`Actions → Deploy →
-Run workflow → select the tag/branch/commit`), or on the server edit `.env` to point
-`NODE_IMAGE`/`GRPC_IMAGE`/`PG_IMAGE` at an earlier SHA tag and `docker compose up -d`.
+**Rollback**: fastest is on the server — edit `.env` to point
+`NODE_IMAGE`/`GRPC_IMAGE`/`PG_IMAGE` at an earlier SHA tag and `docker compose up -d`
+(images from the last 7 days are still present locally; older ones re-pull from GHCR).
+Via GitHub: open the last good run of the Deploy workflow and choose **Re-run all jobs**
+(`workflow_dispatch` cannot target an arbitrary commit), or `git revert` and push.
 
 ## 4. Verifying a deployment
 
@@ -105,10 +107,27 @@ Bump the pinned tags (`subquerynetwork/subql-node-solana:v6.3.1` in `docker/node
 `subquerynetwork/subql-query:v2.25.0` in `docker-compose.yml`), push to `main`, and let CI
 deploy. Schema-affecting changes to `schema.graphql` require a reindex (above).
 
+### Rotating POSTGRES_PASSWORD
+
+The `POSTGRES_PASSWORD` env var only takes effect when the `pgdata` volume is first
+initialized — changing the GitHub secret alone will brick the stack on the next deploy
+(postgres keeps the old password, every other service gets the new one). Rotate in this
+order:
+
+```bash
+ssh deploy@<host>
+cd /opt/whitelist-indexer
+docker compose exec postgres psql -U postgres -c "ALTER USER postgres PASSWORD '<new>';"
+```
+
+then update the `POSTGRES_PASSWORD` GitHub secret and re-deploy. (Alternatively, wipe the
+volume and reindex — history is small.)
+
 ### Disk/log hygiene
 
-Container logs are capped (20 MB × 3 files per service) and the deploy workflow prunes
-dangling images after every run. Postgres data lives in the `pgdata` named volume.
+Container logs are capped (20 MB × 3 files per service) and the deploy workflow removes
+images unused for 7+ days after every run (recent SHA tags stay available for rollback).
+Postgres data lives in the `pgdata` named volume.
 
 ### Monitoring
 

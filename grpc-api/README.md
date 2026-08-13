@@ -95,6 +95,7 @@ Notes:
 
 ## Where the SQL lives
 
-Every SQL string is in `src/db/queries.ts`. If the live SubQuery schema drifts
-from the assumptions documented there (column names, enum spellings, table
-names), that is the only file to adjust.
+Every SQL string is in `src/db/queries.ts` — table and column names live there.
+DB enum spellings (`REGIONAL_OPERATOR`, `COMPLIANT`, …) live in the `*_TO_DB` /
+`*_FROM_DB` maps in `src/mappers.ts`. If the live SubQuery schema drifts from
+the assumptions documented in those two files, adjust whichever one drifted.

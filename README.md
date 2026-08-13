@@ -117,7 +117,8 @@ All runtime configuration is environment-driven (see [`.env.example`](.env.examp
 Pushing to `main` triggers `.github/workflows/deploy.yml`: it builds and pushes the three
 images to GHCR and then, over SSH, uploads `docker-compose.yml` + a rendered `.env` to the
 Hetzner server and runs `docker compose pull && docker compose up -d`. Deploys are atomic
-image swaps pinned to the commit SHA; rollback = re-run the workflow from an older commit.
+image swaps pinned to the commit SHA; to roll back, pin the previous SHA tags in the
+server's `.env` (or re-run the last good workflow run) — see the runbook.
 
 Server prerequisites, required GitHub secrets, and the operations runbook (reindexing,
 upgrades, devnet resets) are documented in [docs/deployment.md](docs/deployment.md).

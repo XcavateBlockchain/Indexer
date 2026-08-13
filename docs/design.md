@@ -48,7 +48,7 @@ Four containers via docker-compose on a single Hetzner host:
 | `grpc-api`     | baked: node:22 + grpc-api/                   | public gRPC API                  |
 
 The indexer project is **baked into an image** (not volume-mounted) so a deploy is an atomic
-image swap: CI builds `indexer-node` and `grpc-api` images, pushes to GHCR, the server pulls.
+image swap: CI builds the node, gRPC and postgres images, pushes to GHCR, the server pulls.
 
 ## 4. Program interface (derived from source, verified on-chain)
 
@@ -84,15 +84,20 @@ a redundant signal here — every event's payload is recoverable from the instru
 ## 5. Data model (schema.graphql)
 
 - **`Config`** (id = `"config"`): `authority`, `pendingAuthority?`, last-update metadata.
-- **`Admin`** (id = admin pubkey): `active`, `addedBy`, added/removed slot+time+tx. Removal
+- **`Admin`** (id = admin pubkey): `active`, `addedBy`, added/removed block+time+tx. Removal
   marks `active=false` rather than deleting — history preserved.
 - **`RoleAssignment`** (id = `<user>-<roleByte>`): `user`, `role`, `permission`, `active`,
   `rentPayer`, `assignedBy`, assignment/update/removal metadata, `removalKind`
   (`REMOVED`/`RENOUNCED`). Same soft-delete approach; a re-assignment after removal reuses the
   id (PDA semantics) and resets the audit fields — full history lives in `WhitelistAction`.
 - **`WhitelistAction`** (id = `<txSig>-<ixPath>`): append-only audit log — one row per indexed
-  instruction: `type`, `user?`, `role?`, `permission?`, `actor` (signer), `slot`, `blockTime`,
-  `txSignature`. Indexed on `user`, `type`.
+  instruction: `type`, `subject?` (affected address), `role?`, `permission?`, `actor` (signer),
+  `blockHeight`, `blockTime`, `txSignature`. Indexed on `subject`, `type`, `actor`, `txSignature`.
+
+Block coordinates in entities are Solana **block heights** (what the indexer runtime exposes
+per transaction), not slots; slots appear only in indexer-progress metadata. The two axes
+differ by millions on devnet (skipped slots) — `txSignature` is the canonical cross-reference
+to the chain.
 
 ## 6. gRPC API (grpc-api/)
 
@@ -121,7 +126,7 @@ Reads Postgres directly (`pg` pool, read-only queries against schema `app`).
 - **startBlock** = 483,386,556 (deploy slot — full program history).
 - **CI/CD** (`.github/workflows/`):
   - `ci.yml` — PRs: codegen + build both packages.
-  - `deploy.yml` — push to `main` (+ manual dispatch): build & push both images to GHCR →
+  - `deploy.yml` — push to `main` (+ manual dispatch): build & push all three images (node, grpc, postgres) to GHCR →
     ssh to Hetzner → upload compose file → `docker compose pull && up -d`. Secrets:
     `HETZNER_HOST`, `HETZNER_USER`, `HETZNER_SSH_KEY`, `ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`.
 - **Known risks** (documented in README):

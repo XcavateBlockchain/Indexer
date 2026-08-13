@@ -4,9 +4,20 @@
 // Conventions:
 //   - Enums have an *_UNSPECIFIED = 0 default. In request filter fields,
 //     UNSPECIFIED (or an unset `optional` field) means "no filter".
-//   - Block heights are Solana slots, encoded as uint64 (delivered as strings
-//     by the server because it loads protos with longs=String).
+//   - uint64 values are delivered as strings by the server (protos are loaded
+//     with longs=String).
 //   - Timestamps are google.protobuf.Timestamp (UTC).
+//
+// TWO DIFFERENT BLOCK AXES — do not mix them:
+//   - Entity fields named *_at_block / block_height are Solana BLOCK HEIGHTS
+//     (the chain's "number of blocks beneath this block"). This is what the
+//     indexer runtime exposes per transaction.
+//   - GetIndexerStatus fields named *_slot are Solana SLOTS (the leader
+//     schedule axis). Slots grow faster than block heights because skipped
+//     slots produce no block (on devnet the two differ by ~12 million).
+//   Comparing a block_height with a slot is meaningless; to cross-reference
+//   an action with the chain, use tx_signature (getTransaction), not
+//   getBlock(block_height).
 syntax = "proto3";
 
 package realxmarket.whitelist.v1;
@@ -175,7 +186,9 @@ message ListActionsRequest {
 }
 
 message ListActionsResponse {
-  // Ordered by block_height DESC, instruction_index ASC.
+  // Ordered by block_height DESC, then tx_signature ASC, then execution
+  // order within the transaction (instruction_index compared numerically,
+  // segment-wise for inner instructions like "3.1").
   repeated WhitelistAction actions = 1;
   uint64 total_count = 2;
 }

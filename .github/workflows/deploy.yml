@@ -110,15 +110,26 @@ jobs:
           ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
         run: |
-          cat > server.env <<EOF
-          ALCHEMY_API_KEY=$ALCHEMY_API_KEY
-          POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-          PG_IMAGE=ghcr.io/$REPO_LC/postgres:${{ github.sha }}
-          NODE_IMAGE=ghcr.io/$REPO_LC/node:${{ github.sha }}
-          GRPC_IMAGE=ghcr.io/$REPO_LC/grpc:${{ github.sha }}
-          GRAPHQL_PORT=3000
-          GRPC_PORT=50051
-          EOF
+          # Secrets are written single-quoted: docker compose's dotenv parser
+          # takes single-quoted values literally, so `$`, spaces and `#` in a
+          # secret survive. Values compose cannot represent are rejected.
+          dotenv_secret() {
+            case "$2" in
+              *\'* | *$'\n'* )
+                echo "::error::secret $1 must not contain single quotes or newlines" >&2
+                exit 1;;
+            esac
+            printf "%s='%s'\n" "$1" "$2"
+          }
+          {
+            dotenv_secret ALCHEMY_API_KEY "$ALCHEMY_API_KEY"
+            dotenv_secret POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
+            echo "PG_IMAGE=ghcr.io/$REPO_LC/postgres:${{ github.sha }}"
+            echo "NODE_IMAGE=ghcr.io/$REPO_LC/node:${{ github.sha }}"
+            echo "GRPC_IMAGE=ghcr.io/$REPO_LC/grpc:${{ github.sha }}"
+            echo "GRAPHQL_PORT=3000"
+            echo "GRPC_PORT=50051"
+          } > server.env
 
       - name: Upload compose file and .env
         run: |
@@ -143,4 +154,6 @@ jobs:
           # The indexer node exposes /ready once it has connected to the RPC + DB.
           ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T subquery-node curl -sf http://localhost:3000/ready" \
             && echo "indexer node is ready"
-          ssh deploy-target "docker image prune -f >/dev/null"
+          # Remove images unused for 7+ days (keeps recent SHA tags around for
+          # the .env-pin rollback path documented in docs/deployment.md).
+          ssh deploy-target "docker image prune -af --filter 'until=168h' >/dev/null"

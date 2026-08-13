@@ -317,12 +317,15 @@ export async function listActions(
   const from = `FROM ${schema}.whitelist_actions${whereSql}`;
 
   const count = await query<CountRow>(`SELECT count(*)::text AS count ${from}`, params);
-  // instruction_index is TEXT holding a non-negative integer; ordering by
-  // (length, value) yields numeric order without a cast that could fail on
-  // unexpected content.
+  // instruction_index is TEXT of dot-joined non-negative integers ("7", "3.1"
+  // for inner instructions). Casting to int[] compares segment-wise so "3.1"
+  // sorts before "10" (execution order); the cast is safe because the mapping
+  // only ever writes that shape. `id` is a unique final tiebreaker, making
+  // pagination deterministic.
   const rows = await query<WhitelistActionRow>(
     `SELECT ${ACTION_COLS} ${from} ` +
-      `ORDER BY block_height DESC, length(instruction_index) ASC, instruction_index ASC ` +
+      `ORDER BY block_height DESC, tx_signature ASC, ` +
+      `string_to_array(instruction_index, '.')::int[] ASC, id ASC ` +
       `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, limit, offset],
   );
