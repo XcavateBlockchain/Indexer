@@ -1,4 +1,4 @@
-# Full whitelist-indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API.
+# Full indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API.
 #
 # Local dev:  cp .env.example .env  →  docker compose up --build
 # Production: images are prebuilt by CI (GHCR); the deploy workflow writes an
@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: docker/pg-Dockerfile
-    image: ${PG_IMAGE:-whitelist-indexer-postgres:local}
+    image: ${PG_IMAGE:-indexer-postgres:local}
     restart: unless-stopped
     logging: *default-logging
     volumes:
@@ -34,7 +34,7 @@ services:
     build:
       context: .
       dockerfile: docker/node.Dockerfile
-    image: ${NODE_IMAGE:-whitelist-indexer-node:local}
+    image: ${NODE_IMAGE:-indexer-node:local}
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,7 +90,7 @@ services:
   grpc-api:
     build:
       context: ./grpc-api
-    image: ${GRPC_IMAGE:-whitelist-indexer-grpc:local}
+    image: ${GRPC_IMAGE:-indexer-grpc:local}
     depends_on:
       postgres:
         condition: service_healthy

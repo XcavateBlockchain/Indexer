@@ -14,7 +14,7 @@ const DEPLOYMENT_SLOT = 483386556;
 const project: SolanaProject = {
   specVersion: "1.0.0",
   version: "0.1.0",
-  name: "realxmarket-whitelist-indexer",
+  name: "realxmarket-indexer",
   description:
     "Indexes the xcavate-whitelist program (roles and compliance registry) of the realXmarket protocol on Solana devnet",
   runner: {

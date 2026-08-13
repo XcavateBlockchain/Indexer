@@ -1,5 +1,5 @@
 {
-  "name": "realxmarket-whitelist-indexer",
+  "name": "realxmarket-indexer",
   "version": "0.1.0",
   "description": "SubQuery indexer for the xcavate-whitelist program (realXmarket protocol) on Solana devnet",
   "main": "dist/index.js",

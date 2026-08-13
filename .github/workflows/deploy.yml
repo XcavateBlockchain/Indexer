@@ -15,7 +15,7 @@ permissions:
   packages: write
 
 env:
-  DEPLOY_DIR: /opt/whitelist-indexer
+  DEPLOY_DIR: /opt/indexer
 
 jobs:
   build-and-push:

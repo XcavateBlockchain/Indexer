@@ -16,11 +16,11 @@ adduser --disabled-password --gecos "" deploy
 usermod -aG docker deploy
 
 # Deploy directory owned by the deploy user
-mkdir -p /opt/whitelist-indexer
-chown deploy:deploy /opt/whitelist-indexer
+mkdir -p /opt/indexer
+chown deploy:deploy /opt/indexer
 
 # SSH key for GitHub Actions: generate a dedicated keypair (on your machine):
-#   ssh-keygen -t ed25519 -f hetzner_deploy -C "gh-actions-whitelist-indexer"
+#   ssh-keygen -t ed25519 -f hetzner_deploy -C "gh-actions-indexer"
 # then install the public half:
 install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
 echo "<contents of hetzner_deploy.pub>" >> /home/deploy/.ssh/authorized_keys
@@ -57,7 +57,7 @@ What the workflow does:
 1. Builds and pushes `ghcr.io/<repo>/node`, `ghcr.io/<repo>/grpc`, `ghcr.io/<repo>/postgres`,
    tagged `latest` + commit SHA.
 2. Uploads `docker-compose.yml` and a rendered `.env` (pinning the SHA-tagged images) to
-   `/opt/whitelist-indexer`.
+   `/opt/indexer`.
 3. `docker compose pull && docker compose up -d --remove-orphans`, then verifies the node's
    `/ready` endpoint and prunes old images.
 
@@ -71,7 +71,7 @@ Via GitHub: open the last good run of the Deploy workflow and choose **Re-run al
 
 ```bash
 ssh deploy@<host>
-cd /opt/whitelist-indexer
+cd /opt/indexer
 docker compose ps                       # all four services Up, node+postgres healthy
 docker compose logs -f subquery-node    # should show blocks being processed
 docker compose exec postgres psql -U postgres \
@@ -92,9 +92,9 @@ grpcurl -plaintext -proto grpc-api/proto/whitelist.proto \
 ### Reindex from scratch (e.g. after a devnet ledger reset, or a schema change)
 
 ```bash
-cd /opt/whitelist-indexer
+cd /opt/indexer
 docker compose down
-docker volume rm whitelist-indexer_pgdata   # check the name: docker volume ls
+docker volume rm indexer_pgdata   # check the name: docker volume ls
 docker compose up -d
 ```
 
@@ -116,7 +116,7 @@ order:
 
 ```bash
 ssh deploy@<host>
-cd /opt/whitelist-indexer
+cd /opt/indexer
 docker compose exec postgres psql -U postgres -c "ALTER USER postgres PASSWORD '<new>';"
 ```
 
