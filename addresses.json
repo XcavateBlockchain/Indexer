@@ -1,0 +1,35 @@
+{
+  "cluster": "https://api.devnet.solana.com",
+  "programs": {
+    "xcavate_whitelist": "2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn",
+    "regions": "FYysH5v23qtz4gK4H1yLDHneFwx6PSAT7oQwHcuRyRh",
+    "marketplace": "B6YRVAmjmhN28smZxNfCnuKc19CamBbAEMXsp5KTfWog",
+    "property": "8f4NHc1wGBM1BAufDFd9dNechLW8pxmStSfxfuJfDzob"
+  },
+  "mints": {
+    "xcav": "8dW943dozaNPdRRaW6xpV2vxFv1Kcpz3z63Nji3VLups",
+    "tgbp": "71G3dc4B9p9QBosLx3XhWY3ULRPAxjopngsin66M9HUb",
+    "tusdc": "8umv4NXybZFGiT3tQb1DqJ6DXxLa3rLNhPbcqbQsjXxW"
+  },
+  "configs": {
+    "whitelist": "Djht1K3NorKGGD4qcUut6xxqUpcXdAdw4XXchZ25i27E",
+    "regions": "AEQCtiQKCWfD7bK3V3jCfrQC5ST5a69BfxUrS6sBqP3R",
+    "marketplace": "CuP3QFcT3e39oiMEjrMVD5dFTfha6882WKaVhB8vTaBy",
+    "property": "81M67gjjuTKQLW6z6Aj73waiA6DLZUFtiGQCCeDQTBH7"
+  },
+  "region": { "id": 1, "address": "HWAJRX33bbMEc2aEz7wZNLcwTcD3GKuVBJDHBpnTEam7", "postcodes": ["SW1A1AA", "M11AE"] },
+  "wallets": {
+    "authority": "7bGxnDFi3zKLAbgeXtCANcf8MGSYob1EAmoWZY77qjp2",
+    "admin": "D7LHTCvNtG37QsZSphsCTkJhLhg3SfpyjqMBwtfqbvaP",
+    "treasury": "7eevKBRGmLXmDNaHfRGMpYTVPQYCTtNXnPNuvvYZLGcv",
+    "sponsor": "2nLLLhSQmJHWmj4zcfcmZPVmDmxzqJqYGKDS5shPLB8z",
+    "operator": "2PH3s1PanNk6AJZfmu65UopMawQmaHCpYkS1WEQBZuCT",
+    "developer": "H7VMSTwha14CzNvuo9GQ1WrhfJhqrHeNwfcrRwuv7iDz",
+    "investor1": "3Q5DRUZQ8rhwwKH3CBK7Jt8DjoyXLEpUXVuq8Zb8g4Yr",
+    "investor2": "EJpEpZ8rQY5gVkv6exjZ2urQpPwF6BS6RTaE4UzvhhsF",
+    "lawyer1": "A6eRMbrSZoqLnh9iC4z1aYyXNE2saj6CthdevpEVU813",
+    "lawyer2": "3oX5ttHJvcqJDwbYh96tkShaa4bnWMM3JHc2N4kocSNY",
+    "spv_confirmer": "3krQjt3Nsb3qKwLWdatXN1kUV9p7fP6WrwWYvUHHwVGu",
+    "letting_agent": "CL3A65SvKXeccdQKP3pwiUiRbi6QR6psuUD1Zb1nKve"
+  }
+}
