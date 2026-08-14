@@ -33,19 +33,27 @@ The request was "an indexer using gRPC and SubQuery". These two meet at differen
 
 ```
 Solana devnet (Alchemy JSON-RPC) ──poll──► subql-node-solana ──write──► Postgres (schema "app")
-                                                                          │            │
-                                                       subql-query (GraphQL :3000)     │
-                                                                                grpc-api (gRPC :50051)
+                                                  │                       │            │
+                                         /metrics │    subql-query (GraphQL :3010)     │
+                                                  ▼                            grpc-api (gRPC :50051)
+                                             prometheus ──► grafana :3011
 ```
 
-Four containers via docker-compose on a single Hetzner host:
+Six containers via docker-compose on a single Hetzner host:
 
 | Service        | Image                                        | Role                             |
 |----------------|----------------------------------------------|----------------------------------|
 | `postgres`     | postgres:16 + btree_gist                     | storage                          |
 | `subquery-node`| baked: subql-node-solana:v6.3.1 + this repo  | indexer                          |
-| `graphql-engine`| subquerynetwork/subql-query:v2.25.0         | GraphQL API (internal/optional)  |
+| `graphql-engine`| subquerynetwork/subql-query:v2.25.0         | GraphQL API + GraphiQL playground |
 | `grpc-api`     | baked: node:22 + grpc-api/                   | public gRPC API                  |
+| `prometheus`   | prom/prometheus:v3.13.2                      | scrapes the node's `/metrics` (loopback-bound) |
+| `grafana`      | grafana/grafana:13.1.3                       | dashboards, provisioned from `monitoring/` |
+
+Monitoring is read-only and off to the side: it scrapes the node's existing
+`@subql/node-core` metrics endpoint and touches neither the data path nor Postgres, so it
+cannot affect indexing correctness. Prometheus carries no `depends_on` deliberately — it has
+to stay up precisely when the service it watches is down.
 
 The indexer project is **baked into an image** (not volume-mounted) so a deploy is an atomic
 image swap: CI builds the node, gRPC and postgres images, pushes to GHCR, the server pulls.
@@ -120,15 +128,19 @@ Reads Postgres directly (`pg` pool, read-only queries against schema `app`).
 
 ## 7. Ops & deployment
 
-- **Config**: single `.env` (gitignored): `ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`. Compose
+- **Config**: single `.env` (gitignored): `ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`,
+  `GRAFANA_PASSWORD`, plus the published-port overrides. Compose
   interpolates the Alchemy endpoint into the node's `--network-endpoint` flag at runtime, so
   the key is neither committed nor baked into images. `.env.example` documents every variable.
 - **startBlock** = 483,386,556 (deploy slot — full program history).
 - **CI/CD** (`.github/workflows/`):
   - `ci.yml` — PRs: codegen + build both packages.
   - `deploy.yml` — push to `main` (+ manual dispatch): build & push all three images (node, grpc, postgres) to GHCR →
-    ssh to Hetzner → upload compose file → `docker compose pull && up -d`. Secrets:
-    `HETZNER_HOST`, `HETZNER_USER`, `HETZNER_SSH_KEY`, `ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`.
+    ssh to Hetzner → upload compose file + `monitoring/` → `docker compose pull && up -d`.
+    Secrets: `HETZNER_HOST`, `HETZNER_USER`, `HETZNER_SSH_KEY`, `ALCHEMY_API_KEY`,
+    `POSTGRES_PASSWORD`, `GRAFANA_PASSWORD`. The monitoring configs are bind-mounted rather
+    than baked into an image (they belong to off-the-shelf containers), so they are the one
+    thing besides `.env` that ships as files.
 - **Known risks** (documented in README):
   - Alchemy free tier (30M CU/month, 500 CU/s) vs. devnet's ~2.5 slots/s of `getBlock` polling —
     batch size/workers are tuned to outpace block production while staying under the CU/s cap;

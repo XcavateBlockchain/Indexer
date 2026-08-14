@@ -1,0 +1,19 @@
+# Grafana dashboard provisioning: load every dashboard JSON in the mounted
+# directory on startup, so a fresh container comes up with them already there.
+#
+# allowUiUpdates is true so panels can be tweaked live in the UI; to keep a
+# change, export the dashboard JSON and commit it back over the file in
+# monitoring/grafana/dashboards/ (otherwise it is only in Grafana's volume).
+
+apiVersion: 1
+
+providers:
+  - name: indexer
+    orgId: 1
+    type: file
+    disableDeletion: true
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

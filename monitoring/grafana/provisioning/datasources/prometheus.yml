@@ -1,0 +1,16 @@
+# Grafana datasource provisioning: point Grafana at the stack's Prometheus.
+#
+# The uid is pinned to "prometheus" because the shipped dashboard
+# (monitoring/grafana/dashboards/indexer-health.json) references it by uid.
+# Changing it here means changing it there too.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

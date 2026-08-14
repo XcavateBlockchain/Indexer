@@ -1,4 +1,5 @@
-# Full indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API.
+# Full indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API,
+# plus Prometheus/Grafana monitoring.
 #
 # Local dev:  cp .env.example .env  →  docker compose up --build
 # Production: images are prebuilt by CI (GHCR); the deploy workflow writes an
@@ -75,7 +76,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "${GRAPHQL_PORT:-3000}:3000"
+      - "${GRAPHQL_PORT:-3010}:3000"
     environment:
       DB_USER: postgres
       DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
@@ -109,5 +110,52 @@ services:
       DB_SCHEMA: app
       GRPC_PORT: 50051
 
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    restart: unless-stopped
+    logging: *default-logging
+    # Deliberately no depends_on: monitoring must stay up precisely when the
+    # thing it monitors is down. Prometheus tolerates an unreachable target.
+    #
+    # Bound to loopback, not 0.0.0.0: Grafana reaches it over the compose
+    # network, and Prometheus has no auth of its own, so it must not be exposed
+    # publicly. For ad-hoc PromQL on the server, tunnel it over SSH
+    # (see docs/deployment.md).
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Node metrics are only useful recent; cap the TSDB so it cannot grow
+      # without bound on a small server.
+      - --storage.tsdb.retention.time=15d
+
+  grafana:
+    image: grafana/grafana:13.1.3
+    depends_on:
+      prometheus:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRAFANA_PORT:-3011}:3000"
+    environment:
+      # Local default is admin/admin; the deploy workflow requires a real
+      # password from the GRAFANA_PASSWORD secret before it will ship.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      # Datasource + dashboard provider definitions, applied on every start.
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON, loaded by the file provider. Kept outside
+      # /var/lib/grafana so it does not nest inside the grafanadata volume.
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+
 volumes:
   pgdata:
+  promdata:
+  grafanadata:

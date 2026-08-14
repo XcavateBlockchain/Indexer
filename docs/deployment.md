@@ -28,11 +28,13 @@ chown deploy:deploy /home/deploy/.ssh/authorized_keys
 chmod 600 /home/deploy/.ssh/authorized_keys
 ```
 
-Firewall (ufw or Hetzner Cloud firewall): allow `22` (SSH) and `50051` (gRPC). Port `3000`
-(GraphQL playground) is optional — leave it closed unless you want the playground public;
-Postgres is never exposed (it has no published port). If either published port is already
-taken on the server, move it with the `GRAPHQL_PORT`/`GRPC_PORT` repository variables below
-rather than editing the compose file.
+Firewall (ufw or Hetzner Cloud firewall): allow `22` (SSH) and `50051` (gRPC). Ports `3010`
+(GraphQL playground) and `3011` (Grafana) are optional — leave them closed unless you want
+them reachable from outside. Grafana at least has a password; the playground has none.
+Postgres and Prometheus are never publicly reachable: Postgres has no published port, and
+Prometheus is bound to `127.0.0.1` (reach it through an SSH tunnel, see §5). If a published
+port is already taken on the server, move it with the `GRAPHQL_PORT`/`GRPC_PORT`/
+`GRAFANA_PORT` repository variables below rather than editing the compose file.
 
 ## 2. GitHub repository secrets
 
@@ -47,19 +49,22 @@ rather than editing the compose file.
 | `HETZNER_KNOWN_HOSTS` | Optional but recommended: output of `ssh-keyscan -H <host>`, pins the host key (otherwise the workflow trusts-on-first-use) |
 | `ALCHEMY_API_KEY` | Alchemy key with Solana Devnet enabled |
 | `POSTGRES_PASSWORD` | Any strong password (stack-internal only) |
+| `GRAFANA_PASSWORD` | Grafana admin password. **Required** — the deploy fails fast if unset, because Grafana is published on `GRAFANA_PORT` and would otherwise fall back to `admin`/`admin`. |
 | `GHCR_PULL_TOKEN` | Optional: PAT with `read:packages`, only needed while the GHCR images are private. Alternatively make the three packages public and omit this. |
 
 ### Repository variables
 
-Same page, **Variables** tab. Both are optional and change only the *host* port that the
-service is published on — the container-internal ports stay `3000`/`50051`, so healthchecks
-and inter-service URLs are unaffected. Use these when a port is already taken on the server
-(`Bind for 0.0.0.0:3000 failed: port is already allocated`).
+Same page, **Variables** tab. All are optional and change only the *host* port that the
+service is published on — the container-internal ports stay `3000`/`50051`/`9090`, so
+healthchecks, scrape targets and inter-service URLs are unaffected. Use these when a port is
+already taken on the server (`Bind for 0.0.0.0:3010 failed: port is already allocated`).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `GRAPHQL_PORT` | `3000` | Host port for the GraphQL playground |
+| `GRAPHQL_PORT` | `3010` | Host port for the GraphQL playground |
 | `GRPC_PORT` | `50051` | Host port for the gRPC API |
+| `GRAFANA_PORT` | `3011` | Host port for Grafana |
+| `PROMETHEUS_PORT` | `9090` | Host port for Prometheus, bound to `127.0.0.1` only — changing it only changes what an SSH tunnel targets |
 
 Must be a bare port number in `1-65535`; the deploy fails fast with a clear error otherwise.
 Changing `GRPC_PORT` means clients and the firewall rule must follow it.
@@ -73,10 +78,13 @@ What the workflow does:
 
 1. Builds and pushes `ghcr.io/<repo>/node`, `ghcr.io/<repo>/grpc`, `ghcr.io/<repo>/postgres`,
    tagged `latest` + commit SHA.
-2. Uploads `docker-compose.yml` and a rendered `.env` (pinning the SHA-tagged images) to
-   `/opt/indexer`.
+2. Uploads `docker-compose.yml`, the `monitoring/` directory and a rendered `.env` (pinning
+   the SHA-tagged images) to `/opt/indexer`. Unlike the application code, the Prometheus and
+   Grafana configs are bind-mounted rather than baked into an image, so they have to be on
+   the server; `monitoring/` is replaced wholesale on each deploy, so deleting a file from
+   the repo also removes it from the server.
 3. `docker compose pull && docker compose up -d --remove-orphans`, then verifies the node's
-   `/ready` endpoint and prunes old images.
+   `/ready` endpoint plus Prometheus and Grafana, and prunes old images.
 
 **Rollback**: fastest is on the server — edit `.env` to point
 `NODE_IMAGE`/`GRPC_IMAGE`/`PG_IMAGE` at an earlier SHA tag and `docker compose up -d`
@@ -89,7 +97,7 @@ Via GitHub: open the last good run of the Deploy workflow and choose **Re-run al
 ```bash
 ssh deploy@<host>
 cd /opt/indexer
-docker compose ps                       # all four services Up, node+postgres healthy
+docker compose ps                       # all six services Up, node+postgres healthy
 docker compose logs -f subquery-node    # should show blocks being processed
 docker compose exec postgres psql -U postgres \
   -c "select key, value from app._metadata where key in ('lastProcessedHeight','targetHeight');"
@@ -122,7 +130,9 @@ of the time is walking empty devnet slots between the program's activity and the
 
 Bump the pinned tags (`subquerynetwork/subql-node-solana:v6.3.1` in `docker/node.Dockerfile`,
 `subquerynetwork/subql-query:v2.25.0` in `docker-compose.yml`), push to `main`, and let CI
-deploy. Schema-affecting changes to `schema.graphql` require a reindex (above).
+deploy. Schema-affecting changes to `schema.graphql` require a reindex (above). The
+monitoring images (`prom/prometheus`, `grafana/grafana`) are pinned in `docker-compose.yml`
+the same way and can be bumped independently.
 
 ### Rotating POSTGRES_PASSWORD
 
@@ -144,9 +154,39 @@ volume and reindex — history is small.)
 
 Container logs are capped (20 MB × 3 files per service) and the deploy workflow removes
 images unused for 7+ days after every run (recent SHA tags stay available for rollback).
-Postgres data lives in the `pgdata` named volume.
+Postgres data lives in the `pgdata` named volume; Prometheus keeps 15 days of metrics in
+`promdata` (`--storage.tsdb.retention.time`), and Grafana's own state lives in `grafanadata`.
 
 ### Monitoring
+
+**Grafana** — `http://<host>:3011`, user `admin`, password = the `GRAFANA_PASSWORD` secret.
+The Prometheus datasource and the "Indexer health" dashboard are provisioned from
+`monitoring/` on every start, so a recreated container comes back with them already loaded.
+Panels edited in the UI live only in the `grafanadata` volume — export the JSON and commit it
+over `monitoring/grafana/dashboards/indexer-health.json` to make a change survive. With 3011
+closed in the firewall (the recommended default), tunnel it:
+
+```bash
+ssh -L 3011:localhost:3011 deploy@<host>    # then open http://localhost:3011
+```
+
+**Prometheus** — bound to `127.0.0.1:9090` on the server, never publicly reachable, so it
+always needs a tunnel:
+
+```bash
+ssh -L 9090:localhost:9090 deploy@<host>    # then open http://localhost:9090
+```
+
+To check the scrape is healthy without a tunnel, ask from inside the network:
+
+```bash
+cd /opt/indexer
+docker compose exec -T subquery-node curl -s http://prometheus:9090/api/v1/targets \
+  | grep -o '"health":"[a-z]*"'             # expect "health":"up"
+```
+
+A `down` target usually just means the node container is still booting — it serves `/metrics`
+on the same internal port 3000 as `/ready`.
 
 - gRPC `GetIndexerStatus` exposes `last_processed_slot`, `chain_head_slot`, `lag_slots`,
   `healthy` — poll it from any uptime monitor with a gRPC probe, or check

@@ -109,13 +109,24 @@ jobs:
           REPO_LC: ${{ needs.build-and-push.outputs.repo_lc }}
           ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          GRAPHQL_PORT: ${{ vars.GRAPHQL_PORT || '3000' }}
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
+          GRAPHQL_PORT: ${{ vars.GRAPHQL_PORT || '3010' }}
           GRPC_PORT: ${{ vars.GRPC_PORT || '50051' }}
+          GRAFANA_PORT: ${{ vars.GRAFANA_PORT || '3011' }}
+          PROMETHEUS_PORT: ${{ vars.PROMETHEUS_PORT || '9090' }}
         run: |
           # Secrets are written single-quoted: docker compose's dotenv parser
           # takes single-quoted values literally, so `$`, spaces and `#` in a
           # secret survive. Values compose cannot represent are rejected.
+          #
+          # An unset secret is rejected too: compose would otherwise silently
+          # fall back to a default (Grafana's is admin/admin, on a published
+          # port) or fail later on the server with an opaque message.
           dotenv_secret() {
+            if [ -z "$2" ]; then
+              echo "::error::secret $1 is not set — add it under Settings → Secrets and variables → Actions" >&2
+              exit 1
+            fi
             case "$2" in
               *\'* | *$'\n'* )
                 echo "::error::secret $1 must not contain single quotes or newlines" >&2
@@ -140,17 +151,26 @@ jobs:
           {
             dotenv_secret ALCHEMY_API_KEY "$ALCHEMY_API_KEY"
             dotenv_secret POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
+            dotenv_secret GRAFANA_PASSWORD "$GRAFANA_PASSWORD"
             echo "PG_IMAGE=ghcr.io/$REPO_LC/postgres:${{ github.sha }}"
             echo "NODE_IMAGE=ghcr.io/$REPO_LC/node:${{ github.sha }}"
             echo "GRPC_IMAGE=ghcr.io/$REPO_LC/grpc:${{ github.sha }}"
             dotenv_port GRAPHQL_PORT "$GRAPHQL_PORT"
             dotenv_port GRPC_PORT "$GRPC_PORT"
+            dotenv_port GRAFANA_PORT "$GRAFANA_PORT"
+            dotenv_port PROMETHEUS_PORT "$PROMETHEUS_PORT"
           } > server.env
 
-      - name: Upload compose file and .env
+      - name: Upload compose file, monitoring config and .env
         run: |
           ssh deploy-target "mkdir -p $DEPLOY_DIR"
           scp docker-compose.yml deploy-target:$DEPLOY_DIR/docker-compose.yml
+          # prometheus.yml and the Grafana provisioning files are bind-mounted
+          # by compose, so unlike the application code they are not baked into
+          # an image and must exist on the server. Replaced wholesale, so a file
+          # deleted from the repo also disappears from the server.
+          ssh deploy-target "rm -rf $DEPLOY_DIR/monitoring"
+          scp -r monitoring deploy-target:$DEPLOY_DIR/monitoring
           scp server.env deploy-target:$DEPLOY_DIR/.env
           ssh deploy-target "chmod 600 $DEPLOY_DIR/.env"
 
@@ -170,6 +190,13 @@ jobs:
           # The indexer node exposes /ready once it has connected to the RPC + DB.
           ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T subquery-node curl -sf http://localhost:3000/ready" \
             && echo "indexer node is ready"
+          # Monitoring is probed from inside the compose network: Prometheus is
+          # loopback-bound on the host and Grafana's port may be firewalled.
+          # The node image is the one with curl available.
+          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T subquery-node curl -sf http://prometheus:9090/-/ready >/dev/null" \
+            && echo "prometheus is ready"
+          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T subquery-node curl -sf --retry 5 --retry-delay 3 --retry-connrefused http://grafana:3000/api/health >/dev/null" \
+            && echo "grafana is up"
           # Remove images unused for 7+ days (keeps recent SHA tags around for
           # the .env-pin rollback path documented in docs/deployment.md).
           ssh deploy-target "docker image prune -af --filter 'until=168h' >/dev/null"
