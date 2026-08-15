@@ -35,6 +35,20 @@ pub const BLOCK_TIME_LOOKUPS_TOTAL: &str = "block_time_lookups_total";
 pub const DB_FLUSH_DURATION_SECONDS: &str = "db_flush_duration_seconds";
 /// Histogram: number of write ops in one batch flush.
 pub const DB_FLUSH_ROWS: &str = "db_flush_rows";
+/// Gauge: oldest slot the running history walk has committed.
+pub const BACKFILL_LAST_PROCESSED_SLOT: &str = "backfill_last_processed_slot";
+/// Counter: signatures returned by `getSignaturesForAddress` across every crawl.
+pub const BACKFILL_SIGNATURES_FETCHED_TOTAL: &str = "backfill_signatures_fetched_total";
+/// Gauge: accounts written by the last `getProgramAccounts` snapshot.
+pub const SNAPSHOT_ACCOUNTS_LOADED: &str = "snapshot_accounts_loaded";
+/// Gauge: `getSlot` as of the last reconciliation cycle.
+pub const CHAIN_TIP_SLOT: &str = "chain_tip_slot";
+/// Gauge: `sync_state.last_contiguous_slot`.
+///
+/// `chain_tip_slot - last_contiguous_slot` is the slot-lag panel: the single number that says
+/// whether the indexer is keeping up. It is a *proven-contiguous* lag, not a "last row written"
+/// lag -- on this deliberately idle program the two are very different things.
+pub const LAST_CONTIGUOUS_SLOT: &str = "last_contiguous_slot";
 
 /// Installs the global recorder and starts the `GET /metrics` listener on `addr`.
 ///
@@ -82,18 +96,40 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         DB_FLUSH_ROWS,
         "Write operations committed in one batch flush"
     );
+    metrics::describe_gauge!(
+        BACKFILL_LAST_PROCESSED_SLOT,
+        "Oldest slot committed by the running history backfill walk"
+    );
+    metrics::describe_counter!(
+        BACKFILL_SIGNATURES_FETCHED_TOTAL,
+        "Signatures returned by getSignaturesForAddress across backfill and reconciliation crawls"
+    );
+    metrics::describe_gauge!(
+        SNAPSHOT_ACCOUNTS_LOADED,
+        "Accounts written by the last getProgramAccounts snapshot"
+    );
+    metrics::describe_gauge!(CHAIN_TIP_SLOT, "Chain tip slot as of the last getSlot");
+    metrics::describe_gauge!(
+        LAST_CONTIGUOUS_SLOT,
+        "sync_state.last_contiguous_slot: no gaps exist below this slot"
+    );
 
     // Register every counter (and every label value it can take) at zero. Without this the
     // series simply does not exist until the first occurrence, and a Prometheus rule like
     // `rate(decode_skipped_total[5m]) > 0` reads "no data" rather than "healthy" -- which is
     // exactly backwards for metrics whose whole purpose is to be zero.
     inc_grpc_reconnect_by(0);
+    add_backfill_signatures_fetched(0);
     for reason in ["missing_account", "empty_absolute_path", "serialize"] {
         metrics::counter!(DECODE_SKIPPED_TOTAL, "reason" => reason).increment(0);
     }
     for source in ["stream", "cache", "rpc", "rpc_fallback"] {
         metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(0);
     }
+    // The four slot/count gauges are deliberately NOT pre-registered at zero: a slot gauge
+    // reading 0 is indistinguishable from a real (catastrophic) value, whereas an absent series
+    // reads as "this process has not measured it yet", which is the truth until the first
+    // reconciliation cycle or snapshot runs.
 
     log::info!("metrics listener started on http://{addr}/metrics");
     Ok(())
@@ -165,4 +201,26 @@ fn inc_grpc_reconnect_by(n: u64) {
 /// `source` is one of `stream`, `cache`, `rpc`, `rpc_fallback`.
 pub fn inc_block_time_lookup(source: &'static str) {
     metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(1);
+}
+
+/// Oldest slot the running history walk has committed (it walks downwards, so this falls).
+pub fn set_backfill_last_processed_slot(slot: u64) {
+    metrics::gauge!(BACKFILL_LAST_PROCESSED_SLOT).set(slot as f64);
+}
+
+/// Signatures returned by one `getSignaturesForAddress` page.
+pub fn add_backfill_signatures_fetched(n: u64) {
+    metrics::counter!(BACKFILL_SIGNATURES_FETCHED_TOTAL).increment(n);
+}
+
+pub fn set_snapshot_accounts_loaded(n: u64) {
+    metrics::gauge!(SNAPSHOT_ACCOUNTS_LOADED).set(n as f64);
+}
+
+pub fn set_chain_tip_slot(slot: u64) {
+    metrics::gauge!(CHAIN_TIP_SLOT).set(slot as f64);
+}
+
+pub fn set_last_contiguous_slot(slot: u64) {
+    metrics::gauge!(LAST_CONTIGUOUS_SLOT).set(slot as f64);
 }

@@ -1,0 +1,192 @@
+//! The `getProgramAccounts` state snapshot (spec §7, ruling R13).
+//!
+//! The account-state tables (`config`, `admin`, `role_account`) can only be filled by the live
+//! account stream, and the stream only fires when an account *changes* -- on a program that is
+//! idle for days that is never. So a fresh database needs one bulk read of current state:
+//! `getSlot` -> `getProgramAccounts` -> the same decoder and the same row mapping the account
+//! pipe uses -> the same slot-guarded upserts.
+//!
+//! ## Why this is a plain loop and not a carbon `Datasource`
+//!
+//! Ruling R13: carbon 0.12.0 ships no gPA datasource, so it would have to be written here
+//! either way. As a `Datasource` it would have to fabricate `AccountUpdate`s, be driven by a
+//! whole `Pipeline`, and then be waited on with the same "when is it done?" problem the crawler
+//! has. As a loop it is ~40 lines, reuses [`crate::processors::account_write_op`] verbatim (so
+//! a snapshot row and a stream row are byte-identical by construction), and finishes when the
+//! `for` loop finishes. The batcher is still the only writer.
+//!
+//! ## Ordering: the stream is started FIRST, then the snapshot is taken
+//!
+//! This is the non-negotiable part of spec §7 and it looks like removable complexity if you do
+//! not know the failure mode, so: a `getProgramAccounts` call takes a while, and any account
+//! that changes between the snapshot's read and the stream's subscription is invisible to both
+//! -- the snapshot has the pre-change value and the stream never saw the change. That is a
+//! permanent gap exactly as wide as the snapshot. Subscribing first and snapshotting second
+//! makes the two overlap instead, and the slot guard resolves the overlap: anything the stream
+//! already delivered at a higher slot survives the snapshot's upsert untouched.
+//!
+//! The snapshot is tagged with the slot read *before* the gPA call, so the tag can only be
+//! older than (never newer than) the state it describes -- again the direction the slot guard
+//! forgives.
+
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use carbon_core::account::AccountDecoder;
+use carbon_xcavate_whitelist_decoder::XcavateWhitelistDecoder;
+use solana_account::Account;
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_config::{
+    RpcAccountInfoConfig, RpcProgramAccountsConfig, UiAccountEncoding,
+};
+use solana_commitment_config::CommitmentConfig;
+use solana_pubkey::Pubkey;
+use sqlx::PgPool;
+use tokio_util::sync::CancellationToken;
+
+use crate::batcher;
+use crate::config::Config;
+use crate::db;
+use crate::processors::{account_write_op, TrackedAccounts};
+
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotSummary {
+    /// Slot the snapshot is tagged with (read before the `getProgramAccounts` call).
+    pub slot: u64,
+    pub accounts_loaded: usize,
+    /// Accounts owned by the program that the decoder did not recognise. Never expected; a
+    /// non-zero count means the deployed program has an account type the checked-in IDL lacks.
+    pub undecodable: usize,
+}
+
+/// Take a snapshot and commit it. Returns once every row is committed and
+/// `sync_state.snapshot_slot` is set.
+pub async fn run(
+    cfg: &Config,
+    pool: &PgPool,
+    tracked: &TrackedAccounts,
+    shutdown: CancellationToken,
+) -> Result<SnapshotSummary> {
+    let (slot, accounts) = fetch(cfg).await?;
+    log::info!(
+        "snapshot: getProgramAccounts returned {} account(s) at slot {slot}",
+        accounts.len()
+    );
+
+    // A batcher of its own: dropping it and awaiting the flusher is the commit barrier that
+    // makes it safe to write `snapshot_slot` afterwards.
+    let (bat, flusher) = batcher::spawn(pool.clone(), shutdown.clone());
+
+    let mut loaded = 0usize;
+    let mut undecodable = 0usize;
+    for (pubkey, account) in &accounts {
+        let Some(decoded) = XcavateWhitelistDecoder.decode_account(account) else {
+            undecodable += 1;
+            log::error!(
+                "snapshot: account {pubkey} is owned by the program but did not decode ({} bytes); \
+                 skipping it",
+                account.data.len()
+            );
+            continue;
+        };
+        // Every snapshotted PDA becomes deletion-tracked, so a later close reaches the deletion
+        // pipe instead of being dropped by the Yellowstone datasource.
+        tracked.write().await.insert(*pubkey);
+        bat.push(account_write_op(
+            *pubkey,
+            slot as i64,
+            account.lamports as i64,
+            &decoded,
+        ))
+        .await
+        .context("snapshot: batcher channel closed")?;
+        loaded += 1;
+    }
+
+    drop(bat);
+    flusher.await.ok();
+
+    db::sync_state::set_snapshot_slot(pool, slot as i64)
+        .await
+        .context("snapshot: recording sync_state.snapshot_slot")?;
+    crate::metrics::set_snapshot_accounts_loaded(loaded as u64);
+
+    log::info!(
+        "snapshot complete: {loaded} account(s) written at slot {slot}, snapshot_slot recorded"
+    );
+    Ok(SnapshotSummary {
+        slot,
+        accounts_loaded: loaded,
+        undecodable,
+    })
+}
+
+/// `getSlot` then `getProgramAccounts`, on the primary endpoint with the public fallback behind
+/// it (Alchemy's free tier throttles -- see MIGRATION_LOG.md).
+async fn fetch(cfg: &Config) -> Result<(u64, Vec<(Pubkey, Account)>)> {
+    let primary = cfg.rpc_url();
+    let mut last_err = None;
+    for (label, url) in [
+        ("primary", primary.as_str()),
+        ("fallback", cfg.rpc_fallback_url.as_str()),
+    ] {
+        match fetch_from(url, &cfg.program_id).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                // Never log the URL: the Alchemy JSON-RPC endpoint carries the API key in its
+                // path.
+                log::warn!("snapshot: {label} RPC failed ({e}); trying the next endpoint");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no RPC endpoint configured")))
+}
+
+async fn fetch_from(url: &str, program_id: &Pubkey) -> Result<(u64, Vec<(Pubkey, Account)>)> {
+    let rpc = RpcClient::new_with_timeout_and_commitment(
+        url.to_string(),
+        Duration::from_secs(60),
+        CommitmentConfig::confirmed(),
+    );
+
+    // Recorded BEFORE the read (see the module docs): the tag must never claim to be newer than
+    // the state it describes.
+    let slot = rpc
+        .get_slot_with_commitment(CommitmentConfig::confirmed())
+        .await
+        .context("getSlot failed")?;
+
+    // The `_ui_` variant rather than `get_program_accounts_with_config`: the latter is
+    // deprecated in solana-rpc-client 3.1, and decoding the base64 payload here ourselves makes
+    // the encoding assumption explicit (and an unexpected encoding a loud error, not a panic).
+    let ui_accounts = rpc
+        .get_program_ui_accounts_with_config(
+            program_id,
+            RpcProgramAccountsConfig {
+                // No memcmp/dataSize filters: the decoder discriminates by discriminator, and a
+                // server-side filter would silently drop any account type added to the program
+                // later. The same reasoning as the live stream's owner-only account filter.
+                filters: None,
+                account_config: RpcAccountInfoConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    data_slice: None,
+                    commitment: Some(CommitmentConfig::confirmed()),
+                    min_context_slot: None,
+                },
+                with_context: None,
+                sort_results: None,
+            },
+        )
+        .await
+        .context("getProgramAccounts failed")?;
+
+    let mut accounts = Vec::with_capacity(ui_accounts.len());
+    for (pubkey, ui) in ui_accounts {
+        let account: Account = ui.decode().with_context(|| {
+            format!("getProgramAccounts returned {pubkey} in an undecodable encoding")
+        })?;
+        accounts.push((pubkey, account));
+    }
+    Ok((slot, accounts))
+}

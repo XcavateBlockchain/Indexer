@@ -14,6 +14,7 @@
 
 pub mod accounts;
 pub mod actions;
+pub mod backfill_cursor;
 pub mod instructions;
 pub mod models;
 pub mod sync_state;

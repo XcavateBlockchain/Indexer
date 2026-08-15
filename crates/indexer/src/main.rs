@@ -1,35 +1,35 @@
 //! The indexer binary.
 //!
 //! ```text
-//! indexer run          # live Yellowstone gRPC pipeline (production)
-//! indexer replay       # crawl the program's whole signature history through the same pipes
+//! indexer run          # live gRPC stream + snapshot/backfill on startup + reconciliation
+//! indexer snapshot     # one-shot getProgramAccounts state snapshot
+//! indexer backfill     # resumable history walk down to the floor slot
 //! indexer smoke-grpc   # connectivity/auth/filter check against the Yellowstone endpoint
-//! indexer backfill     # (Task 4)
-//! indexer snapshot     # (Task 4)
 //! ```
+//!
+//! `snapshot` and `backfill` are subcommands precisely so they can be run by hand against a
+//! production `DATABASE_URL` without redeploying; both are idempotent, so re-running one is
+//! always safe.
 //!
 //! Configuration is entirely environmental -- see `indexer::config`. Load the repo `.env` into
 //! the shell first (`set -a; . ./.env; set +a`): the binary deliberately does not read a dotenv
 //! file itself, so the process sees exactly what the operator (or the container runtime)
 //! exported, with no third source of truth to reconcile.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
-use carbon_core::error::CarbonResult;
-use carbon_core::metrics::Metrics;
 use clap::{Parser, Subcommand};
+use indexer::backfill::{self, BackfillOptions};
 use indexer::batcher;
 use indexer::block_time::BlockTimeResolver;
 use indexer::config::{redact_url_password, Config};
 use indexer::db;
 use indexer::metrics::PrometheusMetrics;
 use indexer::pipeline::{self, PipeDeps};
-use indexer::processors::SessionMarker;
 use indexer::sync_frontier::SyncFrontier;
+use indexer::{reconcile, snapshot};
 use solana_pubkey::Pubkey;
 use tokio_util::sync::CancellationToken;
 
@@ -38,6 +38,16 @@ const RECONNECT_BACKOFF_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// A stream session that lasted at least this long counts as healthy, and resets the backoff.
 const HEALTHY_SESSION: Duration = Duration::from_secs(120);
+/// How long the startup subscribe gate waits for its first update. The slot heartbeat arrives
+/// every ~400 ms, so this only has to cover connection setup on a slow link.
+const SUBSCRIBE_GATE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `run` lets the live subscription settle before starting the snapshot.
+///
+/// carbon's datasource subscribes inside a spawned task and exposes no "subscribed" signal, so
+/// there is nothing to await. This is not the correctness mechanism -- the slot guard is (see
+/// `indexer::snapshot`) -- it just makes the overlap between stream and snapshot the norm
+/// rather than a race.
+const STREAM_SETTLE: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(
@@ -51,19 +61,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the live Yellowstone gRPC pipeline.
+    /// Run the live Yellowstone gRPC pipeline, plus the startup snapshot/backfill and the
+    /// reconciliation supervisor.
     Run,
-    /// Replay the program's full on-chain history through the same pipes using the RPC
-    /// transaction crawler. Exits once no new transaction has arrived for `--idle-timeout`.
-    Replay {
-        /// Seconds without a new update before the crawl is considered finished.
-        #[arg(long, default_value_t = 20)]
-        idle_timeout: u64,
-        /// Serve `/metrics` during the replay. Off by default so a replay can run alongside a
-        /// live indexer without fighting over the port.
-        #[arg(long)]
-        metrics: bool,
-    },
     /// Connect to the Yellowstone endpoint, subscribe with the production filters plus a slot
     /// heartbeat, and report the first update.
     SmokeGrpc {
@@ -71,10 +71,30 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },
-    /// Historical backfill (Task 4).
-    Backfill,
-    /// `getProgramAccounts` state snapshot (Task 4).
-    Snapshot,
+    /// Walk the program's transaction history newest -> oldest down to the floor slot, through
+    /// the same pipes as the live stream. Resumable; safe to re-run.
+    Backfill {
+        /// Stop below this slot. Defaults to `sync_state.backfill_floor_slot`.
+        #[arg(long)]
+        floor: Option<u64>,
+        /// `getSignaturesForAddress` page size (also the commit/cursor granularity).
+        #[arg(long, default_value_t = backfill::DEFAULT_PAGE_SIZE)]
+        page_size: usize,
+        /// Seconds a window may go without a delivery before the walk is declared stuck.
+        #[arg(long, default_value_t = backfill::DEFAULT_WINDOW_IDLE_TIMEOUT.as_secs())]
+        window_idle_timeout: u64,
+        /// Serve `/metrics` during the walk. Off by default so a manual backfill can run
+        /// alongside a live indexer without fighting over the port.
+        #[arg(long)]
+        metrics: bool,
+    },
+    /// Take a `getProgramAccounts` snapshot of current account state and write it through the
+    /// slot-guarded upserts.
+    Snapshot {
+        /// Serve `/metrics` during the snapshot (see `backfill --metrics`).
+        #[arg(long)]
+        metrics: bool,
+    },
 }
 
 #[tokio::main]
@@ -90,24 +110,35 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run => run_live().await,
-        Command::Replay {
-            idle_timeout,
-            metrics,
-        } => run_replay(Duration::from_secs(idle_timeout), metrics).await,
         Command::SmokeGrpc { timeout } => run_smoke(Duration::from_secs(timeout)).await,
-        Command::Backfill | Command::Snapshot => {
-            anyhow::bail!("not implemented yet -- wired in Task 4 (phase 4: backfill + snapshot)")
+        Command::Backfill {
+            floor,
+            page_size,
+            window_idle_timeout,
+            metrics,
+        } => {
+            run_backfill(
+                BackfillOptions {
+                    floor,
+                    page_size,
+                    window_idle_timeout: Duration::from_secs(window_idle_timeout),
+                },
+                metrics,
+            )
+            .await
         }
+        Command::Snapshot { metrics } => run_snapshot(metrics).await,
     }
 }
 
-/// Shared startup: migrations, sync-state seeding, and the pieces every pipeline needs.
+/// Shared startup: migrations, sync-state seeding, and the pieces every subcommand needs.
 struct Started {
     cfg: Config,
     pool: sqlx::PgPool,
     frontier: Arc<SyncFrontier>,
     block_time: Arc<BlockTimeResolver>,
     tracked: indexer::processors::TrackedAccounts,
+    state: db::sync_state::SyncState,
 }
 
 async fn start() -> Result<Started> {
@@ -147,20 +178,6 @@ async fn start() -> Result<Started> {
     );
 
     let frontier = Arc::new(SyncFrontier::new(state.backfill_complete));
-    if state.backfill_complete {
-        log::info!(
-            "backfill is marked complete, but a freshly started process is by definition behind \
-             the chain tip: the frontier starts with a gap open, so last_contiguous_slot stays \
-             at {} until a catch-up backfill calls SyncFrontier::gap_closed (Task 4)",
-            state.last_contiguous_slot
-        );
-    } else {
-        log::warn!(
-            "backfill has not completed; last_contiguous_slot will stay at {} until Task 4's \
-             backfill runs and closes the gap",
-            state.last_contiguous_slot
-        );
-    }
 
     // Seed the deletion-tracking set from the database. Without this, a restarted process
     // would be blind to the closure of every PDA it had not yet seen an update for.
@@ -198,6 +215,7 @@ async fn start() -> Result<Started> {
         frontier,
         block_time,
         tracked,
+        state,
     })
 }
 
@@ -207,21 +225,64 @@ async fn run_live() -> Result<()> {
     let api_key = cfg.require_api_key()?.to_string();
 
     indexer::metrics::install(cfg.metrics_addr)?;
+    indexer::metrics::set_last_contiguous_slot(started.state.last_contiguous_slot.max(0) as u64);
+
+    // --- startup subscribe gate --------------------------------------------------------------
+    // carbon's Yellowstone datasource subscribes inside a spawned task and only `log::error!`s a
+    // plan/auth rejection, then retries forever: a bad key would leave this process looking
+    // alive while indexing nothing. So assert the subscription once, up front, with the exact
+    // production filters, and refuse to start if it is rejected.
+    let gate = indexer::grpc_smoke::run(cfg, SUBSCRIBE_GATE_TIMEOUT)
+        .await
+        .context("startup subscribe gate failed -- refusing to start with an unusable stream")?;
+    let connected_slot = gate.slot;
+    log::info!(
+        "subscribe gate passed: {} accepted the production filters (first update: {gate})",
+        cfg.grpc_url
+    );
 
     let shutdown = CancellationToken::new();
     spawn_ctrl_c_watcher(shutdown.clone());
 
-    let (batcher, flusher) = batcher::spawn(
-        started.pool.clone(),
-        started.frontier.clone(),
-        shutdown.clone(),
-    );
+    let (batcher, flusher) = batcher::spawn(started.pool.clone(), shutdown.clone());
+
+    // --- ORDERING (spec §7, non-negotiable) --------------------------------------------------
+    // The live stream starts FIRST and the snapshot/backfill run behind it as background tasks.
+    //
+    // Why: `getProgramAccounts` takes a while, and any account that changes between the
+    // snapshot's read and the stream's subscription is invisible to both -- the snapshot has the
+    // pre-change value, the stream never saw the change. That is a permanent hole exactly as
+    // wide as the snapshot. Subscribing first makes the two overlap instead, and the slot guard
+    // resolves the overlap: anything the stream already wrote at a higher slot survives the
+    // snapshot's upsert untouched. This looks like removable complexity; it is not.
+    let jobs = spawn_startup_jobs(&started, connected_slot, shutdown.clone());
+
+    // The reconciliation supervisor: the only writer of `last_contiguous_slot` (see
+    // `indexer::reconcile` for why the live stream cannot be trusted with it).
+    let supervisor = {
+        let cfg = Config::from_env()?;
+        let pool = started.pool.clone();
+        let frontier = started.frontier.clone();
+        let block_time = started.block_time.clone();
+        let tracked = started.tracked.clone();
+        let shutdown = shutdown.clone();
+        let interval = cfg.reconcile_interval;
+        tokio::spawn(async move {
+            reconcile::supervise(
+                &cfg,
+                &pool,
+                &frontier,
+                &block_time,
+                &tracked,
+                interval,
+                shutdown,
+            )
+            .await
+        })
+    };
 
     let mut backoff = RECONNECT_BACKOFF_MIN;
     while !shutdown.is_cancelled() {
-        // A fresh marker per session: the "stream connected at slot S" line and the frontier's
-        // session arming both have to happen again after a reconnect.
-        let session = SessionMarker::new(started.frontier.clone());
         // Child token so cancelling the process cancels the datasource, but a datasource
         // teardown does not cancel the process.
         let ds_cancel = shutdown.child_token();
@@ -235,7 +296,6 @@ async fn run_live() -> Result<()> {
                 tracked: &started.tracked,
                 metrics: Arc::new(PrometheusMetrics),
             },
-            session,
             ds_cancel.clone(),
         )
         .map_err(|e| anyhow::anyhow!("building the live pipeline failed: {e}"))?;
@@ -256,7 +316,8 @@ async fn run_live() -> Result<()> {
         }
 
         // The stream session ended without us asking it to: whatever happened on chain in the
-        // meantime is a hole, and the frontier must freeze until a catch-up backfill fills it.
+        // meantime may be a hole. The next reconciliation crawl re-covers that range and closes
+        // the gap; until then the frontier is frozen.
         started.frontier.gap_opened();
         indexer::metrics::inc_grpc_reconnect();
 
@@ -284,6 +345,10 @@ async fn run_live() -> Result<()> {
         backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
     }
 
+    shutdown.cancel();
+    supervisor.await.ok();
+    jobs.await.ok();
+
     // Dropping the last Batcher closes the channel, which makes the flusher commit its final
     // partial batch and exit.
     drop(batcher);
@@ -292,73 +357,160 @@ async fn run_live() -> Result<()> {
     Ok(())
 }
 
-async fn run_replay(idle_timeout: Duration, serve_metrics: bool) -> Result<()> {
-    let started = start().await?;
-    let cfg = &started.cfg;
+/// The two one-shot startup jobs, in the order spec §7 requires: snapshot (if the database has
+/// never had one) then history backfill (if it never completed). Both run behind the live
+/// stream and neither blocks it; each owns its own batcher, so a slow backfill cannot stall the
+/// live pipe's writes.
+fn spawn_startup_jobs(
+    started: &Started,
+    connected_slot: Option<u64>,
+    shutdown: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    let need_snapshot = started.state.snapshot_slot.is_none();
+    let need_backfill = !started.state.backfill_complete;
+    let pool = started.pool.clone();
+    let frontier = started.frontier.clone();
+    let block_time = started.block_time.clone();
+    let tracked = started.tracked.clone();
 
+    tokio::spawn(async move {
+        let Ok(cfg) = Config::from_env() else { return };
+
+        if !need_snapshot && !need_backfill {
+            log::info!(
+                "startup jobs: nothing to do (snapshot_slot is set and backfill_complete is true)"
+            );
+            return;
+        }
+
+        // See STREAM_SETTLE: the stream has to be subscribed before the snapshot reads state.
+        tokio::select! {
+            _ = tokio::time::sleep(STREAM_SETTLE) => {}
+            _ = shutdown.cancelled() => return,
+        }
+
+        if need_snapshot {
+            log::info!(
+                "STARTUP JOB 1/2: taking the getProgramAccounts snapshot (stream connected at \
+                 slot {connected_slot:?}; the stream has been writing since before this read, so \
+                 no account change can fall between them)"
+            );
+            match snapshot::run(&cfg, &pool, &tracked, shutdown.clone()).await {
+                Ok(s) => log::info!(
+                    "STARTUP JOB 1/2 done: {} account(s) at slot {}{}",
+                    s.accounts_loaded,
+                    s.slot,
+                    if s.undecodable > 0 {
+                        format!(" ({} undecodable!)", s.undecodable)
+                    } else {
+                        String::new()
+                    }
+                ),
+                Err(e) => log::error!(
+                    "STARTUP JOB 1/2 FAILED: snapshot did not complete ({e:#}); account-state \
+                     tables may be empty until `indexer snapshot` is run by hand"
+                ),
+            }
+        } else {
+            log::info!("STARTUP JOB 1/2 skipped: sync_state.snapshot_slot is already set");
+        }
+
+        if shutdown.is_cancelled() {
+            return;
+        }
+
+        if need_backfill {
+            log::info!("STARTUP JOB 2/2: running the history backfill down to the floor slot");
+            match backfill::run(
+                &cfg,
+                &pool,
+                &frontier,
+                &block_time,
+                &tracked,
+                BackfillOptions::default(),
+                shutdown.clone(),
+            )
+            .await
+            {
+                Ok(s) => log::info!(
+                    "STARTUP JOB 2/2 done: {} signature(s) indexed across {} window(s)",
+                    s.signatures_expected,
+                    s.windows
+                ),
+                Err(e) => log::error!(
+                    "STARTUP JOB 2/2 FAILED: history backfill did not reach the floor ({e:#}); \
+                     backfill_complete stays false and last_contiguous_slot stays frozen. Re-run \
+                     `indexer backfill` -- it resumes from its cursor."
+                ),
+            }
+        } else {
+            log::info!("STARTUP JOB 2/2 skipped: sync_state.backfill_complete is already true");
+        }
+    })
+}
+
+async fn run_backfill(opts: BackfillOptions, serve_metrics: bool) -> Result<()> {
+    let started = start().await?;
     if serve_metrics {
-        if let Err(e) = indexer::metrics::install(cfg.metrics_addr) {
+        if let Err(e) = indexer::metrics::install(started.cfg.metrics_addr) {
             log::warn!("continuing without a metrics listener: {e}");
         }
     }
 
-    let rpc_url = cfg.rpc_url();
-    log::info!(
-        "replaying the full signature history of {} via {} (idle timeout {:?})",
-        cfg.program_id,
-        // Never log the URL itself: the Alchemy JSON-RPC endpoint carries the key in its path.
-        if rpc_url == cfg.rpc_fallback_url {
-            cfg.rpc_fallback_url.as_str()
-        } else {
-            "<primary RPC>"
-        },
-        idle_timeout,
+    let shutdown = CancellationToken::new();
+    spawn_ctrl_c_watcher(shutdown.clone());
+
+    let summary = backfill::run(
+        &started.cfg,
+        &started.pool,
+        &started.frontier,
+        &started.block_time,
+        &started.tracked,
+        opts,
+        shutdown,
+    )
+    .await?;
+
+    println!(
+        "backfill complete: {} signature(s) indexed, {} skipped as failed-on-chain, {} window(s), stop={:?}",
+        summary.signatures_expected, summary.signatures_failed, summary.windows, summary.stop
     );
+    Ok(())
+}
+
+async fn run_snapshot(serve_metrics: bool) -> Result<()> {
+    let started = start().await?;
+    if serve_metrics {
+        if let Err(e) = indexer::metrics::install(started.cfg.metrics_addr) {
+            log::warn!("continuing without a metrics listener: {e}");
+        }
+    }
 
     let shutdown = CancellationToken::new();
     spawn_ctrl_c_watcher(shutdown.clone());
 
-    let (batcher, flusher) = batcher::spawn(
-        started.pool.clone(),
-        started.frontier.clone(),
+    // Standalone: no live stream is running in *this* process, so the ordering guarantee of
+    // spec §7 does not apply here -- the operator is either seeding a database before starting
+    // the indexer (in which case `run` will re-snapshot only if snapshot_slot is unset) or
+    // repairing state next to a running indexer, whose stream is already up.
+    let summary = snapshot::run(
+        &started.cfg,
+        &started.pool,
+        &started.tracked,
         shutdown.clone(),
-    );
-
-    let ds_cancel = shutdown.child_token();
-    let activity = Arc::new(ActivityMetrics::default());
-
-    // The activity-tracking metrics wrapper is how the watchdog tells when the crawler has run
-    // out of history (the crawler polls forever by design; it never signals "done").
-    let mut pipe = pipeline::build_replay(
-        cfg,
-        &rpc_url,
-        PipeDeps {
-            batcher: &batcher,
-            block_time: &started.block_time,
-            tracked: &started.tracked,
-            metrics: activity.clone(),
-        },
-        ds_cancel.clone(),
     )
-    .map_err(|e| anyhow::anyhow!("building the replay pipeline failed: {e}"))?;
+    .await?;
 
-    let watchdog = spawn_idle_watchdog(activity.clone(), ds_cancel.clone(), idle_timeout);
-
-    let outcome = pipe.run().await;
-    drop(pipe);
-    ds_cancel.cancel();
-    watchdog.await.ok();
-
-    drop(batcher);
-    flusher.await.ok();
-
-    match outcome {
-        Ok(()) => log::info!(
-            "replay finished: {} updates received",
-            activity.updates.load(Ordering::Relaxed)
-        ),
-        Err(e) => anyhow::bail!("replay pipeline failed: {e}"),
-    }
+    println!(
+        "snapshot complete: {} account(s) written at slot {}{}",
+        summary.accounts_loaded,
+        summary.slot,
+        if summary.undecodable > 0 {
+            format!(", {} undecodable", summary.undecodable)
+        } else {
+            String::new()
+        }
+    );
     Ok(())
 }
 
@@ -383,94 +535,4 @@ fn spawn_ctrl_c_watcher(token: CancellationToken) {
             token.cancel();
         }
     });
-}
-
-/// Cancels `token` once `activity` has been quiet for `idle_timeout`.
-///
-/// The RPC crawler has no completion signal -- after exhausting history it keeps polling for
-/// new signatures forever -- so "no updates for a while" is the only available end condition
-/// for a one-shot replay.
-fn spawn_idle_watchdog(
-    activity: Arc<ActivityMetrics>,
-    token: CancellationToken,
-    idle_timeout: Duration,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => return,
-                _ = ticker.tick() => {
-                    let idle = activity.idle_for();
-                    if idle >= idle_timeout {
-                        log::info!(
-                            "no updates for {idle:?}; crawl considered complete ({} updates seen)",
-                            activity.updates.load(Ordering::Relaxed)
-                        );
-                        token.cancel();
-                        return;
-                    }
-                }
-            }
-        }
-    })
-}
-
-/// A `Metrics` implementation that forwards to Prometheus and additionally records when the
-/// pipeline last saw an update, for the replay watchdog.
-struct ActivityMetrics {
-    inner: PrometheusMetrics,
-    updates: AtomicU64,
-    /// Milliseconds since `origin`, so the watchdog needs no clock syscall per tick.
-    last_activity_ms: AtomicU64,
-    origin: std::time::Instant,
-}
-
-impl Default for ActivityMetrics {
-    fn default() -> Self {
-        Self {
-            inner: PrometheusMetrics,
-            updates: AtomicU64::new(0),
-            last_activity_ms: AtomicU64::new(0),
-            origin: std::time::Instant::now(),
-        }
-    }
-}
-
-impl ActivityMetrics {
-    fn idle_for(&self) -> Duration {
-        let now = self.origin.elapsed().as_millis() as u64;
-        Duration::from_millis(now.saturating_sub(self.last_activity_ms.load(Ordering::Relaxed)))
-    }
-
-    fn touch(&self) {
-        self.last_activity_ms
-            .store(self.origin.elapsed().as_millis() as u64, Ordering::Relaxed);
-    }
-}
-
-#[async_trait]
-impl Metrics for ActivityMetrics {
-    async fn initialize(&self) -> CarbonResult<()> {
-        self.inner.initialize().await
-    }
-    async fn flush(&self) -> CarbonResult<()> {
-        self.inner.flush().await
-    }
-    async fn shutdown(&self) -> CarbonResult<()> {
-        self.inner.shutdown().await
-    }
-    async fn update_gauge(&self, name: &str, value: f64) -> CarbonResult<()> {
-        self.inner.update_gauge(name, value).await
-    }
-    async fn increment_counter(&self, name: &str, value: u64) -> CarbonResult<()> {
-        if name == "updates_received" {
-            self.updates.fetch_add(value, Ordering::Relaxed);
-            self.touch();
-        }
-        self.inner.increment_counter(name, value).await
-    }
-    async fn record_histogram(&self, name: &str, value: f64) -> CarbonResult<()> {
-        self.inner.record_histogram(name, value).await
-    }
 }

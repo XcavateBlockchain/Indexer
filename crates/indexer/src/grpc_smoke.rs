@@ -37,9 +37,32 @@ use yellowstone_grpc_proto::geyser::{
 use crate::config::Config;
 use crate::pipeline::{account_filters, transaction_filters};
 
-/// Runs the check. Returns the description of the first update received, or an error
-/// containing the server's verbatim rejection.
-pub async fn run(cfg: &Config, timeout: Duration) -> Result<String> {
+/// The first update a subscription delivered.
+#[derive(Debug, Clone)]
+pub struct SmokeResult {
+    /// Human-readable description, printed by `smoke-grpc`.
+    pub description: String,
+    /// Slot the update carried, when it carried one. This is the "slot at which the stream
+    /// connected" that spec §7 requires `run` to record before taking the snapshot: the slot
+    /// heartbeat gives a real value within ~400 ms even though the program itself is idle for
+    /// days at a time.
+    pub slot: Option<u64>,
+}
+
+impl std::fmt::Display for SmokeResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.description)
+    }
+}
+
+/// Runs the check. Returns the first update received, or an error containing the server's
+/// verbatim rejection.
+///
+/// `run` calls this as a **startup subscribe gate** before building the live pipeline: carbon's
+/// Yellowstone datasource performs its subscribe inside a spawned task and only `log::error!`s
+/// a plan/auth rejection, so without this gate a bad API key would leave the process
+/// hot-looping inside the datasource while looking healthy from the outside.
+pub async fn run(cfg: &Config, timeout: Duration) -> Result<SmokeResult> {
     let api_key = cfg.require_api_key()?;
 
     log::info!(
@@ -113,16 +136,32 @@ pub async fn run(cfg: &Config, timeout: Duration) -> Result<String> {
                 // waiting for a real update.
                 Some(UpdateOneof::Ping(_)) | Some(UpdateOneof::Pong(_)) | None => continue,
                 Some(UpdateOneof::Slot(slot)) => {
-                    return Ok(format!(
-                        "Slot {{ slot: {}, status: {} }}",
-                        slot.slot, slot.status
-                    ))
+                    return Ok(SmokeResult {
+                        description: format!(
+                            "Slot {{ slot: {}, status: {} }}",
+                            slot.slot, slot.status
+                        ),
+                        slot: Some(slot.slot),
+                    })
                 }
-                Some(UpdateOneof::Account(a)) => return Ok(format!("Account at slot {}", a.slot)),
+                Some(UpdateOneof::Account(a)) => {
+                    return Ok(SmokeResult {
+                        description: format!("Account at slot {}", a.slot),
+                        slot: Some(a.slot),
+                    })
+                }
                 Some(UpdateOneof::Transaction(t)) => {
-                    return Ok(format!("Transaction at slot {}", t.slot))
+                    return Ok(SmokeResult {
+                        description: format!("Transaction at slot {}", t.slot),
+                        slot: Some(t.slot),
+                    })
                 }
-                Some(other) => return Ok(format!("{other:?}")),
+                Some(other) => {
+                    return Ok(SmokeResult {
+                        description: format!("{other:?}"),
+                        slot: None,
+                    })
+                }
             },
         }
     }

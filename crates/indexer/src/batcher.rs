@@ -10,12 +10,16 @@
 //! (rather than an unbounded queue that grows until the process dies).
 //!
 //! Ordering inside the transaction is fixed (accounts -> instructions -> actions -> closes ->
-//! sync_state) so that a close always lands after the upsert it is closing, even when both
-//! arrive in the same batch. Every individual write is idempotent and slot-guarded by Task 2's
-//! db module, so ordering *between* batches never matters -- this ordering only removes the
-//! within-batch race.
+//! backfill cursor) so that a close always lands after the upsert it is closing, and the
+//! backfill's resume cursor after the rows it vouches for, even when they arrive in the same
+//! batch. Every individual write is idempotent and slot-guarded by Task 2's db module, so
+//! ordering *between* batches never matters -- this ordering only removes the within-batch race.
+//!
+//! Note what this module does NOT write: `sync_state.last_contiguous_slot`. Task 3 advanced it
+//! from here (max slot of a committed batch, gated by the sync frontier); Task 4 moved that to
+//! the reconciliation supervisor, because a committed batch is evidence that *these* rows
+//! landed, never that nothing between them was missed. See [`crate::sync_frontier`].
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
@@ -25,7 +29,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db;
 use crate::db::models::{AdminAccount, ConfigAccount, NewAction, NewInstruction, RoleAccountRow};
-use crate::sync_frontier::SyncFrontier;
 
 /// Flush when this many ops are buffered.
 pub const MAX_BATCH: usize = 100;
@@ -65,11 +68,19 @@ pub enum WriteOp {
         pubkey: Vec<u8>,
         slot: i64,
     },
+    /// The history backfill's resume cursor: "every transaction at or above this signature has
+    /// been committed". Pushed *after* the rows of the page it describes, and sorted last
+    /// within its batch, so it can never be committed ahead of them -- if the process dies in
+    /// between, the cursor is simply one page stale and that page is walked again.
+    SetBackfillCursor {
+        signature: String,
+        slot: i64,
+    },
 }
 
 impl WriteOp {
-    /// The slot this write is evidence for. The flusher takes the max across a batch as the
-    /// candidate `last_contiguous_slot`.
+    /// The slot this write is evidence for. Logged per flush, and used as the
+    /// `backfill_last_processed_slot` gauge value while a history walk is running.
     pub fn slot(&self) -> i64 {
         match self {
             WriteOp::UpsertConfig(r) => r.slot,
@@ -79,7 +90,8 @@ impl WriteOp {
             WriteOp::InsertAction(r) => r.slot,
             WriteOp::CloseAdmin { slot, .. }
             | WriteOp::CloseRoleAccount { slot, .. }
-            | WriteOp::CloseUnknownAccount { slot, .. } => *slot,
+            | WriteOp::CloseUnknownAccount { slot, .. }
+            | WriteOp::SetBackfillCursor { slot, .. } => *slot,
         }
     }
 
@@ -92,6 +104,7 @@ impl WriteOp {
             WriteOp::CloseAdmin { .. }
             | WriteOp::CloseRoleAccount { .. }
             | WriteOp::CloseUnknownAccount { .. } => 3,
+            WriteOp::SetBackfillCursor { .. } => 4,
         }
     }
 }
@@ -125,20 +138,21 @@ impl Batcher {
 /// The returned [`JoinHandle`] completes once every [`Batcher`] clone has been dropped *and*
 /// the final partial batch has been committed -- so a graceful shutdown is: drop the pipeline
 /// (which drops the processors, which drop their `Batcher`s), then await this handle.
-pub fn spawn(
-    pool: PgPool,
-    frontier: Arc<SyncFrontier>,
-    cancellation: CancellationToken,
-) -> (Batcher, JoinHandle<()>) {
+///
+/// That property is also used as a **commit barrier** by the one-shot jobs (snapshot, history
+/// backfill, one reconciliation cycle): each creates its own batcher, does its work, drops the
+/// handle and awaits the flusher. When that await returns, everything the job produced is
+/// committed -- which is what makes it safe to then write `snapshot_slot`,
+/// `backfill_complete` or `last_contiguous_slot`.
+pub fn spawn(pool: PgPool, cancellation: CancellationToken) -> (Batcher, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-    let handle = tokio::spawn(flusher_loop(pool, rx, frontier, cancellation));
+    let handle = tokio::spawn(flusher_loop(pool, rx, cancellation));
     (Batcher { tx }, handle)
 }
 
 async fn flusher_loop(
     pool: PgPool,
     mut rx: mpsc::Receiver<WriteOp>,
-    frontier: Arc<SyncFrontier>,
     cancellation: CancellationToken,
 ) {
     let mut buf: Vec<WriteOp> = Vec::with_capacity(MAX_BATCH);
@@ -164,20 +178,20 @@ async fn flusher_loop(
                     }
                     buf.push(op);
                     if buf.len() >= MAX_BATCH {
-                        flush(&pool, &mut buf, &frontier, &cancellation).await;
+                        flush(&pool, &mut buf, &cancellation).await;
                         deadline = None;
                     }
                 }
                 None => {
                     // All senders dropped: commit whatever is left and finish.
-                    flush(&pool, &mut buf, &frontier, &cancellation).await;
+                    flush(&pool, &mut buf, &cancellation).await;
                     log::info!("batch flusher stopped (all writers dropped)");
                     return;
                 }
             },
 
             _ = timer => {
-                flush(&pool, &mut buf, &frontier, &cancellation).await;
+                flush(&pool, &mut buf, &cancellation).await;
                 deadline = None;
             }
         }
@@ -186,12 +200,7 @@ async fn flusher_loop(
 
 /// Commits `buf` in one transaction, retrying with exponential backoff until it succeeds or
 /// the process is cancelled. `buf` is left empty on success.
-async fn flush(
-    pool: &PgPool,
-    buf: &mut Vec<WriteOp>,
-    frontier: &SyncFrontier,
-    cancellation: &CancellationToken,
-) {
+async fn flush(pool: &PgPool, buf: &mut Vec<WriteOp>, cancellation: &CancellationToken) {
     if buf.is_empty() {
         return;
     }
@@ -201,27 +210,18 @@ async fn flush(
     buf.sort_by_key(WriteOp::phase);
 
     let max_slot = buf.iter().map(WriteOp::slot).max().unwrap_or(0);
-    let advance_to = if max_slot >= 0 && frontier.may_advance(max_slot as u64) {
-        Some(max_slot)
-    } else {
-        None
-    };
 
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = Instant::now();
-        match commit_batch(pool, buf, advance_to).await {
+        match commit_batch(pool, buf).await {
             Ok(()) => {
                 let elapsed = started.elapsed();
                 crate::metrics::record_flush(elapsed, buf.len());
                 log::debug!(
-                    "flushed {} write ops in {:?} (max slot {max_slot}{})",
+                    "flushed {} write ops in {:?} (max slot {max_slot})",
                     buf.len(),
                     elapsed,
-                    match advance_to {
-                        Some(s) => format!(", advanced last_contiguous_slot to {s}"),
-                        None => String::new(),
-                    }
                 );
                 buf.clear();
                 return;
@@ -238,8 +238,9 @@ async fn flush(
                         log::error!(
                             "cancelled while retrying a failed flush; DROPPING {} un-committed \
                              write ops (slots up to {max_slot}). They will be re-derived on the \
-                             next run: every write here is idempotent and the sync frontier was \
-                             not advanced.",
+                             next run: every write here is idempotent, the backfill cursor only \
+                             ever advances behind committed rows, and last_contiguous_slot only \
+                             ever advances after a completed reconciliation crawl.",
                             buf.len()
                         );
                         buf.clear();
@@ -252,17 +253,13 @@ async fn flush(
     }
 }
 
-/// One transaction. `advance_to` is applied last, inside the same transaction, so the sync
-/// frontier can never be visible ahead of the rows it claims are contiguous -- if the commit
-/// fails, the advance rolls back with it.
+/// One transaction, in phase order (see the module docs): the backfill cursor is the last
+/// statement, so it can never become visible ahead of the rows it vouches for -- if the commit
+/// fails, it rolls back with them.
 ///
 /// `ops` is borrowed (and each row cloned into the query) rather than consumed, because the
 /// caller has to be able to retry the identical batch after a failed commit.
-async fn commit_batch(
-    pool: &PgPool,
-    ops: &[WriteOp],
-    advance_to: Option<i64>,
-) -> Result<(), sqlx::Error> {
+async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
 
     for op in ops {
@@ -293,11 +290,10 @@ async fn commit_batch(
                 db::accounts::close_admin(&mut *tx, pubkey, *slot).await?;
                 db::accounts::close_role_account(&mut *tx, pubkey, *slot).await?;
             }
+            WriteOp::SetBackfillCursor { signature, slot } => {
+                db::backfill_cursor::set_cursor(&mut *tx, signature, *slot).await?;
+            }
         }
-    }
-
-    if let Some(slot) = advance_to {
-        db::sync_state::advance_last_contiguous_slot(&mut *tx, slot).await?;
     }
 
     tx.commit().await
@@ -327,6 +323,13 @@ mod tests {
     #[test]
     fn ops_sort_into_the_documented_phase_order() {
         let mut ops = [
+            // Deliberately the reverse of the documented order: the backfill cursor (which
+            // claims "everything above this is committed") is pushed first here, and must still
+            // end up committed last.
+            WriteOp::SetBackfillCursor {
+                signature: "sig".into(),
+                slot: 1,
+            },
             WriteOp::CloseAdmin {
                 pubkey: vec![1],
                 slot: 1,
@@ -352,11 +355,11 @@ mod tests {
         ];
         ops.sort_by_key(WriteOp::phase);
         let phases: Vec<u8> = ops.iter().map(WriteOp::phase).collect();
-        assert_eq!(phases, vec![0, 1, 2, 3]);
+        assert_eq!(phases, vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
-    fn batch_max_slot_is_the_frontier_candidate() {
+    fn a_batch_reports_its_highest_slot() {
         let ops = [action(10), action(30), action(20)];
         assert_eq!(ops.iter().map(WriteOp::slot).max(), Some(30));
     }

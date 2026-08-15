@@ -1,38 +1,48 @@
 //! The in-memory half of the sync-state contiguity contract (spec §5.3).
 //!
-//! `sync_state.last_contiguous_slot` means "there are no gaps below this slot". A live stream
-//! alone cannot honour that: the moment the gRPC connection drops, whatever happened on chain
-//! during the outage is missing, so every slot the *new* session commits is above a hole.
-//! Advancing the frontier anyway would tell Task 4's catch-up backfill there is nothing to
-//! catch up on, and the hole would be permanent and invisible.
+//! `sync_state.last_contiguous_slot` means "there are no gaps below this slot". Who is allowed
+//! to advance it is the whole question, and the answer changed between Task 3 and Task 4.
 //!
-//! So the rule is: only advance while the frontier is *earned*, meaning
+//! ## Why the live stream does not advance it (controller ruling, Task 4)
 //!
-//! 1. the historical backfill has completed (`backfill_complete`), and
-//! 2. no gap is currently open -- the stream session has been unbroken since either process
-//!    start (with the backfill finishing after the stream connected) or since the last time a
-//!    catch-up backfill closed the previous gap.
+//! Task 3 advanced the frontier from the live gRPC batches while a stream "session" was
+//! unbroken. Two findings killed that:
 //!
-//! This struct owns that decision and nothing else; it does not touch the database. The
-//! flusher asks [`SyncFrontier::may_advance`] after each successful commit, the reconnect loop
-//! calls [`SyncFrontier::gap_opened`]/[`SyncFrontier::session_started`], and Task 4's catch-up
-//! backfill will call [`SyncFrontier::gap_closed`] once it has filled the hole.
+//! 1. carbon's Yellowstone datasource **re-subscribes internally** on a stream error (and even
+//!    swallows auth/plan rejections in a retry loop), so the process cannot reliably observe
+//!    that a session ended. "No gap was recorded" is therefore not evidence that no gap exists.
+//! 2. This program is **idle for days at a time**, so update-driven session tracking never even
+//!    arms: with no updates there is no first-update slot, and the frontier would sit frozen
+//!    while the stream is perfectly healthy.
+//!
+//! So contiguity is now **crawler-driven**: the reconciliation supervisor
+//! ([`crate::reconcile`]) periodically re-walks `getSignaturesForAddress` from the chain tip
+//! down to the current `last_contiguous_slot`, re-writes everything it finds (all writes are
+//! idempotent), and only then advances the frontier to the tip slot it recorded *before* that
+//! walk. The live stream's job is FRESHNESS; the crawler's job is COMPLETENESS.
+//!
+//! ## What is left in this struct
+//!
+//! Two gates, both of which have to be open before the reconciler may advance:
+//!
+//! * `backfill_complete` -- mirrors `sync_state.backfill_complete`. Until the historical
+//!   backfill has walked down to `backfill_floor_slot`, everything below the first indexed slot
+//!   is missing, and "no gaps below T" would be a lie regardless of how good the recent crawl
+//!   was.
+//! * `gap_open` -- set at process start (the downtime before we started *is* a gap) and by the
+//!   reconnect loop, cleared by whatever proves contiguity again: the backfill finishing, or a
+//!   reconciliation crawl completing. It is belt-and-braces next to the reconciler's re-walk,
+//!   which would fill such a hole anyway; keeping it means a freshly started process cannot
+//!   advance the frontier before its first successful crawl.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug)]
 pub struct SyncFrontier {
     /// Mirrors `sync_state.backfill_complete`. Seeded from the DB at startup.
     backfill_complete: AtomicBool,
-    /// True whenever there is a known hole below the current session's start slot.
+    /// True whenever there is a known-or-possible hole that no crawl has closed yet.
     gap_open: AtomicBool,
-    /// True between `session_started` and `gap_opened`. A frontier can only be advanced by a
-    /// live session; a batch committed with no session attached (e.g. the `replay`
-    /// subcommand's crawler) must not move it.
-    session_active: AtomicBool,
-    /// Slot the current session first saw. Informational -- logged, and useful to Task 4 as
-    /// the upper bound of the gap it has to fill.
-    session_start_slot: AtomicU64,
 }
 
 impl SyncFrontier {
@@ -40,45 +50,29 @@ impl SyncFrontier {
     pub fn new(backfill_complete: bool) -> Self {
         Self {
             backfill_complete: AtomicBool::new(backfill_complete),
-            // A fresh process has not yet proven contiguity for anything the stream is about
-            // to deliver, so it starts with a gap open. `session_started` clears it only when
-            // the backfill has already completed; otherwise the running backfill will clear
-            // it via `gap_closed` when it finishes.
+            // A fresh process has proven nothing about the period it was not running.
             gap_open: AtomicBool::new(true),
-            session_active: AtomicBool::new(false),
-            session_start_slot: AtomicU64::new(0),
         }
     }
 
-    /// A stream session has connected and delivered its first update at `slot`.
-    ///
-    /// If the backfill is already complete this is the reconnect case: the hole between the
-    /// last committed slot and `slot` stays open until Task 4's catch-up closes it. If the
-    /// backfill has not completed yet, the backfill is (by construction) still going to run
-    /// past this point, so it will close the gap itself.
-    pub fn session_started(&self, slot: u64) {
-        self.session_start_slot.store(slot, Ordering::Relaxed);
-        self.session_active.store(true, Ordering::Relaxed);
-        log::info!("stream connected at slot {slot}");
-    }
-
-    /// The stream session ended (error, disconnect, shutdown). Everything after this point is
-    /// potentially discontiguous until a catch-up backfill says otherwise.
+    /// The live stream session ended (error, disconnect). Whatever happened on chain during the
+    /// outage may be missing until a crawl re-covers that range.
     pub fn gap_opened(&self) {
-        self.session_active.store(false, Ordering::Relaxed);
-        self.gap_open.store(true, Ordering::Relaxed);
-        log::warn!(
-            "sync gap opened (stream session ended at/after slot {}); \
-             last_contiguous_slot is frozen until a catch-up backfill closes it",
-            self.session_start_slot.load(Ordering::Relaxed)
-        );
+        if !self.gap_open.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "sync gap opened (gRPC stream session ended); last_contiguous_slot is frozen \
+                 until the reconciliation crawl re-covers the range"
+            );
+        }
     }
 
-    /// A catch-up backfill has filled everything below the current session's start slot.
-    /// Wired by Task 4; called here only at startup when the backfill completes.
+    /// A crawl has covered everything from `last_contiguous_slot` up to the slot it is about to
+    /// advance to. Called by the history backfill on completion and by every successful
+    /// reconciliation cycle.
     pub fn gap_closed(&self) {
-        self.gap_open.store(false, Ordering::Relaxed);
-        log::info!("sync gap closed; last_contiguous_slot may advance again");
+        if self.gap_open.swap(false, Ordering::Relaxed) {
+            log::info!("sync gap closed; last_contiguous_slot may advance again");
+        }
     }
 
     /// Mirrors a write to `sync_state.backfill_complete`.
@@ -90,20 +84,17 @@ impl SyncFrontier {
         self.backfill_complete.load(Ordering::Relaxed)
     }
 
-    pub fn session_start_slot(&self) -> u64 {
-        self.session_start_slot.load(Ordering::Relaxed)
+    pub fn gap_open(&self) -> bool {
+        self.gap_open.load(Ordering::Relaxed)
     }
 
-    /// May a batch that committed up to `max_slot` advance `last_contiguous_slot`?
+    /// May `sync_state.last_contiguous_slot` be advanced right now?
     ///
-    /// `max_slot` is accepted (rather than this being a bare predicate) so callers read as
-    /// "may I advance *to this*"; the value itself is only used for the guard against slots
-    /// below the session start, which cannot be contiguous evidence for this session.
-    pub fn may_advance(&self, max_slot: u64) -> bool {
-        self.backfill_complete.load(Ordering::Relaxed)
-            && self.session_active.load(Ordering::Relaxed)
-            && !self.gap_open.load(Ordering::Relaxed)
-            && max_slot >= self.session_start_slot.load(Ordering::Relaxed)
+    /// Deliberately takes no slot: the only caller is the reconciler, which has just proven
+    /// contiguity up to a tip slot it recorded itself. Any other caller (a live batch, a
+    /// standalone backfill) must not advance the frontier at all.
+    pub fn may_advance(&self) -> bool {
+        self.backfill_complete() && !self.gap_open()
     }
 }
 
@@ -112,50 +103,36 @@ mod tests {
     use super::SyncFrontier;
 
     #[test]
-    fn fresh_process_does_not_advance_until_backfill_completes() {
+    fn a_fresh_process_cannot_advance_until_a_crawl_has_run() {
+        let f = SyncFrontier::new(true);
+        // Gap open from process start: the downtime before startup is itself a hole.
+        assert!(!f.may_advance());
+        f.gap_closed();
+        assert!(f.may_advance());
+    }
+
+    #[test]
+    fn an_incomplete_backfill_blocks_the_advance_even_after_a_clean_crawl() {
         let f = SyncFrontier::new(false);
-        f.session_started(100);
-        // Backfill still running -> no advance, even with a live session.
-        assert!(!f.may_advance(101));
+        f.gap_closed();
+        assert!(!f.may_advance());
 
+        // The backfill reaching the floor is what unblocks it.
         f.set_backfill_complete(true);
-        f.gap_closed();
-        assert!(f.may_advance(101));
+        assert!(f.may_advance());
     }
 
     #[test]
-    fn reconnect_freezes_the_frontier_until_gap_closed() {
+    fn a_stream_drop_freezes_the_frontier_until_the_next_crawl() {
         let f = SyncFrontier::new(true);
-        f.session_started(100);
         f.gap_closed();
-        assert!(f.may_advance(150));
+        assert!(f.may_advance());
 
-        // Stream dies: everything the next session sees sits above a hole.
         f.gap_opened();
-        assert!(!f.may_advance(150));
-        f.session_started(400);
-        assert!(!f.may_advance(401));
+        assert!(!f.may_advance());
 
-        // Task 4's catch-up fills the hole.
+        // The reconciliation crawl re-covers the outage window and reopens the door.
         f.gap_closed();
-        assert!(f.may_advance(401));
-    }
-
-    #[test]
-    fn slots_below_the_session_start_are_not_contiguity_evidence() {
-        let f = SyncFrontier::new(true);
-        f.session_started(1_000);
-        f.gap_closed();
-        assert!(!f.may_advance(999));
-        assert!(f.may_advance(1_000));
-    }
-
-    #[test]
-    fn a_batch_with_no_live_session_never_advances() {
-        // The `replay` subcommand's crawler commits batches without ever calling
-        // `session_started`; those must not move the frontier.
-        let f = SyncFrontier::new(true);
-        f.gap_closed();
-        assert!(!f.may_advance(123_456));
+        assert!(f.may_advance());
     }
 }

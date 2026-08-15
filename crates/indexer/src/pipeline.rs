@@ -2,14 +2,16 @@
 //!
 //! Two datasources are built here from the same processors:
 //!
-//! * [`build_live`] -- the Yellowstone gRPC stream (Alchemy devnet), the production path.
-//! * [`build_replay`] -- the RPC transaction crawler over the program's whole signature
-//!   history, used by the `replay` subcommand to verify the pipeline against real chain data
-//!   (exit check, ruling R3: this program has no signing keys available, so a synthetic
-//!   end-to-end test is impossible and real history is the substitute).
+//! * [`build_live`] -- the Yellowstone gRPC stream (Alchemy devnet). Its job is **freshness**:
+//!   sub-second visibility of new activity.
+//! * [`build_crawl`] -- one bounded window of the RPC transaction crawler
+//!   (`getSignaturesForAddress`, newest -> oldest, between two signatures). Its job is
+//!   **completeness**: it is what the history backfill and the periodic reconciliation
+//!   supervisor are built from, and it is the only thing allowed to move
+//!   `sync_state.last_contiguous_slot` (see [`crate::sync_frontier`] for why the stream is not).
 //!
 //! Both feed *the same* processors and therefore the same batcher and the same tables. That is
-//! the point: the replay is evidence about the live path, not about a parallel code path.
+//! the point: a crawl is evidence about the live path, not about a parallel code path.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -36,9 +38,9 @@ use yellowstone_grpc_proto::geyser::{
 use crate::batcher::Batcher;
 use crate::block_time::BlockTimeResolver;
 use crate::config::Config;
+use crate::crawl::{CrawlWindow, ObservationSender, Observed};
 use crate::processors::{
-    AccountDeletionProcessor, AccountProcessor, InstructionProcessor, SessionMarker,
-    TrackedAccounts,
+    AccountDeletionProcessor, AccountProcessor, InstructionProcessor, TrackedAccounts,
 };
 
 /// Filter-map keys. Yellowstone echoes these back on each update; they are arbitrary but show
@@ -101,25 +103,18 @@ pub struct PipeDeps<'a> {
 }
 
 /// Shared builder: the pipes are identical for both datasources, only the source differs.
-fn common_pipes(
-    deps: PipeDeps<'_>,
-    session: Option<Arc<SessionMarker>>,
-) -> carbon_core::pipeline::PipelineBuilder {
+fn common_pipes(deps: PipeDeps<'_>) -> carbon_core::pipeline::PipelineBuilder {
     Pipeline::builder()
         .metrics(deps.metrics)
         .metrics_flush_interval(5)
         .shutdown_strategy(ShutdownStrategy::ProcessPending)
         .instruction(
             XcavateWhitelistDecoder,
-            InstructionProcessor::new(
-                deps.batcher.clone(),
-                deps.block_time.clone(),
-                session.clone(),
-            ),
+            InstructionProcessor::new(deps.batcher.clone(), deps.block_time.clone()),
         )
         .account(
             XcavateWhitelistDecoder,
-            AccountProcessor::new(deps.batcher.clone(), deps.tracked.clone(), session),
+            AccountProcessor::new(deps.batcher.clone(), deps.tracked.clone()),
         )
         .account_deletions(AccountDeletionProcessor::new(deps.batcher.clone()))
 }
@@ -131,7 +126,6 @@ pub fn build_live(
     cfg: &Config,
     api_key: &str,
     deps: PipeDeps<'_>,
-    session: Arc<SessionMarker>,
     cancellation: CancellationToken,
 ) -> CarbonResult<Pipeline> {
     let datasource = YellowstoneGrpcGeyserClient::new(
@@ -150,35 +144,41 @@ pub fn build_live(
         YellowstoneGrpcClientConfig::default(),
     );
 
-    common_pipes(deps, Some(session))
+    common_pipes(deps)
         .datasource(datasource)
         .datasource_cancellation_token(cancellation)
         .build()
 }
 
-/// The historical replay pipeline: crawl every signature that ever touched the program and
-/// push each transaction through the same pipes.
+/// One bounded window of the RPC transaction crawler: every signature that touched the program
+/// between `window.before` (exclusive, newer end) and `window.until` (exclusive, older end),
+/// newest -> oldest, pushed through the same pipes as the live stream.
 ///
-/// Note the crawler is transaction-only (`update_types()` is `[Transaction]`), so the account
-/// and deletion pipes simply never fire on this path; account state during a replay comes from
-/// nothing at all, which is why the replay's job is verifying `program_instructions` /
-/// `whitelist_actions` and the gRPC smoke check covers account streaming.
-pub fn build_replay(
+/// `observer` receives every transaction update *before* it reaches the pipeline, which is how
+/// the caller knows when the window has been delivered in full (see [`crate::crawl`]).
+///
+/// The crawler is transaction-only (`update_types()` is `[Transaction]`), so the account and
+/// deletion pipes never fire on this path; account state comes from the live stream and from
+/// the `getProgramAccounts` snapshot instead.
+pub fn build_crawl(
     cfg: &Config,
     rpc_url: &str,
     deps: PipeDeps<'_>,
+    window: CrawlWindow,
+    observer: ObservationSender,
     cancellation: CancellationToken,
 ) -> CarbonResult<Pipeline> {
-    let datasource = RpcTransactionCrawler::new(
+    let crawler = RpcTransactionCrawler::new(
         rpc_url.to_string(),
         cfg.program_id,
         ConnectionConfig::new(
-            // `getSignaturesForAddress` page size; 100 is the crawler's own default and well
-            // inside every provider's limit.
-            100,
-            // How long to wait after exhausting history before polling for new signatures.
-            // Short, because the replay's idle-timeout watchdog uses these empty polls as its
-            // "history is done" signal.
+            // `getSignaturesForAddress` page size, matched to the caller's own page size so the
+            // crawler enumerates exactly the window the caller planned.
+            window.page_size,
+            // How long the crawler waits after exhausting the window before polling again. We
+            // cancel long before that matters -- a window is finished the moment its last
+            // expected signature has been delivered -- so this only bounds how long a
+            // fully-delivered window's crawler tasks idle before teardown.
             Duration::from_secs(2),
             // Concurrent `getTransaction` calls. Kept low: Alchemy's free tier throttles
             // aggressively (see MIGRATION_LOG.md) and the whole history is only a few hundred
@@ -188,17 +188,23 @@ pub fn build_replay(
             None,
             None,
             // MUST be true. With `blocking_send` false the crawler uses `try_send` and drops
-            // updates whenever the pipeline's channel is momentarily full -- silently losing
-            // history, which is precisely what this replay is meant to prove does not happen.
+            // updates whenever the pipeline channel is momentarily full -- silently losing
+            // history, which is precisely what a completeness crawl exists to prevent.
             true,
         ),
-        Filters::new(None, None, None),
+        Filters::new(None, window.before, window.until),
         Some(CommitmentConfig::confirmed()),
     );
 
-    common_pipes(deps, None)
-        .datasource(datasource)
-        .datasource_cancellation_token(cancellation)
+    common_pipes(deps)
+        .datasource(Observed::new(crawler, observer, cancellation))
+        // Deliberately NOT `.datasource_cancellation_token(...)`: carbon's `run()` loop breaks
+        // *immediately* when that token fires (ShutdownStrategy::ProcessPending only covers its
+        // own SIGINT branch), which would drop updates still queued in the pipeline channel.
+        // `Observed` owns the cancellation instead: cancelling it stops the crawler, which
+        // closes the channel, which makes `run()` drain everything pending and only then
+        // return. That is what lets the caller read "run() returned" as "every delivered
+        // transaction has been mapped and pushed to the batcher".
         .build()
 }
 

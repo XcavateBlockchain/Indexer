@@ -41,7 +41,6 @@ use crate::batcher::{self, Batcher};
 use crate::block_time::BlockTimeResolver;
 use crate::pipeline;
 use crate::processors::{AccountDeletionProcessor, AccountProcessor, InstructionProcessor};
-use crate::sync_frontier::SyncFrontier;
 use crate::test_fixtures::{decoded, instruction_metadata, sig_from, tx_metadata};
 
 // --- real devnet fixtures --------------------------------------------------------------------
@@ -127,8 +126,7 @@ where
     F: FnOnce(Batcher) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let frontier = Arc::new(SyncFrontier::new(false));
-    let (batcher, flusher) = batcher::spawn(pool.clone(), frontier, CancellationToken::new());
+    let (batcher, flusher) = batcher::spawn(pool.clone(), CancellationToken::new());
     body(batcher).await;
     flusher.await.expect("flusher must not panic");
 }
@@ -159,7 +157,7 @@ async fn apply_account_tracked(
     };
 
     with_batcher(pool, |batcher| async move {
-        let mut processor = AccountProcessor::new(batcher, tracked.clone(), None);
+        let mut processor = AccountProcessor::new(batcher, tracked.clone());
         processor
             .process((meta, decoded, raw), metrics())
             .await
@@ -314,7 +312,7 @@ async fn apply_assign_role(pool: &PgPool, signature_byte: u8) {
     );
 
     with_batcher(pool, |batcher| async move {
-        let mut processor = InstructionProcessor::new(batcher, offline_block_time(), None);
+        let mut processor = InstructionProcessor::new(batcher, offline_block_time());
         processor
             .process((meta, decoded_ix, Default::default(), raw), metrics())
             .await
@@ -406,7 +404,7 @@ async fn remove_role_soft_closes_the_role_account_state_row(pool: PgPool) {
     };
 
     with_batcher(&pool, |batcher| async move {
-        let mut processor = InstructionProcessor::new(batcher, offline_block_time(), None);
+        let mut processor = InstructionProcessor::new(batcher, offline_block_time());
         processor
             .process((meta, decoded_ix, Default::default(), raw), metrics())
             .await
@@ -453,7 +451,7 @@ async fn a_close_and_the_upsert_it_closes_may_arrive_in_one_batch(pool: PgPool) 
             .await
             .expect("deletion processing must succeed");
 
-        let mut accounts = AccountProcessor::new(batcher, pipeline::new_tracked_accounts(), None);
+        let mut accounts = AccountProcessor::new(batcher, pipeline::new_tracked_accounts());
         accounts
             .process((meta, decoded_acct, raw), metrics())
             .await

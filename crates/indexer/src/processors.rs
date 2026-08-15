@@ -11,7 +11,6 @@
 //! blocking briefly or writing a guessed timestamp. We block.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -30,37 +29,6 @@ use crate::batcher::{Batcher, WriteOp};
 use crate::block_time::BlockTimeResolver;
 use crate::db::models::{AdminAccount, ConfigAccount, RoleAccountRow};
 use crate::mapping::{self, PendingClose};
-use crate::sync_frontier::SyncFrontier;
-
-/// Records "stream connected at slot S" exactly once per pipeline session.
-///
-/// Both the instruction and the account processor call [`SessionMarker::mark`] on every
-/// update; the first one through wins. A new marker is created per pipeline build, so a
-/// reconnect logs (and re-arms the frontier's session state) again.
-#[derive(Debug)]
-pub struct SessionMarker {
-    frontier: Arc<SyncFrontier>,
-    marked: AtomicBool,
-}
-
-impl SessionMarker {
-    pub fn new(frontier: Arc<SyncFrontier>) -> Arc<Self> {
-        Arc::new(Self {
-            frontier,
-            marked: AtomicBool::new(false),
-        })
-    }
-
-    fn mark(&self, slot: u64) {
-        if self
-            .marked
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.frontier.session_started(slot);
-        }
-    }
-}
 
 /// The set of PDAs the Yellowstone datasource should watch for deletion.
 ///
@@ -74,21 +42,13 @@ pub type TrackedAccounts = Arc<RwLock<HashSet<Pubkey>>>;
 pub struct InstructionProcessor {
     batcher: Batcher,
     block_time: Arc<BlockTimeResolver>,
-    session: Option<Arc<SessionMarker>>,
 }
 
 impl InstructionProcessor {
-    /// `session` is `None` for the historical `replay` path: a crawler walking old signatures
-    /// is not a live stream session and must not arm the sync frontier.
-    pub fn new(
-        batcher: Batcher,
-        block_time: Arc<BlockTimeResolver>,
-        session: Option<Arc<SessionMarker>>,
-    ) -> Self {
+    pub fn new(batcher: Batcher, block_time: Arc<BlockTimeResolver>) -> Self {
         Self {
             batcher,
             block_time,
-            session,
         }
     }
 }
@@ -103,10 +63,6 @@ impl Processor for InstructionProcessor {
         _metrics: Arc<MetricsCollection>,
     ) -> CarbonResult<()> {
         let tx = metadata.transaction_metadata.clone();
-        if let Some(session) = &self.session {
-            session.mark(tx.slot);
-        }
-
         let block_time = self
             .block_time
             .resolve(tx.slot, tx.block_time)
@@ -163,20 +119,11 @@ impl Processor for InstructionProcessor {
 pub struct AccountProcessor {
     batcher: Batcher,
     tracked: TrackedAccounts,
-    session: Option<Arc<SessionMarker>>,
 }
 
 impl AccountProcessor {
-    pub fn new(
-        batcher: Batcher,
-        tracked: TrackedAccounts,
-        session: Option<Arc<SessionMarker>>,
-    ) -> Self {
-        Self {
-            batcher,
-            tracked,
-            session,
-        }
+    pub fn new(batcher: Batcher, tracked: TrackedAccounts) -> Self {
+        Self { batcher, tracked }
     }
 }
 
@@ -189,10 +136,6 @@ impl Processor for AccountProcessor {
         (meta, decoded, raw): Self::InputType,
         _metrics: Arc<MetricsCollection>,
     ) -> CarbonResult<()> {
-        if let Some(session) = &self.session {
-            session.mark(meta.slot);
-        }
-
         // Every PDA we see becomes deletion-tracked, so a later close reaches the deletion
         // pipe instead of being dropped by the datasource.
         self.tracked.write().await.insert(meta.pubkey);
@@ -209,11 +152,15 @@ impl Processor for AccountProcessor {
 /// Decoded account -> state-table upsert. `lamports` comes from the raw account (the decoded
 /// wrapper carries it too, but the raw account is the authoritative copy carbon received).
 ///
+/// Shared with the `getProgramAccounts` snapshot loader ([`crate::snapshot`]), which decodes
+/// with the same decoder and then calls this: the snapshot must produce byte-identical rows to
+/// the live account stream, and the only way to guarantee that is to run the same mapping.
+///
 /// `closed_at_slot` is not a field here on purpose: Task 2's upserts hardcode `NULL` for it in
 /// the `VALUES` list and include it in the `DO UPDATE SET` column list, so any live update at a
 /// newer slot revives a soft-closed row. That is the correct behaviour for a PDA that is
 /// closed and later re-created at the same address.
-fn account_write_op(
+pub(crate) fn account_write_op(
     pubkey: Pubkey,
     slot: i64,
     lamports: i64,

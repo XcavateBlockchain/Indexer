@@ -8,6 +8,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use solana_pubkey::Pubkey;
@@ -31,6 +32,11 @@ pub const DEFAULT_BACKFILL_START_SLOT: u64 = 483_386_556;
 /// another container in the compose stack.
 pub const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9464";
 
+/// How often the reconciliation supervisor re-walks the tip (see [`crate::reconcile`]).
+/// 5 minutes: ~576 RPC requests/day, a rounding error against the free tier's budget, while
+/// bounding how long an undetected stream outage can leave `last_contiguous_slot` stale.
+pub const DEFAULT_RECONCILE_INTERVAL_SECS: u64 = 300;
+
 pub struct Config {
     /// `DATABASE_URL`. Required by every subcommand that writes rows; `smoke-grpc` never
     /// touches Postgres, so it is validated at use (see [`Config::require_database_url`])
@@ -50,6 +56,8 @@ pub struct Config {
     pub backfill_start_slot: u64,
     /// `METRICS_ADDR`, default [`DEFAULT_METRICS_ADDR`].
     pub metrics_addr: SocketAddr,
+    /// `RECONCILE_INTERVAL` (seconds), default [`DEFAULT_RECONCILE_INTERVAL_SECS`].
+    pub reconcile_interval: Duration,
 }
 
 impl Config {
@@ -79,6 +87,20 @@ impl Config {
             format!("METRICS_ADDR is not a host:port address: {metrics_addr_str}")
         })?;
 
+        let reconcile_interval_secs = match std::env::var("RECONCILE_INTERVAL") {
+            Ok(s) => s
+                .parse::<u64>()
+                .with_context(|| format!("RECONCILE_INTERVAL is not a u64 (seconds): {s}"))
+                .and_then(|v| {
+                    if v == 0 {
+                        Err(anyhow!("RECONCILE_INTERVAL must be greater than 0 seconds"))
+                    } else {
+                        Ok(v)
+                    }
+                })?,
+            Err(_) => DEFAULT_RECONCILE_INTERVAL_SECS,
+        };
+
         Ok(Self {
             database_url,
             alchemy_api_key,
@@ -92,6 +114,7 @@ impl Config {
             program_id,
             backfill_start_slot,
             metrics_addr,
+            reconcile_interval: Duration::from_secs(reconcile_interval_secs),
         })
     }
 
@@ -142,6 +165,7 @@ impl fmt::Debug for Config {
             .field("program_id", &self.program_id)
             .field("backfill_start_slot", &self.backfill_start_slot)
             .field("metrics_addr", &self.metrics_addr)
+            .field("reconcile_interval", &self.reconcile_interval)
             .finish()
     }
 }
