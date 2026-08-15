@@ -8,3 +8,6 @@ project.yaml
 # Local postgres volume created by docker-compose
 .data/
 *.tgz
+
+# Rust workspace build output
+target/
