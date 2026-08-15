@@ -285,6 +285,10 @@ pub struct CrawlRequest<'a> {
     /// Persist a `backfill_cursor` row after every committed page (the history backfill does;
     /// the reconciler, which always starts from the tip, does not).
     pub persist_cursor: bool,
+    /// Publish `backfill_last_processed_slot`. Only the history walk should: it descends
+    /// monotonically, so the gauge reads as progress. A reconciliation crawl jumps back to the
+    /// tip every cycle and would turn the same gauge into noise.
+    pub report_progress: bool,
     /// How long one window may go without a new delivery before it is declared stuck.
     pub window_idle_timeout: Duration,
     /// Label used in log lines, e.g. "backfill" / "reconcile".
@@ -391,8 +395,10 @@ pub async fn crawl(
             )
             .await?;
 
-            if let Some(oldest) = plan.expected.last() {
-                crate::metrics::set_backfill_last_processed_slot(oldest.slot);
+            if req.report_progress {
+                if let Some(oldest) = plan.expected.last() {
+                    crate::metrics::set_backfill_last_processed_slot(oldest.slot);
+                }
             }
         }
 

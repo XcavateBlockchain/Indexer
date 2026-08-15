@@ -74,10 +74,8 @@ pub async fn supervise(
     );
     loop {
         match cycle(cfg, pool, frontier, block_time, tracked, shutdown.clone()).await {
-            Ok(Some(advanced_to)) => {
-                log::info!("reconcile: last_contiguous_slot advanced to {advanced_to}")
-            }
-            Ok(None) => {}
+            // `cycle` logs its own outcome; nothing to add here.
+            Ok(_) => {}
             // A failed cycle is not fatal: the next one re-walks the same range (nothing was
             // advanced, so the range only grows) and the live stream keeps the data fresh
             // meanwhile.
@@ -151,6 +149,7 @@ pub async fn cycle(
             // The reconciler always starts from the tip, so a resume cursor would be noise --
             // and would fight with the history backfill over the same row.
             persist_cursor: false,
+            report_progress: false,
             window_idle_timeout: WINDOW_IDLE_TIMEOUT,
             label: "reconcile",
         },

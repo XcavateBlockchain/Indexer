@@ -136,6 +136,7 @@ pub async fn run(
             start_before,
             page_size: opts.page_size,
             persist_cursor: true,
+            report_progress: true,
             window_idle_timeout: opts.window_idle_timeout,
             label: "backfill",
         },

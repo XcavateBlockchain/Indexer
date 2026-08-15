@@ -14,6 +14,7 @@ use super::accounts::{
     close_admin, close_role_account, upsert_admin, upsert_config, upsert_role_account,
 };
 use super::actions::insert_action;
+use super::backfill_cursor::{clear_cursor, get_cursor, set_cursor};
 use super::instructions::insert_instruction;
 use super::models::{
     AccessPermission, ActionType, AdminAccount, ConfigAccount, NewAction, NewInstruction, Role,
@@ -997,5 +998,45 @@ async fn config_view_reflects_state_table_and_latest_action(pool: PgPool) -> sql
         .await?;
     assert_eq!(row.get::<i64, _>("updated_at_slot"), 15);
     assert_eq!(row.get::<String, _>("updated_in_tx"), "sig2");
+    Ok(())
+}
+
+/// The backfill resume cursor: written per committed page, overwritten as the walk descends,
+/// deleted when the walk finishes. "A cursor exists" must mean exactly "an interrupted walk is
+/// waiting to be resumed".
+#[sqlx::test(migrations = "../../migrations")]
+async fn backfill_cursor_lifecycle(pool: PgPool) -> sqlx::Result<()> {
+    assert!(
+        get_cursor(&pool).await?.is_none(),
+        "a fresh database has no cursor"
+    );
+
+    set_cursor(&pool, "sigA", 500).await?;
+    let c = get_cursor(&pool)
+        .await?
+        .expect("cursor after the first page");
+    assert_eq!((c.signature.as_str(), c.slot), ("sigA", 500));
+
+    // The walk descends: the second page overwrites the first (singleton row).
+    set_cursor(&pool, "sigB", 400).await?;
+    let c = get_cursor(&pool)
+        .await?
+        .expect("cursor after the second page");
+    assert_eq!((c.signature.as_str(), c.slot), ("sigB", 400));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM backfill_cursor")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(count, 1, "the cursor is a singleton");
+
+    // A re-run from the tip legitimately moves the cursor back UP: it is a walk position, not a
+    // high-water mark, so it must NOT be guarded the way `last_contiguous_slot` is.
+    set_cursor(&pool, "sigZ", 900).await?;
+    assert_eq!(get_cursor(&pool).await?.unwrap().slot, 900);
+
+    clear_cursor(&pool).await?;
+    assert!(
+        get_cursor(&pool).await?.is_none(),
+        "a finished walk leaves no cursor"
+    );
     Ok(())
 }

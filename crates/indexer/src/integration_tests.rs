@@ -574,3 +574,116 @@ fn every_fixture_decodes_to_the_variant_it_claims() {
         })
     );
 }
+
+// --- the backfill cursor's commit ordering ---------------------------------------------------
+
+/// The resume cursor travels through the batcher with the rows it vouches for, and is sorted
+/// last, so it can never be committed ahead of them. This is what makes an interrupted backfill
+/// safe to resume from: a cursor that exists always describes rows that exist.
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool: PgPool) {
+    let ix = crate::db::models::NewInstruction {
+        signature: sig_from(77).as_ref().to_vec(),
+        ix_index: 0,
+        inner_index: -1,
+        slot: 483_386_945,
+        block_time: chrono::DateTime::from_timestamp(ASSIGN_ROLE_BLOCK_TIME, 0).unwrap(),
+        ix_name: "assign_role".into(),
+        accounts: vec![],
+        data: serde_json::json!({"type": "assign_role"}),
+    };
+
+    with_batcher(&pool, |batcher| async move {
+        // Deliberately pushed in the "wrong" order -- cursor first -- to prove the batcher's
+        // phase ordering, not the caller's discipline, is what guarantees the invariant.
+        batcher
+            .push(batcher::WriteOp::SetBackfillCursor {
+                signature: "SigOfTheOldestSignatureInThePage".into(),
+                slot: 483_386_945,
+            })
+            .await
+            .unwrap();
+        batcher
+            .push(batcher::WriteOp::InsertInstruction(ix))
+            .await
+            .unwrap();
+    })
+    .await;
+
+    let cursor = crate::db::backfill_cursor::get_cursor(&pool)
+        .await
+        .expect("cursor read")
+        .expect("cursor row written");
+    assert_eq!(cursor.signature, "SigOfTheOldestSignatureInThePage");
+    assert_eq!(cursor.slot, 483_386_945);
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM program_instructions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "the row the cursor vouches for is committed too");
+}
+
+// --- the snapshot writes exactly what the stream would --------------------------------------
+
+/// The `getProgramAccounts` snapshot decodes with the same decoder and maps with the same
+/// function as the live account pipe, so a snapshotted row and a streamed row for the same
+/// account bytes at the same slot must be identical. If this ever diverges, a database seeded by
+/// a snapshot would differ from one seeded by the stream -- silently.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_snapshot_row_is_identical_to_the_row_the_account_stream_would_write(pool: PgPool) {
+    const SLOT: u64 = 484_000_000;
+
+    // 1. The stream path: real account bytes through the real `AccountProcessor`.
+    apply_account(&pool, ROLE_PUBKEY, ROLE_DATA_HEX, ROLE_LAMPORTS, SLOT).await;
+    let streamed = fetch_role_row(&pool).await;
+
+    // 2. The snapshot path: the same bytes through `decode_account` + `account_write_op`, which
+    //    is exactly what `snapshot::run` does with each `getProgramAccounts` entry.
+    let raw = account(ROLE_DATA_HEX, ROLE_LAMPORTS);
+    let decoded =
+        carbon_core::account::AccountDecoder::decode_account(&XcavateWhitelistDecoder, &raw)
+            .expect("real devnet account data must decode");
+    let op = crate::processors::account_write_op(
+        key(ROLE_PUBKEY),
+        SLOT as i64,
+        raw.lamports as i64,
+        &decoded,
+    );
+
+    // Wipe the streamed row and replay the snapshot op through the same batcher.
+    sqlx::query("DELETE FROM role_account")
+        .execute(&pool)
+        .await
+        .unwrap();
+    with_batcher(&pool, |batcher| async move {
+        batcher.push(op).await.unwrap();
+    })
+    .await;
+    let snapshotted = fetch_role_row(&pool).await;
+
+    assert_eq!(streamed, snapshotted);
+}
+
+/// Every column of the single `role_account` row, as a comparable tuple.
+async fn fetch_role_row(
+    pool: &PgPool,
+) -> (Vec<u8>, i64, i64, Vec<u8>, String, String, Vec<u8>, i16) {
+    let row = sqlx::query(
+        "SELECT pubkey, slot, lamports, user_pubkey, role, permission, rent_payer, bump \
+         FROM role_account",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("exactly one role_account row");
+    (
+        row.get("pubkey"),
+        row.get("slot"),
+        row.get("lamports"),
+        row.get("user_pubkey"),
+        row.get("role"),
+        row.get("permission"),
+        row.get("rent_payer"),
+        row.get("bump"),
+    )
+}
