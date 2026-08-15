@@ -39,7 +39,10 @@ where
 
 /// `last_contiguous_slot` is the highest slot below which there are no gaps, so -- like an
 /// account write -- it must only move forward. Guarded the same way.
-pub async fn advance_last_contiguous_slot<'e, E>(executor: E, slot: i64) -> Result<PgQueryResult, sqlx::Error>
+pub async fn advance_last_contiguous_slot<'e, E>(
+    executor: E,
+    slot: i64,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -70,7 +73,10 @@ where
     .await
 }
 
-pub async fn set_backfill_complete<'e, E>(executor: E, complete: bool) -> Result<PgQueryResult, sqlx::Error>
+pub async fn set_backfill_complete<'e, E>(
+    executor: E,
+    complete: bool,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {

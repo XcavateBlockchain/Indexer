@@ -245,3 +245,52 @@ ruling R7) is that "state" and "derived/audit" fields, which the old entities mi
 row each, are now split: the `*_state` tables hold only fields that exist on-chain (so they
 stay droppable/rebuildable from a `getProgramAccounts` snapshot), and every derived/audit
 field moved into a view folded from `whitelist_actions`.
+
+## Phase 3 — Pipeline and processors (2026-08-15)
+
+`crates/indexer` is now a clap binary (`run` / `replay` / `smoke-grpc`, plus `backfill` and
+`snapshot` stubs for Phase 4) around a Carbon 0.12.0 pipeline: one decoder, an instruction
+pipe, an account pipe, an account-deletion pipe, a batched single writer, a Prometheus
+`/metrics` listener, and the Yellowstone gRPC datasource pointed at Alchemy devnet. Full
+writeup, module map, and exit-verification output:
+`.superpowers/sdd/carbon-migration-spec/task-3-report.md`.
+
+### Handler mapping — old TypeScript to new Rust
+
+| Old (`src/mappings/mappingHandlers.ts`) | New |
+| --- | --- |
+| `metaOf(ix)` (`txSignature`, `blockHeight`, `blockTime`, `instructionIndex`) | `mapping::map_instruction` reads `InstructionMetadata`/`TransactionMetadata`; `blockHeight` became `slot` (ruling R8) and `instructionIndex` is `mapping::instruction_index(absolute_path)` — same dot-joined format |
+| `accountAt(ix, n)` | `mapping::account_at(decoded.accounts, n)` — carbon has already resolved static + lookup-table keys, so there is no key-index indirection to redo |
+| `decodedArgs(ix)` | the generated decoder's `InstructionDecoder`; instructions that fail to decode never reach the mapper |
+| `recordAction(...)` | one `WriteOp::InsertAction` per instruction |
+| `Config.create/save`, `Admin.create/save`, `RoleAssignment.create/save` (order-sensitive in-place mutation) | **gone** — replaced by `whitelist_actions` + the SQL views (ruling R7). Account state comes from the account pipe instead, straight off chain |
+| `invariant(...)` throwing to halt indexing | `mapping::MappingError` -> `decode_skipped_total{reason}` + an error log + a failed update (carbon's `updates_failed`). Same stance: data integrity over liveness |
+| the 3 instructions that close a PDA | additionally emit `WriteOp::CloseAdmin` / `CloseRoleAccount` (ruling R11); the old handlers set `active = false` on the entity instead |
+
+### Findings
+
+- **The Yellowstone transaction stream carries no `block_time`.** carbon's yellowstone
+  datasource passes `None` for `UpdateOneof::Transaction` (only the far heavier `blocks`
+  subscription has it), so `TransactionMetadata::block_time` is `None` on the live path and
+  `Some` on the RPC-crawler path. `block_time::BlockTimeResolver` fills the gap with a cached
+  `getBlockTime(slot)` (ruling R14). Both `block_time` columns are `NOT NULL`, so this is not
+  optional.
+- **carbon 0.12.0's yellowstone datasource cannot express a `slots` or `blocks_meta`
+  subscription** — both maps are hardcoded empty in its `SubscribeRequest`, and it swallows
+  subscribe errors inside a spawned task. `smoke-grpc` therefore drives
+  `yellowstone_grpc_client::GeyserGrpcClient` directly (same endpoint, x-token, commitment,
+  TLS config path and filters) so it can (a) get a heartbeat on an idle program and (b) see an
+  auth/plan rejection. See `crates/indexer/src/grpc_smoke.rs`.
+- **The RPC transaction crawler drops updates unless `blocking_send` is true.** Its default
+  (`false`) uses `try_send` and logs a warning when the pipeline channel is momentarily full;
+  for a backfill that is silent history loss. `pipeline::build_replay` sets it to `true`.
+- **The crawler never terminates** — after exhausting history it polls forever. The `replay`
+  subcommand detects completion with an idle watchdog over carbon's `updates_received`.
+- **Build on Windows**: `carbon-yellowstone-grpc-datasource` pulls in `yellowstone-grpc-proto`,
+  whose build script unconditionally builds a vendored protobuf from source via autotools
+  (`protobuf-src`). That configure script cannot be driven with MSVC on this host. Workaround
+  (host-local, nothing committed) is in the Task 3 report. On Linux/CI this builds normally.
+- **Devnet history is tiny**: 12 signatures ever touched the program as of 2026-08-15 (1
+  deploy + 1 `initialize_config` + 2 `add_admin` + 8 `assign_role`), and 11 program-owned
+  accounts exist (1 `Config`, 2 `Admin`, 8 `RoleAccount`). No removals or permission updates
+  have ever happened on chain, so those paths are covered by unit/integration tests only.

@@ -7,7 +7,10 @@ use sqlx::PgExecutor;
 
 use super::models::NewInstruction;
 
-pub async fn insert_instruction<'e, E>(executor: E, row: NewInstruction) -> Result<PgQueryResult, sqlx::Error>
+pub async fn insert_instruction<'e, E>(
+    executor: E,
+    row: NewInstruction,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {

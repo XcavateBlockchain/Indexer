@@ -22,7 +22,10 @@ use sqlx::PgExecutor;
 
 use super::models::{AdminAccount, ConfigAccount, RoleAccountRow};
 
-pub async fn upsert_config<'e, E>(executor: E, row: ConfigAccount) -> Result<PgQueryResult, sqlx::Error>
+pub async fn upsert_config<'e, E>(
+    executor: E,
+    row: ConfigAccount,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -52,7 +55,11 @@ where
 
 /// Slot-guarded soft close: sets `closed_at_slot` (and bumps `slot`, so a later stale write
 /// can't undo the close) only if `slot` currently stored is older than `slot` passed in.
-pub async fn close_config<'e, E>(executor: E, pubkey: &[u8], slot: i64) -> Result<PgQueryResult, sqlx::Error>
+pub async fn close_config<'e, E>(
+    executor: E,
+    pubkey: &[u8],
+    slot: i64,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -65,7 +72,10 @@ where
     .await
 }
 
-pub async fn upsert_admin<'e, E>(executor: E, row: AdminAccount) -> Result<PgQueryResult, sqlx::Error>
+pub async fn upsert_admin<'e, E>(
+    executor: E,
+    row: AdminAccount,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -91,7 +101,11 @@ where
     .await
 }
 
-pub async fn close_admin<'e, E>(executor: E, pubkey: &[u8], slot: i64) -> Result<PgQueryResult, sqlx::Error>
+pub async fn close_admin<'e, E>(
+    executor: E,
+    pubkey: &[u8],
+    slot: i64,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -104,7 +118,10 @@ where
     .await
 }
 
-pub async fn upsert_role_account<'e, E>(executor: E, row: RoleAccountRow) -> Result<PgQueryResult, sqlx::Error>
+pub async fn upsert_role_account<'e, E>(
+    executor: E,
+    row: RoleAccountRow,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -138,7 +155,11 @@ where
     .await
 }
 
-pub async fn close_role_account<'e, E>(executor: E, pubkey: &[u8], slot: i64) -> Result<PgQueryResult, sqlx::Error>
+pub async fn close_role_account<'e, E>(
+    executor: E,
+    pubkey: &[u8],
+    slot: i64,
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -149,4 +170,29 @@ where
     )
     .execute(executor)
     .await
+}
+
+/// Every still-open account-state pubkey across all three tables.
+///
+/// Added in Task 3: Carbon's Yellowstone datasource only synthesises an `AccountDeletion` for
+/// pubkeys already present in its `account_deletions_tracked` set, and that set lives in
+/// process memory. A restarted indexer would therefore be blind to the closure of any PDA it
+/// had not happened to see an update for yet -- so the set is seeded from this query at
+/// startup and extended as account updates arrive.
+pub async fn open_account_pubkeys<'e, E>(executor: E) -> Result<Vec<Vec<u8>>, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    let rows = sqlx::query!(
+        r#"
+        SELECT pubkey AS "pubkey!" FROM config       WHERE closed_at_slot IS NULL
+        UNION ALL
+        SELECT pubkey AS "pubkey!" FROM admin        WHERE closed_at_slot IS NULL
+        UNION ALL
+        SELECT pubkey AS "pubkey!" FROM role_account WHERE closed_at_slot IS NULL
+        "#
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.pubkey).collect())
 }

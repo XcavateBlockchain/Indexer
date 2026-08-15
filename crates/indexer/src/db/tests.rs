@@ -10,7 +10,9 @@ use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 
-use super::accounts::{close_admin, close_role_account, upsert_admin, upsert_config, upsert_role_account};
+use super::accounts::{
+    close_admin, close_role_account, upsert_admin, upsert_config, upsert_role_account,
+};
 use super::actions::insert_action;
 use super::instructions::insert_instruction;
 use super::models::{
@@ -105,12 +107,24 @@ async fn slot_guard_admin(pool: PgPool) -> sqlx::Result<()> {
     let pubkey = pk(1);
     upsert_admin(
         &pool,
-        AdminAccount { pubkey: pubkey.clone(), slot: 200, lamports: 1_000, admin: pk(2), bump: 1 },
+        AdminAccount {
+            pubkey: pubkey.clone(),
+            slot: 200,
+            lamports: 1_000,
+            admin: pk(2),
+            bump: 1,
+        },
     )
     .await?;
     upsert_admin(
         &pool,
-        AdminAccount { pubkey: pubkey.clone(), slot: 100, lamports: 1, admin: pk(9), bump: 9 },
+        AdminAccount {
+            pubkey: pubkey.clone(),
+            slot: 100,
+            lamports: 1,
+            admin: pk(9),
+            bump: 9,
+        },
     )
     .await?;
 
@@ -177,7 +191,13 @@ async fn soft_close_admin_guards_and_clears_on_recreate(pool: PgPool) -> sqlx::R
     let pubkey = pk(1);
     upsert_admin(
         &pool,
-        AdminAccount { pubkey: pubkey.clone(), slot: 100, lamports: 1, admin: pk(2), bump: 1 },
+        AdminAccount {
+            pubkey: pubkey.clone(),
+            slot: 100,
+            lamports: 1,
+            admin: pk(2),
+            bump: 1,
+        },
     )
     .await?;
 
@@ -198,7 +218,13 @@ async fn soft_close_admin_guards_and_clears_on_recreate(pool: PgPool) -> sqlx::R
     // Stale re-create below the close slot does nothing (the row is still closed at 200).
     upsert_admin(
         &pool,
-        AdminAccount { pubkey: pubkey.clone(), slot: 150, lamports: 2, admin: pk(4), bump: 4 },
+        AdminAccount {
+            pubkey: pubkey.clone(),
+            slot: 150,
+            lamports: 2,
+            admin: pk(4),
+            bump: 4,
+        },
     )
     .await?;
     let row = sqlx::query("SELECT slot, closed_at_slot FROM admin WHERE pubkey = $1")
@@ -211,7 +237,13 @@ async fn soft_close_admin_guards_and_clears_on_recreate(pool: PgPool) -> sqlx::R
     // Re-create above the close slot clears closed_at_slot back to NULL.
     upsert_admin(
         &pool,
-        AdminAccount { pubkey: pubkey.clone(), slot: 300, lamports: 3, admin: pk(5), bump: 5 },
+        AdminAccount {
+            pubkey: pubkey.clone(),
+            slot: 300,
+            lamports: 3,
+            admin: pk(5),
+            bump: 5,
+        },
     )
     .await?;
     let row = sqlx::query("SELECT slot, closed_at_slot FROM admin WHERE pubkey = $1")
@@ -337,7 +369,17 @@ async fn instruction_and_action_insert_share_one_transaction(pool: PgPool) -> sq
     .await?;
     insert_action(
         &mut *tx,
-        action("sig-0", ActionType::AdminAdded, Some("ADMIN_X"), None, None, "AUTH", 10, "sig", "0"),
+        action(
+            "sig-0",
+            ActionType::AdminAdded,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            10,
+            "sig",
+            "0",
+        ),
     )
     .await?;
     tx.commit().await?;
@@ -436,11 +478,23 @@ async fn fetch_admin_view(pool: &PgPool, id: &str) -> Option<AdminView> {
 async fn admins_view_add_only_is_active(pool: PgPool) -> sqlx::Result<()> {
     insert_action(
         &pool,
-        action("sig1-0", ActionType::AdminAdded, Some("ADMIN_X"), None, None, "AUTH", 10, "sig1", "0"),
+        action(
+            "sig1-0",
+            ActionType::AdminAdded,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            10,
+            "sig1",
+            "0",
+        ),
     )
     .await?;
 
-    let v = fetch_admin_view(&pool, "ADMIN_X").await.expect("row present");
+    let v = fetch_admin_view(&pool, "ADMIN_X")
+        .await
+        .expect("row present");
     assert!(v.active);
     assert_eq!(v.added_by, "AUTH");
     assert_eq!(v.added_at_slot, 10);
@@ -453,16 +507,38 @@ async fn admins_view_add_only_is_active(pool: PgPool) -> sqlx::Result<()> {
 async fn admins_view_add_then_remove_is_inactive(pool: PgPool) -> sqlx::Result<()> {
     insert_action(
         &pool,
-        action("sig1-0", ActionType::AdminAdded, Some("ADMIN_X"), None, None, "AUTH", 10, "sig1", "0"),
+        action(
+            "sig1-0",
+            ActionType::AdminAdded,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            10,
+            "sig1",
+            "0",
+        ),
     )
     .await?;
     insert_action(
         &pool,
-        action("sig2-0", ActionType::AdminRemoved, Some("ADMIN_X"), None, None, "AUTH", 20, "sig2", "0"),
+        action(
+            "sig2-0",
+            ActionType::AdminRemoved,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            20,
+            "sig2",
+            "0",
+        ),
     )
     .await?;
 
-    let v = fetch_admin_view(&pool, "ADMIN_X").await.expect("row present");
+    let v = fetch_admin_view(&pool, "ADMIN_X")
+        .await
+        .expect("row present");
     assert!(!v.active);
     assert_eq!(v.removed_at_slot, Some(20));
     assert_eq!(v.removed_in_tx.as_deref(), Some("sig2"));
@@ -473,21 +549,53 @@ async fn admins_view_add_then_remove_is_inactive(pool: PgPool) -> sqlx::Result<(
 async fn admins_view_add_remove_readd_is_active_again(pool: PgPool) -> sqlx::Result<()> {
     insert_action(
         &pool,
-        action("sig1-0", ActionType::AdminAdded, Some("ADMIN_X"), None, None, "AUTH", 10, "sig1", "0"),
+        action(
+            "sig1-0",
+            ActionType::AdminAdded,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            10,
+            "sig1",
+            "0",
+        ),
     )
     .await?;
     insert_action(
         &pool,
-        action("sig2-0", ActionType::AdminRemoved, Some("ADMIN_X"), None, None, "AUTH", 20, "sig2", "0"),
+        action(
+            "sig2-0",
+            ActionType::AdminRemoved,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            20,
+            "sig2",
+            "0",
+        ),
     )
     .await?;
     insert_action(
         &pool,
-        action("sig3-0", ActionType::AdminAdded, Some("ADMIN_X"), None, None, "AUTH", 30, "sig3", "0"),
+        action(
+            "sig3-0",
+            ActionType::AdminAdded,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            30,
+            "sig3",
+            "0",
+        ),
     )
     .await?;
 
-    let v = fetch_admin_view(&pool, "ADMIN_X").await.expect("row present");
+    let v = fetch_admin_view(&pool, "ADMIN_X")
+        .await
+        .expect("row present");
     assert!(v.active);
     assert_eq!(v.added_at_slot, 30);
     assert_eq!(v.removed_at_slot, None);
@@ -498,23 +606,59 @@ async fn admins_view_add_remove_readd_is_active_again(pool: PgPool) -> sqlx::Res
 #[sqlx::test(migrations = "../../migrations")]
 async fn admins_view_fold_is_order_insensitive(pool: PgPool) -> sqlx::Result<()> {
     let events = [
-        action("sig1-0", ActionType::AdminAdded, Some("ADMIN_X"), None, None, "AUTH", 10, "sig1", "0"),
-        action("sig2-0", ActionType::AdminRemoved, Some("ADMIN_X"), None, None, "AUTH", 20, "sig2", "0"),
-        action("sig3-0", ActionType::AdminAdded, Some("ADMIN_X"), None, None, "AUTH", 30, "sig3", "0"),
+        action(
+            "sig1-0",
+            ActionType::AdminAdded,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            10,
+            "sig1",
+            "0",
+        ),
+        action(
+            "sig2-0",
+            ActionType::AdminRemoved,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            20,
+            "sig2",
+            "0",
+        ),
+        action(
+            "sig3-0",
+            ActionType::AdminAdded,
+            Some("ADMIN_X"),
+            None,
+            None,
+            "AUTH",
+            30,
+            "sig3",
+            "0",
+        ),
     ];
 
     for e in &events {
         insert_action(&pool, e.clone()).await?;
     }
-    let forward = fetch_admin_view(&pool, "ADMIN_X").await.expect("row present");
+    let forward = fetch_admin_view(&pool, "ADMIN_X")
+        .await
+        .expect("row present");
 
-    sqlx::query("DELETE FROM whitelist_actions").execute(&pool).await?;
+    sqlx::query("DELETE FROM whitelist_actions")
+        .execute(&pool)
+        .await?;
 
     // Reverse insertion order: backfill (walking backwards) racing/overtaking a live stream.
     for e in events.iter().rev() {
         insert_action(&pool, e.clone()).await?;
     }
-    let reversed = fetch_admin_view(&pool, "ADMIN_X").await.expect("row present");
+    let reversed = fetch_admin_view(&pool, "ADMIN_X")
+        .await
+        .expect("row present");
 
     assert_eq!(forward, reversed);
     assert!(forward.active);
@@ -588,7 +732,9 @@ async fn role_assignments_view_assign_only_is_compliant_active(pool: PgPool) -> 
     )
     .await?;
 
-    let v = fetch_role_assignment_view(&pool, LAWYER_ID).await.expect("row present");
+    let v = fetch_role_assignment_view(&pool, LAWYER_ID)
+        .await
+        .expect("row present");
     assert!(v.active);
     assert_eq!(v.permission, "COMPLIANT");
     assert_eq!(v.rent_payer, "ADMIN_X");
@@ -598,7 +744,9 @@ async fn role_assignments_view_assign_only_is_compliant_active(pool: PgPool) -> 
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn role_assignments_view_assign_then_permission_update_revoked(pool: PgPool) -> sqlx::Result<()> {
+async fn role_assignments_view_assign_then_permission_update_revoked(
+    pool: PgPool,
+) -> sqlx::Result<()> {
     insert_action(
         &pool,
         action(
@@ -630,7 +778,9 @@ async fn role_assignments_view_assign_then_permission_update_revoked(pool: PgPoo
     )
     .await?;
 
-    let v = fetch_role_assignment_view(&pool, LAWYER_ID).await.expect("row present");
+    let v = fetch_role_assignment_view(&pool, LAWYER_ID)
+        .await
+        .expect("row present");
     assert!(v.active);
     assert_eq!(v.permission, "REVOKED");
     assert_eq!(v.updated_at_slot, 20);
@@ -670,7 +820,9 @@ async fn role_assignments_view_assign_then_renounce(pool: PgPool) -> sqlx::Resul
     )
     .await?;
 
-    let v = fetch_role_assignment_view(&pool, LAWYER_ID).await.expect("row present");
+    let v = fetch_role_assignment_view(&pool, LAWYER_ID)
+        .await
+        .expect("row present");
     assert!(!v.active);
     assert_eq!(v.removal_kind.as_deref(), Some("RENOUNCED"));
     assert_eq!(v.removed_by.as_deref(), Some("USER1"));
@@ -711,7 +863,9 @@ async fn role_assignments_view_assign_then_remove(pool: PgPool) -> sqlx::Result<
     )
     .await?;
 
-    let v = fetch_role_assignment_view(&pool, LAWYER_ID).await.expect("row present");
+    let v = fetch_role_assignment_view(&pool, LAWYER_ID)
+        .await
+        .expect("row present");
     assert!(!v.active);
     assert_eq!(v.removal_kind.as_deref(), Some("REMOVED"));
     assert_eq!(v.removed_by.as_deref(), Some("ADMIN_X"));
@@ -759,14 +913,20 @@ async fn role_assignments_view_fold_is_order_insensitive(pool: PgPool) -> sqlx::
     for e in &events {
         insert_action(&pool, e.clone()).await?;
     }
-    let forward = fetch_role_assignment_view(&pool, LAWYER_ID).await.expect("row present");
+    let forward = fetch_role_assignment_view(&pool, LAWYER_ID)
+        .await
+        .expect("row present");
 
-    sqlx::query("DELETE FROM whitelist_actions").execute(&pool).await?;
+    sqlx::query("DELETE FROM whitelist_actions")
+        .execute(&pool)
+        .await?;
 
     for e in events.iter().rev() {
         insert_action(&pool, e.clone()).await?;
     }
-    let reversed = fetch_role_assignment_view(&pool, LAWYER_ID).await.expect("row present");
+    let reversed = fetch_role_assignment_view(&pool, LAWYER_ID)
+        .await
+        .expect("row present");
 
     assert_eq!(forward, reversed);
     assert!(!forward.active);
@@ -791,13 +951,25 @@ async fn config_view_reflects_state_table_and_latest_action(pool: PgPool) -> sql
     .await?;
     insert_action(
         &pool,
-        action("sig1-0", ActionType::ConfigInitialized, None, None, None, "AUTH", 5, "sig1", "0"),
+        action(
+            "sig1-0",
+            ActionType::ConfigInitialized,
+            None,
+            None,
+            None,
+            "AUTH",
+            5,
+            "sig1",
+            "0",
+        ),
     )
     .await?;
 
-    let row = sqlx::query("SELECT authority, pending_authority, updated_at_slot, updated_in_tx FROM config_view")
-        .fetch_one(&pool)
-        .await?;
+    let row = sqlx::query(
+        "SELECT authority, pending_authority, updated_at_slot, updated_in_tx FROM config_view",
+    )
+    .fetch_one(&pool)
+    .await?;
     assert_eq!(row.get::<Vec<u8>, _>("authority"), pk(2));
     assert_eq!(row.get::<Option<Vec<u8>>, _>("pending_authority"), None);
     assert_eq!(row.get::<i64, _>("updated_at_slot"), 5);

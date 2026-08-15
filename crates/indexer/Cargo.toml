@@ -19,5 +19,52 @@ sqlx = { version = "=0.8.6", default-features = false, features = [
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+# --- Carbon stack -------------------------------------------------------------------------
+# ALL carbon-* crates are pinned to exactly 0.12.0 (ruling R9). The generated decoder depends
+# on `carbon-core = "0.12.0"`; carbon-core 1.0.0 is semver-incompatible with it, and mixing
+# would put two carbon_core copies in the graph so the decoder's InstructionDecoder impl would
+# not satisfy a PipelineBuilder built against the other one.
+carbon-core = "=0.12.0"
+carbon-yellowstone-grpc-datasource = "=0.12.0"
+carbon-rpc-transaction-crawler-datasource = "=0.12.0"
+
+# --- Solana --------------------------------------------------------------------------------
+# 3.0.0 to match carbon-core's `^3.0.0` bounds (env-notes.md pins).
+solana-pubkey = { version = "3.0.0", features = ["serde", "borsh", "curve25519"] }
+solana-account = "3.0.0"
+solana-instruction = { version = "3.0.0", default-features = false }
+solana-signature = "3.0.0"
+solana-commitment-config = "3.0.0"
+# Used for the block_time fallback lookup (`getBlockTime`) and by the verification helpers.
+# Already in the graph via carbon-rpc-transaction-crawler-datasource.
+solana-client = "3.0.0"
+
+# --- Yellowstone gRPC ----------------------------------------------------------------------
+# Same versions carbon-yellowstone-grpc-datasource resolves to, so the CommitmentLevel /
+# SubscribeRequestFilter* types we hand it are the same types. `smoke-grpc` also drives the
+# raw client directly -- see src/grpc_smoke.rs for why.
+yellowstone-grpc-client = "10.0.0"
+yellowstone-grpc-proto = { version = "10.0.0", features = ["convert"] }
+
+# --- Runtime / plumbing --------------------------------------------------------------------
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tokio-util = "0.7"
+futures = "0.3"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+log = "0.4"
+env_logger = "0.11"
+bs58 = "0.5"
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+# `http-listener` gives the /metrics HTTP endpoint; `push-gateway` (a default feature) is
+# turned off because it drags in aws-lc-rs, which needs cmake+nasm to build on Windows.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = [
+    "http-listener",
+] }
+
 [dev-dependencies]
+solana-message = "3.0.0"
+solana-transaction-status = "3.0.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

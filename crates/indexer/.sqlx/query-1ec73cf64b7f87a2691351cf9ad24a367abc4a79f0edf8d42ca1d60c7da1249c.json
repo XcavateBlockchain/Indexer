@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey AS \"pubkey!\" FROM config       WHERE closed_at_slot IS NULL\n        UNION ALL\n        SELECT pubkey AS \"pubkey!\" FROM admin        WHERE closed_at_slot IS NULL\n        UNION ALL\n        SELECT pubkey AS \"pubkey!\" FROM role_account WHERE closed_at_slot IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey!",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1ec73cf64b7f87a2691351cf9ad24a367abc4a79f0edf8d42ca1d60c7da1249c"
+}
