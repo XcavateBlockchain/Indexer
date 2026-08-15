@@ -1537,6 +1537,10 @@ name = "indexer"
 version = "0.1.0"
 dependencies = [
  "carbon-xcavate-whitelist-decoder",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

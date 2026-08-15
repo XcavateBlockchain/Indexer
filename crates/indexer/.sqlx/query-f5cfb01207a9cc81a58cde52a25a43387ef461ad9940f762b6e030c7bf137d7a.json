@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE config SET slot = $2, closed_at_slot = $2 WHERE pubkey = $1 AND slot < $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f5cfb01207a9cc81a58cde52a25a43387ef461ad9940f762b6e030c7bf137d7a"
+}

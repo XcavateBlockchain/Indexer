@@ -209,3 +209,39 @@ All four share upgrade authority `7bGxnDFi3zKLAbgeXtCANcf8MGSYob1EAmoWZY77qjp2`.
 - Old stack ran `--unfinalized-blocks=true`; new stack indexes at `confirmed` with
   slot-guarded upserts and soft closes; confirmed-level rollbacks are theoretically
   possible and are a documented residual risk (DECISIONS #5/#7).
+
+## Phase 2 — Database schema (2026-08-15)
+
+Migrations live in `migrations/` (repo root, `sqlx::migrate!()`-compatible, applied in
+order `0001`..`0005`). Storage layer: `crates/indexer/src/db/` (`accounts.rs`, `actions.rs`,
+`instructions.rs`, `sync_state.rs`, `models.rs`), exposed as this crate's library target
+(`crates/indexer/src/lib.rs`). Full writeup, public API signatures, and test output:
+`.superpowers/sdd/carbon-migration-spec/task-2-report.md`.
+
+Every entity in the old `schema.graphql` maps onto something in the new schema — extending
+the Phase 0 table above with the concrete names:
+
+| Old entity (`schema.graphql`) | Old kind | New schema |
+| --- | --- | --- |
+| `Config` (id="config") | state-like singleton, on-chain fields + derived `updatedAt*` mixed into one entity | `config` table — **state only** (`pubkey`, `slot`, `lamports`, `closed_at_slot`, `authority`, `pending_authority`, `bump`); `config_view` — derived (`authority`/`pending_authority` read straight from `config`; `updated_at_slot`/`updated_at`/`updated_in_tx` folded from the latest `CONFIG_INITIALIZED`/`AUTHORITY_UPDATE_PROPOSED`/`AUTHORITY_UPDATED` row in `whitelist_actions`) |
+| `Admin` (id=admin pubkey) | state-like + derived audit fields (`active`, `addedBy`/`addedAt*`, `removedAt*`) mixed into one entity | `admin` table — **state only** (`pubkey`, `slot`, `lamports`, `closed_at_slot`, `admin`, `bump`); `admins_view` — all the derived audit fields, folded from `whitelist_actions` (order-insensitive by construction, ruling R7) |
+| `RoleAssignment` (id=`<user>-<roleIndex>`) | state-like + derived audit fields (`active`, `assignedBy`, `removedAt*`, `removalKind`, `removedBy`) mixed into one entity | `role_account` table — **state only** (`pubkey`, `slot`, `lamports`, `closed_at_slot`, `user_pubkey` [renamed from on-chain `user`, reserved word], `role`, `permission`, `rent_payer`, `bump`); `role_assignments_view` — all the derived audit fields, folded from `whitelist_actions` |
+| `WhitelistAction` (id=`<txSig>-<ixPath>`) | event-like, append-only | `whitelist_actions` table — same shape/identity, but `slot` (ruling R8) instead of `blockHeight` |
+| *(none — new)* | — | `program_instructions` table — raw append-only instruction history (`ON CONFLICT DO NOTHING`); the old SubQuery stack had no equivalent, this is new infrastructure the Task 3 processors write to (and that `whitelist_actions` / the views are derivable from, in principle, though the views fold over `whitelist_actions` directly for simplicity) |
+| *(none — new)* | — | `sync_state` table — pipeline bookkeeping (`last_contiguous_slot`, `backfill_complete`, `backfill_floor_slot`, `snapshot_slot`); the old stack tracked equivalent progress in SubQuery's own internal `_metadata` table, which `grpc-api`'s `GetIndexerStatus` read directly — that read will need to move to `sync_state` when `grpc-api` (or its replacement) is repointed |
+
+Enum mapping (all TEXT + CHECK, old `schema.graphql` spellings preserved so downstream
+GraphQL/gRPC consumers don't have to change):
+
+| Old `schema.graphql` enum | New schema |
+| --- | --- |
+| `Role` (6 variants, borsh index load-bearing) | `role_account.role`, `whitelist_actions.role`, `role_assignments_view.role` — same 6 spellings, same index order (documented in `migrations/0002_account_state.sql`) |
+| `Permission` (`COMPLIANT`/`REVOKED`) | `role_account.permission`, `whitelist_actions.permission`, `role_assignments_view.permission` |
+| `RemovalKind` (`REMOVED`/`RENOUNCED`) | `role_assignments_view.removal_kind` — derived only (which instruction closed the PDA), no stored column, same as the old design |
+| `ActionType` (9 values) | `whitelist_actions.type` — same 9 spellings |
+
+Nothing was dropped. The one structural change (spec §5.2 non-negotiable #3, controller
+ruling R7) is that "state" and "derived/audit" fields, which the old entities mixed into one
+row each, are now split: the `*_state` tables hold only fields that exist on-chain (so they
+stay droppable/rebuildable from a `getProgramAccounts` snapshot), and every derived/audit
+field moved into a view folded from `whitelist_actions`.

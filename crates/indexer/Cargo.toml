@@ -6,3 +6,18 @@ publish = false
 
 [dependencies]
 carbon-xcavate-whitelist-decoder = { path = "../whitelist-decoder", features = ["postgres"] }
+# Pinned to 0.8.6 to match the version the generated decoder crate already pulls in via its
+# own `postgres` feature (see .superpowers/sdd/carbon-migration-spec/env-notes.md, ruling R9)
+# -- a mismatched sqlx version here would duplicate the dependency graph.
+sqlx = { version = "=0.8.6", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "migrate",
+    "chrono",
+    "json",
+] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

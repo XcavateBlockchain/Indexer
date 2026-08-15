@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sync_state SET snapshot_slot = $1, updated_at = now() WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "38eaea3444a7089d1efeb9813a26bd0b06ba06c55e693bd0b78ee9da375964ca"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO admin (pubkey, slot, lamports, closed_at_slot, admin, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot           = EXCLUDED.slot,\n            lamports       = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            admin          = EXCLUDED.admin,\n            bump           = EXCLUDED.bump\n        WHERE admin.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ee31e0f3b44532553a37a6646e1e2cbb274525516427a9bd47121af441e6f5b3"
+}
