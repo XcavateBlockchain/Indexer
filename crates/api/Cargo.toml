@@ -5,4 +5,46 @@ edition = "2021"
 publish = false
 
 [dependencies]
-carbon-xcavate-whitelist-decoder = { path = "../whitelist-decoder", features = ["graphql"] }
+# --- Carbon stack (ruling R9 pin) ----------------------------------------------------------
+# Only the `graphql` feature: `carbon_core::graphql::server::build_schema` wraps a
+# `RootNode::new()` generically over any `Query`/`Context` pair, so it works with this crate's
+# own hand-written `QueryRoot` (see `src/graphql/`) -- no dependency on the generated decoder
+# crate is needed here at all (ruling R10: its own GraphQL surface serves GENERATED tables we
+# do not populate and must not be mounted; the decoder crate itself is unused by this binary).
+carbon-core = { version = "=0.12.0", default-features = false, features = ["graphql"] }
+
+# Pinned to match carbon-core's own `graphql` feature deps exactly (env-notes.md).
+juniper = { version = "=0.16.2", features = ["chrono"] }
+juniper_axum = "=0.2.0"
+axum = "0.8"
+
+# Pre-parses the raw query text for the depth/complexity guard -- juniper 0.16 has no built-in
+# query-cost limiter. The same crate juniper's own optional `schema-language` feature pulls in
+# (0.4), so nothing new enters the workspace's dependency *family*, just this one edge.
+graphql-parser = "0.4"
+
+# Pinned to match the indexer crate (ruling R9); only the read-side features this crate needs.
+sqlx = { version = "=0.8.6", default-features = false, features = [
+    "runtime-tokio-rustls", "postgres", "chrono", "macros",
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+bs58 = "0.5"
+
+# /health and `syncStatus.chainTipSlot`: a plain `getSlot` at `confirmed`, cached <=5s.
+solana-client = "3.0.0"
+solana-commitment-config = "3.0.0"
+
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = [
+    "http-listener",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,123 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id AS \"id!\", user_pubkey AS \"user_pubkey!\", role AS \"role!\",\n                   permission AS \"permission!\", active AS \"active!\",\n                   rent_payer AS \"rent_payer!\", assigned_by AS \"assigned_by!\",\n                   assigned_at_slot AS \"assigned_at_slot!\", assigned_at AS \"assigned_at!\",\n                   assigned_in_tx AS \"assigned_in_tx!\",\n                   updated_at_slot, updated_at,\n                   removed_at_slot, removed_at, removed_in_tx, removal_kind, removed_by\n            FROM role_assignments_view\n            WHERE ($1::text IS NULL OR user_pubkey = $1)\n              AND ($2::text IS NULL OR role = $2)\n              AND ($3::text IS NULL OR permission = $3)\n              AND ($4::bool IS NULL OR active = $4)\n            ORDER BY assigned_at_slot DESC, id ASC\n            LIMIT $5 OFFSET $6\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_pubkey!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "permission!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "active!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "rent_payer!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "assigned_by!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "assigned_at_slot!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "assigned_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "assigned_in_tx!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "removed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "removed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "removed_in_tx",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "removal_kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "removed_by",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "68b8360fd0c15010c6b47cec8ee5c63c677757da1fa57c519fb30ad9843c5457"
+}

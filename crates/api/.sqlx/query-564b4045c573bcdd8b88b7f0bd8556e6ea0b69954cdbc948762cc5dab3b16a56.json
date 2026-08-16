@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) FROM admins_view WHERE ($1::bool IS NULL OR active = $1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "564b4045c573bcdd8b88b7f0bd8556e6ea0b69954cdbc948762cc5dab3b16a56"
+}

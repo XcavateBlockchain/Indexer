@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT count(*) FROM role_assignments_view\n            WHERE ($1::text IS NULL OR user_pubkey = $1)\n              AND ($2::text IS NULL OR role = $2)\n              AND ($3::text IS NULL OR permission = $3)\n              AND ($4::bool IS NULL OR active = $4)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "527dec8f8e77c271fb4e0bf6f94e1444f4829cccf9e48e1e5406d8cb5a12c906"
+}

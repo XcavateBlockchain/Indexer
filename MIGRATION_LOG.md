@@ -345,3 +345,53 @@ free tier).
 - The **deploy transaction** (slot 483386556, the `backfill_floor_slot`) is in
   `getSignaturesForAddress` but invokes the BPF loader, not the program, so it correctly
   produces no rows: 12 chain signatures ↔ 11 indexed.
+
+## Phase 5 — GraphQL API (2026-08-16)
+
+`crates/api` is now a real Axum + Juniper server on port 3010 (`GRAPHQL_PORT`): the old
+SubQuery-shaped `schema.graphql` surface over Task 2's parity views, GraphiQL, `/health`, and
+the spec's mandatory DoS guards. Full report: `.superpowers/sdd/carbon-migration-spec/task-5-report.md`.
+
+### Schema surface
+
+Same field names/case as the old `schema.graphql`, with only the slot renames ruling R8
+mandates (`updatedAtBlock` → `updatedAtSlot`, `blockHeight` → `slot`, etc.). `Config`,
+`Admin`/`AdminConnection`, `RoleAssignment`/`RoleAssignmentConnection`,
+`WhitelistAction`/`WhitelistActionConnection` back onto `config_view` / `admins_view` /
+`role_assignments_view` / `whitelist_actions` respectively. `checkAccess` (ruling R17) and
+`syncStatus` (replacing the old `_metadata`) are new, ported from the dropped grpc-api and the
+new `sync_state` table. BYTEA pubkeys (only `config_view.authority`/`pending_authority` — every
+other view already stores base58 text, inherited from `whitelist_actions`) are base58-encoded
+in the resolver.
+
+### Reused from `carbon_core::graphql`
+
+`carbon_core::graphql::server::build_schema` (generic over any query root/context, so it works
+with this crate's own `QueryRoot` — the generated decoder's own GraphQL surface, ruling R10, is
+never referenced) and `carbon_core::graphql::primitives::I64` (a string-serialized big-int
+scalar — juniper's built-in `Int` is `i32`-only). `graphql_router` was NOT reused: it has no
+seam to run the depth/complexity guard before juniper executes, so `crates/api/src/router.rs`
+builds the same route shape directly from `juniper_axum`'s primitives instead.
+
+### The DoS guards
+
+- `first` clamps to `[0, 100]` (default 20), `offset` to `[0, 10_000]` — silent, never an error.
+- Query depth (≤8) / complexity (≤500 fields) pre-parsed with the `graphql-parser` crate
+  (0.16 juniper has no built-in limiter) before anything reaches juniper. GraphiQL's real
+  `IntrospectionQuery` is legitimately deeper than 8 (its `TypeRef` fragment nests `ofType`
+  seven levels); rather than raise the limits, an exact allowlist recognises only an operation
+  named `IntrospectionQuery` whose top-level selection is `__schema`/`__type` — a disguised deep
+  data query under the same name is still measured and rejected.
+- Dedicated read pool (`crates/api/src/db.rs`) with `SET statement_timeout = '5s'` via
+  `after_connect`, separate from the indexer's write pool.
+- `graphql_requests_total`, `graphql_request_duration_seconds`, `graphql_rejected_total{reason}`
+  on `METRICS_ADDR` (default `0.0.0.0:9465` — deliberately different from the indexer's `9464`).
+
+### Not extracted into a shared module
+
+Both `crates/indexer`'s `config`/`metrics` modules stayed indexer-only; `crates/api` duplicates
+the ~20 lines of overlap (RPC endpoint selection, URL redaction, the Prometheus exporter
+`install(addr)` shape) rather than depending on the `indexer` crate as a library. Depending on
+it would drag its whole non-GraphQL dependency graph (Yellowstone gRPC, `carbon-yellowstone-grpc-datasource`,
+`clap`, the Windows `protoc` workaround) into this binary's build for no functional benefit.
+`crates/indexer` itself was not modified.

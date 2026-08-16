@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id AS \"id!\", active AS \"active!\", added_by AS \"added_by!\",\n                   added_at_slot AS \"added_at_slot!\", added_at AS \"added_at!\",\n                   added_in_tx AS \"added_in_tx!\",\n                   removed_at_slot, removed_at, removed_in_tx\n            FROM admins_view\n            WHERE ($1::bool IS NULL OR active = $1)\n            ORDER BY added_at_slot DESC, id ASC\n            LIMIT $2 OFFSET $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "active!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "added_by!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "added_at_slot!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "added_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "added_in_tx!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "removed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "removed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "removed_in_tx",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "898fac89c22bc9c987b7bb31d3bf85ffc15a444e3f2146f84c368a71b7bcbcf2"
+}

@@ -245,7 +245,24 @@ dependencies = [
 name = "api"
 version = "0.1.0"
 dependencies = [
- "carbon-xcavate-whitelist-decoder",
+ "anyhow",
+ "axum",
+ "bs58",
+ "carbon-core",
+ "chrono",
+ "env_logger",
+ "graphql-parser",
+ "juniper",
+ "juniper_axum",
+ "log",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-commitment-config",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -800,10 +817,8 @@ name = "carbon-xcavate-whitelist-decoder"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "borsh",
  "carbon-core",
- "juniper",
  "serde",
  "serde-big-array",
  "serde_json",
@@ -1886,6 +1901,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphql-parser"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a818c0d883d7c0801df27be910917750932be279c7bc82dc541b8769425f409"
+dependencies = [
+ "combine 4.6.7",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2524,6 +2549,7 @@ checksum = "3478f4a8a2a1c7679944f5f4f08c60d6440f9970da481d79c8f8931201424403"
 dependencies = [
  "async-trait",
  "auto_enums",
+ "chrono",
  "fnv",
  "futures",
  "indexmap",

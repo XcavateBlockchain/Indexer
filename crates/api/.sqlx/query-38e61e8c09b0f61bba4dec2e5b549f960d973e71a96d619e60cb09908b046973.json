@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT count(*) FROM whitelist_actions\n            WHERE ($1::text IS NULL OR subject = $1)\n              AND ($2::text IS NULL OR actor = $2)\n              AND ($3::text IS NULL OR type = $3)\n              AND ($4::text IS NULL OR tx_signature = $4)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "38e61e8c09b0f61bba4dec2e5b549f960d973e71a96d619e60cb09908b046973"
+}
