@@ -395,3 +395,60 @@ the ~20 lines of overlap (RPC endpoint selection, URL redaction, the Prometheus 
 it would drag its whole non-GraphQL dependency graph (Yellowstone gRPC, `carbon-yellowstone-grpc-datasource`,
 `clap`, the Windows `protoc` workaround) into this binary's build for no functional benefit.
 `crates/indexer` itself was not modified.
+
+## Phase 6 — Observability: Prometheus + Grafana (2026-08-16)
+
+`monitoring/` now targets the Carbon binaries instead of the old SubQuery node. Full report:
+`.superpowers/sdd/carbon-migration-spec/task-6-report.md`.
+
+### Scrape config
+
+`monitoring/prometheus.yml`'s single `subquery-node` job (port 3000) is replaced by two jobs at
+the ports Tasks 3/5 actually bind: `indexer` → `indexer:9464`, `api` → `api:9465`, both 10s
+intervals. A `rule_files` entry points at the new `monitoring/alerts.yml`. The old job's comment
+now explains it belongs to the SubQuery rollback stack (git history has the file).
+
+### Alert rules (new: `monitoring/alerts.yml`)
+
+Ruling R19: rules only, no Alertmanager — notification routing is explicitly out of scope.
+`SlotLagHigh` (`chain_tip_slot - last_contiguous_slot > 3000` for 5m), `DecodeFailures`
+(`updates_failed` or `decode_skipped_total` increased in 10m), `IndexerDown`/`ApiDown`
+(`up == 0` for 2m per job), `ReconnectStorm` (`grpc_reconnects_total` up more than 5 in 15m).
+
+**Correction vs. the brief**: `BackfillStalled` cannot be `backfill_complete == 0 and
+increase(backfill_last_processed_slot[15m]) == 0` as suggested — there is no `backfill_complete`
+Prometheus metric (checked against task-4-report.md's metrics table and
+`crates/indexer/src/metrics.rs`; `backfill_complete` is a `sync_state` DB column, surfaced only
+via GraphQL/`​/health`). Derived instead from what exists: `(chain_tip_slot -
+last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0` for 5m —
+`changes()` rather than `increase()` because the gauge falls, it doesn't count up. Caveat noted
+in the rule's own comment: since the gauge freezes forever once a backfill completes, this can
+also fire if the *reconciler* stalls well after backfill finished; `syncStatus`/`/health`'s
+`backfillComplete` field disambiguates the two cases.
+
+### Dashboard (`monitoring/grafana/dashboards/indexer-health.json`)
+
+Same `uid`/filename (`indexer-health`), same pinned `prometheus` datasource uid, rebuilt for the
+13 carbon metrics across all required panel groups: slot lag (top-left, biggest, green
+<300/yellow <3000/red >=3000 — plus a companion chain-tip-vs-contiguous timeseries), updates/sec
+by pipe (`transaction_updates_processed`/`account_updates_processed`/
+`account_deletions_processed` — no `carbon_` prefix, no `_total` suffix, verified against
+carbon-core 0.12.0's `pipeline.rs` source directly), decode failures (`updates_failed` +
+`decode_skipped_total` by reason), DB flush latency p50/p95/p99 (`histogram_quantile` over
+`db_flush_duration_seconds`) and batch size (`db_flush_rows`), stream health (`grpc_reconnects_total`
+rate + `up{job="indexer"}`, with the "understates brief blips" caveat in the panel description),
+backfill progress (`backfill_last_processed_slot` with a threshold line at the floor 483386556,
+`snapshot_accounts_loaded`), and GraphQL (request rate, p95 latency, `graphql_rejected_total` by
+reason).
+
+### Verification
+
+`promtool check config`/`check rules` clean (prom/prometheus:v3.13.2, Docker). Dashboard
+imported cleanly into a throwaway grafana:13.1.3 (all 13 panels, `provisionedExternalId:
+indexer-health.json`, no errors); the datasource proxy could reach a throwaway Prometheus on the
+same network. Live-data smoke: `indexer run` + `api` against Task 5's replayed devnet database
+(`carbon_task5`), scraped by a scratchpad Prometheus pointed at `host.docker.internal:9464/9465`
+— `chain_tip_slot`/`last_contiguous_slot` both read `484472667` (lag 0), `graphql_requests_total`
+incremented across four live GraphQL queries, all six alert rules evaluated `health: ok` and
+`inactive`. Harness torn down; committed configs re-checked to contain `indexer:9464`/`api:9465`,
+not the harness targets.

@@ -1,0 +1,127 @@
+# Prometheus alerting rules for the indexer stack.
+#
+# Ruling R19: rules only, no Alertmanager. Notification routing (paging, Slack, email,
+# ...) is explicitly out of scope for this migration; these rules exist so firing alerts
+# are visible in Prometheus's own /alerts page and, via the Prometheus datasource, in
+# Grafana's alerting/annotations views. Nothing here sends a notification anywhere.
+#
+# Mounted read-only at /etc/prometheus/alerts.yml (see docker-compose.yml and
+# monitoring/prometheus.yml's `rule_files`).
+#
+# Metric names verified against crates/indexer/src/metrics.rs, crates/api/src/metrics.rs
+# and carbon-core 0.12.0's own pipeline.rs (see task-6-report.md for the verification
+# trail). One correction vs. the task brief: there is no `backfill_complete` Prometheus
+# gauge (it exists only as a `sync_state` DB column and a GraphQL/`/health` field, never
+# exported as a metric) -- see BackfillStalled below for how that rule is derived instead.
+
+groups:
+  - name: indexer.rules
+    rules:
+      - alert: SlotLagHigh
+        expr: chain_tip_slot - last_contiguous_slot > 3000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Indexer slot lag is above 3000 slots (~20 min of devnet blocks)"
+          description: >-
+            chain_tip_slot - last_contiguous_slot has stayed above 3000 for 5 minutes.
+            This is the ground-truth freshness measure -- a proven-contiguous lag, not a
+            "last row written" lag. Sustained high lag means the live stream, the
+            startup backfill, or the reconciliation supervisor is not keeping up.
+
+      - alert: DecodeFailures
+        expr: increase(updates_failed[10m]) > 0 or increase(decode_skipped_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Instruction decode/mapping failures in the last 10 minutes"
+          description: >-
+            updates_failed (carbon-core: the processor returned Err) or
+            decode_skipped_total (an instruction decoded but could not be mapped to a
+            whitelist_actions row; see the reason label) increased in the last 10
+            minutes. Per Task 3, a mapping failure is only reachable if the deployed
+            program's account order diverges from the checked-in IDL -- treat this as a
+            data-integrity signal, not noise.
+
+      - alert: IndexerDown
+        expr: up{job="indexer"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The indexer's /metrics endpoint has been unreachable for 2 minutes"
+          description: >-
+            Prometheus cannot scrape indexer:9464. Covers "the process is down" and,
+            to the extent it is observable at all, "the process is up but its gRPC
+            stream is disconnected" -- carbon's Yellowstone datasource re-subscribes
+            internally on a stream error without the process (or this scrape target)
+            ever going down, so a short stream drop that healed itself will NOT trip
+            this rule. SlotLagHigh is the metric that catches that case; see the Stream
+            health panel's description for the same caveat.
+
+      - alert: ApiDown
+        expr: up{job="api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The GraphQL API's /metrics endpoint has been unreachable for 2 minutes"
+          description: "Prometheus cannot scrape api:9465."
+
+      - alert: ReconnectStorm
+        expr: increase(grpc_reconnects_total[15m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 gRPC stream reconnects in 15 minutes"
+          description: >-
+            grpc_reconnects_total counts Yellowstone gRPC stream sessions that ended
+            and had to be rebuilt by the reconnect loop in main.rs. A storm usually
+            means Alchemy throttling, a network problem, or an unhealthy upstream --
+            note this undercounts brief blips the datasource heals internally (see
+            IndexerDown's description), so treat this as a lower bound.
+
+      # BackfillStalled -- derived, not the brief's literal expression.
+      #
+      # The brief's suggested rule (`backfill_complete == 0 and
+      # increase(backfill_last_processed_slot[15m]) == 0`) assumes a `backfill_complete`
+      # Prometheus gauge. Checked against task-4-report.md's metrics table
+      # (crates/indexer/src/metrics.rs): no such gauge exists. `backfill_complete` is a
+      # `sync_state` boolean column, surfaced only via GraphQL's `syncStatus` and
+      # `/health` -- never exported as a metric. The only backfill-progress signal
+      # Prometheus has is `backfill_last_processed_slot`, a gauge set ONLY by the
+      # history-walk (not by reconciliation) that falls monotonically while a walk is
+      # in progress and then freezes forever once the walk completes (task-4-report.md,
+      # "Metrics" table).
+      #
+      # `changes()` (not `increase()`, which is for counters) is the right function for
+      # a gauge: it counts value changes in the window regardless of direction. The
+      # slot-lag condition is ANDed in for two reasons: (1) it is what keeps this rule
+      # from being permanently latent-true after a completed backfill, since the gauge
+      # freezing is then expected, not stalled; (2) it is the only proxy this rule has
+      # for "a backfill (or a reconciliation catch-up crawl) SHOULD be making progress
+      # right now". Caveat, noted here rather than hidden: because
+      # backfill_last_processed_slot never resumes after completion, if the reconciler
+      # itself stalls post-backfill for long enough to also breach the 3000-slot lag
+      # threshold, this rule fires alongside SlotLagHigh even though the *initial*
+      # backfill is long done. That is an acceptable false-labelling (not a
+      # false-positive -- something genuinely is stuck) given no better signal exists
+      # without adding a new metric, which is out of this task's scope (monitoring/**
+      # only, no Rust).
+      - alert: BackfillStalled
+        expr: (chain_tip_slot - last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No backfill progress in 15 minutes while the indexer is behind"
+          description: >-
+            backfill_last_processed_slot has not changed in 15 minutes while
+            chain_tip_slot - last_contiguous_slot exceeds 3000. Most likely a stuck
+            history walk (a poison signature, or every configured RPC endpoint
+            failing -- see task-4-report.md concern #2/#3). Also fires if the
+            reconciliation supervisor stalls well after a completed backfill, since
+            backfill_last_processed_slot does not resume in that phase; check
+            `syncStatus`/`/health`'s `backfillComplete` field to tell the two cases
+            apart.

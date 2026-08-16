@@ -1,27 +1,27 @@
 {
   "uid": "indexer-health",
   "title": "Indexer health",
-  "description": "SubQuery node sync progress and throughput, scraped from subquery-node:3000/metrics. On Solana the node's \"block height\" gauges are slot numbers.",
-  "tags": ["indexer", "subquery"],
+  "description": "Carbon (Rust) indexer pipeline and GraphQL API health, scraped from indexer:9464/metrics and api:9465/metrics. Replaces the old SubQuery-node dashboard (git history) as part of the carbon-migration. Slot lag (top-left) is the single most important number: chain_tip_slot - last_contiguous_slot, a proven-contiguous lag, not a \"last row written\" lag.",
+  "tags": ["indexer", "carbon"],
   "timezone": "browser",
   "editable": true,
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
     {
       "id": 1,
       "type": "stat",
-      "title": "Sync lag",
-      "description": "Slots between the chain target and the slot currently being processed. Shrinks toward ~0 as the indexer catches up with the devnet tip.",
+      "title": "Slot lag",
+      "description": "chain_tip_slot - last_contiguous_slot. The single most important number: whether the indexer has proven contiguity up to (near) the chain tip. Thresholds: green < 300, yellow < 3000, red >= 3000 (the SlotLagHigh alert fires at the same 3000 threshold after 5m sustained).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "clamp_min(subql_indexer_target_block_height - subql_indexer_processing_block_height, 0)",
+          "expr": "chain_tip_slot - last_contiguous_slot",
           "legendFormat": "lag",
           "instant": true
         }
@@ -44,7 +44,7 @@
             "steps": [
               { "color": "green", "value": null },
               { "color": "yellow", "value": 300 },
-              { "color": "red", "value": 5000 }
+              { "color": "red", "value": 3000 }
             ]
           }
         },
@@ -53,73 +53,227 @@
     },
     {
       "id": 2,
-      "type": "stat",
-      "title": "Processing slot",
-      "description": "Slot the node is currently processing (subql_indexer_processing_block_height).",
+      "type": "timeseries",
+      "title": "Chain tip vs last contiguous slot",
+      "description": "The two gauges the slot-lag panel subtracts. chain_tip_slot and last_contiguous_slot are both set by the reconciliation supervisor (reconcile.rs); the gap between the lines is the slot lag.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_processing_block_height",
-          "legendFormat": "processing",
-          "instant": true
+          "expr": "chain_tip_slot",
+          "legendFormat": "chain_tip_slot"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "last_contiguous_slot",
+          "legendFormat": "last_contiguous_slot"
         }
       ],
       "options": {
-        "colorMode": "none",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "textMode": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "none" }
       },
       "fieldConfig": {
-        "defaults": { "unit": "none", "decimals": 0, "mappings": [] },
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
         "overrides": []
       }
     },
     {
       "id": 3,
-      "type": "stat",
-      "title": "Chain target slot",
-      "description": "Tip the node is aiming for (subql_indexer_target_block_height).",
+      "type": "timeseries",
+      "title": "Updates/sec by pipe",
+      "description": "carbon-core 0.12.0's own per-pipe counters (unprefixed, no _total suffix): transaction_updates_processed, account_updates_processed, account_deletions_processed.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_target_block_height",
-          "legendFormat": "target",
-          "instant": true
+          "expr": "rate(transaction_updates_processed[5m])",
+          "legendFormat": "transaction updates"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(account_updates_processed[5m])",
+          "legendFormat": "account updates"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(account_deletions_processed[5m])",
+          "legendFormat": "account deletions"
         }
       ],
       "options": {
-        "colorMode": "none",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "textMode": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "none" }
       },
       "fieldConfig": {
-        "defaults": { "unit": "none", "decimals": 0, "mappings": [] },
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
         "overrides": []
       }
     },
     {
       "id": 4,
-      "type": "stat",
-      "title": "RPC endpoint",
-      "description": "subql_indexer_api_connected — whether the node currently has a working JSON-RPC connection. Flapping here usually means Alchemy throttling (429) and failover to the public devnet RPC.",
+      "type": "timeseries",
+      "title": "Decode failures",
+      "description": "updates_failed (carbon-core: the processor returned Err) and decode_skipped_total by reason (missing_account, empty_absolute_path, serialize -- an instruction decoded but could not be mapped to a whitelist_actions row). Both should sit at zero; see the DecodeFailures alert.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "min(subql_indexer_api_connected)",
-          "legendFormat": "connected",
+          "expr": "rate(updates_failed[5m])",
+          "legendFormat": "updates_failed"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (reason) (rate(decode_skipped_total[5m]))",
+          "legendFormat": "decode_skipped: {{reason}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "DB flush latency (p50 / p95 / p99)",
+      "description": "histogram_quantile over db_flush_duration_seconds -- wall time of one batched write transaction (<=100 ops or every 250ms, whichever comes first).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(db_flush_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(db_flush_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(db_flush_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "DB flush batch size (avg rows/flush)",
+      "description": "rate(db_flush_rows_sum[5m]) / rate(db_flush_rows_count[5m]) -- average write ops per committed batch, from the db_flush_rows histogram.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(db_flush_rows_sum[5m]) / rate(db_flush_rows_count[5m])",
+          "legendFormat": "avg rows/flush"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Stream health: gRPC reconnects",
+      "description": "rate(grpc_reconnects_total[5m]) -- Yellowstone gRPC stream sessions rebuilt by the reconnect loop. Caveat: carbon's own datasource re-subscribes internally on a stream error without this counter (or the up{job=\"indexer\"} scrape) ever seeing it, so this understates brief blips. Slot lag (top-left) is the ground truth for stream health, not this panel.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(grpc_reconnects_total[5m])",
+          "legendFormat": "reconnects/sec"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "indexer scrape up",
+      "description": "up{job=\"indexer\"} -- whether Prometheus can currently reach indexer:9464/metrics. Feeds the IndexerDown alert (2m).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 4, "x": 8, "y": 24 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "min(up{job=\"indexer\"})",
+          "legendFormat": "up",
           "instant": true
         }
       ],
@@ -139,8 +293,8 @@
             {
               "type": "value",
               "options": {
-                "0": { "text": "Disconnected", "color": "red", "index": 0 },
-                "1": { "text": "Connected", "color": "green", "index": 1 }
+                "0": { "text": "Down", "color": "red", "index": 0 },
+                "1": { "text": "Up", "color": "green", "index": 1 }
               }
             }
           ],
@@ -156,30 +310,18 @@
       }
     },
     {
-      "id": 5,
+      "id": 9,
       "type": "timeseries",
-      "title": "Slot height: processing vs target",
-      "description": "The gap between the two lines is the sync lag. Parallel lines mean the indexer is keeping up with block production.",
+      "title": "Backfill progress: last processed slot",
+      "description": "backfill_last_processed_slot -- oldest slot the running history walk has committed (falls monotonically while a walk is in progress, then freezes once complete; only the history walk sets it, not reconciliation -- task-4-report.md). The horizontal line marks backfill_floor_slot (483386556): the walk is done once this reaches it.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "gridPos": { "h": 8, "w": 8, "x": 12, "y": 24 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_processing_block_height",
-          "legendFormat": "processing"
-        },
-        {
-          "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_target_block_height",
-          "legendFormat": "target"
-        },
-        {
-          "refId": "C",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_best_block_height",
-          "legendFormat": "best"
+          "expr": "backfill_last_processed_slot",
+          "legendFormat": "backfill_last_processed_slot"
         }
       ],
       "options": {
@@ -190,24 +332,65 @@
         "defaults": {
           "unit": "none",
           "decimals": 0,
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "gray", "value": null },
+              { "color": "orange", "value": 483386556 }
+            ]
+          }
         },
         "overrides": []
       }
     },
     {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Indexing throughput",
-      "description": "Blocks processed per second, averaged over 5m. Devnet produces roughly 2.5 slots/s, so sustained throughput below that means the indexer is falling behind.",
+      "id": 10,
+      "type": "stat",
+      "title": "Snapshot accounts loaded",
+      "description": "snapshot_accounts_loaded -- accounts written by the last getProgramAccounts snapshot.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 24 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(subql_indexer_processed_block_count[5m])",
-          "legendFormat": "blocks/sec"
+          "expr": "snapshot_accounts_loaded",
+          "legendFormat": "accounts",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "none", "decimals": 0, "mappings": [] },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "GraphQL request rate",
+      "description": "rate(graphql_requests_total[5m]) -- total requests received on api's /graphql, job=\"api\".",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(graphql_requests_total[5m])",
+          "legendFormat": "requests/sec"
         }
       ],
       "options": {
@@ -216,8 +399,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "decimals": 2,
+          "unit": "ops",
+          "decimals": 3,
           "min": 0,
           "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
         },
@@ -225,24 +408,18 @@
       }
     },
     {
-      "id": 7,
+      "id": 12,
       "type": "timeseries",
-      "title": "Fetch queue depth",
-      "description": "Blocks buffered ahead of the processor. A queue pinned at zero means the node is starved by the RPC endpoint rather than by processing.",
+      "title": "GraphQL p95 latency",
+      "description": "histogram_quantile(0.95, ...) over graphql_request_duration_seconds -- wall time of one /graphql request (the depth/complexity guard plus juniper execution).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_block_queue_size",
-          "legendFormat": "block queue"
-        },
-        {
-          "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_blocknumber_queue_size",
-          "legendFormat": "block number queue"
+          "expr": "histogram_quantile(0.95, sum(rate(graphql_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
         }
       ],
       "options": {
@@ -251,33 +428,27 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "decimals": 0,
+          "unit": "s",
+          "decimals": 3,
           "min": 0,
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
         },
         "overrides": []
       }
     },
     {
-      "id": 8,
+      "id": 13,
       "type": "timeseries",
-      "title": "Store cache",
-      "description": "Buffered entity records against the flush threshold. Records reaching the threshold triggers a write to Postgres.",
+      "title": "GraphQL rejected requests by reason",
+      "description": "sum by (reason) (rate(graphql_rejected_total[5m])) -- requests rejected by the pre-execution guard before juniper ever runs them. reason is depth, complexity, or parse.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_store_cache_records_size",
-          "legendFormat": "records"
-        },
-        {
-          "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "subql_indexer_store_cache_threshold",
-          "legendFormat": "flush threshold"
+          "expr": "sum by (reason) (rate(graphql_rejected_total[5m]))",
+          "legendFormat": "{{reason}}"
         }
       ],
       "options": {
@@ -286,10 +457,10 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "decimals": 0,
+          "unit": "ops",
+          "decimals": 3,
           "min": 0,
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
         },
         "overrides": []
       }
