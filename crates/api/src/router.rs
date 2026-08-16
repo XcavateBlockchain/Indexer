@@ -16,11 +16,11 @@ use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, on, MethodFilter};
 use axum::Router;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use juniper::http::{GraphQLBatchRequest, GraphQLBatchResponse, GraphQLResponse};
 use juniper::{FieldError, Value};
 use juniper_axum::extract::JuniperRequest;
 use juniper_axum::response::JuniperResponse;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::graphql::GraphQLContext;
 use crate::guards::{self, Rejection};

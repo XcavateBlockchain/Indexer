@@ -75,8 +75,7 @@ impl Config {
             format!("METRICS_ADDR is not a host:port address: {metrics_addr_str}")
         })?;
 
-        let cors_allowed_origins =
-            parse_cors_origins(std::env::var("CORS_ALLOWED_ORIGINS").ok())?;
+        let cors_allowed_origins = parse_cors_origins(std::env::var("CORS_ALLOWED_ORIGINS").ok())?;
 
         Ok(Self {
             database_url,
@@ -205,12 +204,16 @@ mod tests {
 
     #[test]
     fn cors_list_is_trimmed_and_trailing_slash_dropped() {
-        let origins =
-            parse_cors_origins(Some(" https://app.example.com/ ,http://localhost:3000".into()))
-                .unwrap()
-                .unwrap();
+        let origins = parse_cors_origins(Some(
+            " https://app.example.com/ ,http://localhost:3000".into(),
+        ))
+        .unwrap()
+        .unwrap();
         let origins: Vec<&str> = origins.iter().map(|v| v.to_str().unwrap()).collect();
-        assert_eq!(origins, ["https://app.example.com", "http://localhost:3000"]);
+        assert_eq!(
+            origins,
+            ["https://app.example.com", "http://localhost:3000"]
+        );
     }
 
     #[test]
