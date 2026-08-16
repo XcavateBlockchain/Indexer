@@ -1,0 +1,169 @@
+# DISABLED ROLLBACK PATH -- the old SubQuery stack, preserved unchanged for emergency
+# rollback only. Do NOT `up` this file in normal operation; the active stack is
+# docker-compose.yml (the Carbon/Rust indexer + api). See MIGRATION_LOG.md and
+# .superpowers/sdd/carbon-migration-spec/DECISIONS.md (ruling R5) for why this is kept
+# instead of deleted: grpc-api (the old gRPC read API) lives only here, and this is the
+# fallback if the Carbon migration needs to be backed out. `docker compose -f
+# docker-compose.subquery.yml config` should still parse; it is not exercised by CI.
+#
+# Full indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API,
+# plus Prometheus/Grafana monitoring.
+#
+# Local dev:  cp .env.example .env  →  docker compose up --build
+# Production: images are prebuilt by CI (GHCR); the deploy workflow writes an
+# .env on the server that pins NODE_IMAGE / GRPC_IMAGE to immutable sha tags.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: docker/pg-Dockerfile
+    image: ${PG_IMAGE:-indexer-postgres:local}
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      # Applied only on FIRST initialization of the pgdata volume; rotating it
+      # later requires ALTER USER inside postgres first (see docs/deployment.md).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  subquery-node:
+    build:
+      context: .
+      dockerfile: docker/node.Dockerfile
+    image: ${NODE_IMAGE:-indexer-node:local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DB_USER: postgres
+      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB_DATABASE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+    command:
+      - -f=/app
+      - --db-schema=app
+      # Keyed Alchemy endpoint is injected at runtime so it is never committed
+      # or baked into an image. Public devnet RPC remains as fallback.
+      - --network-endpoint=https://solana-devnet.g.alchemy.com/v2/${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
+      - --network-endpoint=https://api.devnet.solana.com
+      # Must outpace devnet block production (~2.5 slots/s) to reach the tip,
+      # while staying inside Alchemy free-tier throughput (500 CU/s).
+      - --batch-size=10
+      - --workers=2
+      - --unfinalized-blocks=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  graphql-engine:
+    image: subquerynetwork/subql-query:v2.25.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      subquery-node:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRAPHQL_PORT:-3010}:3000"
+    environment:
+      DB_USER: postgres
+      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB_DATABASE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+    command:
+      - --name=app
+      - --playground
+      - --indexer=http://subquery-node:3000
+
+  grpc-api:
+    build:
+      context: ./grpc-api
+    image: ${GRPC_IMAGE:-indexer-grpc:local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      subquery-node:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRPC_PORT:-50051}:50051"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB_DATABASE: postgres
+      DB_SCHEMA: app
+      GRPC_PORT: 50051
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    restart: unless-stopped
+    logging: *default-logging
+    # Deliberately no depends_on: monitoring must stay up precisely when the
+    # thing it monitors is down. Prometheus tolerates an unreachable target.
+    #
+    # Bound to loopback, not 0.0.0.0: Grafana reaches it over the compose
+    # network, and Prometheus has no auth of its own, so it must not be exposed
+    # publicly. For ad-hoc PromQL on the server, tunnel it over SSH
+    # (see docs/deployment.md).
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Node metrics are only useful recent; cap the TSDB so it cannot grow
+      # without bound on a small server.
+      - --storage.tsdb.retention.time=15d
+
+  grafana:
+    image: grafana/grafana:13.1.3
+    depends_on:
+      prometheus:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRAFANA_PORT:-3011}:3000"
+    environment:
+      # Local default is admin/admin; the deploy workflow requires a real
+      # password from the GRAFANA_PASSWORD secret before it will ship.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      # Datasource + dashboard provider definitions, applied on every start.
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON, loaded by the file provider. Kept outside
+      # /var/lib/grafana so it does not nest inside the grafanadata volume.
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:

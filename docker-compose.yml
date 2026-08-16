@@ -1,9 +1,12 @@
-# Full indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API,
+# Full indexer stack: postgres + the Carbon/Rust indexer + the Carbon/Rust GraphQL api,
 # plus Prometheus/Grafana monitoring.
 #
-# Local dev:  cp .env.example .env  →  docker compose up --build
+# Local dev:  cp .env.example .env  →  docker compose up -d --build
 # Production: images are prebuilt by CI (GHCR); the deploy workflow writes an
-# .env on the server that pins NODE_IMAGE / GRPC_IMAGE to immutable sha tags.
+# .env on the server that pins INDEXER_IMAGE / API_IMAGE / PG_IMAGE to immutable sha tags.
+#
+# Rollback: the previous SubQuery-based stack is preserved, unchanged, in
+# docker-compose.subquery.yml -- see that file's header and MIGRATION_LOG.md.
 
 x-logging: &default-logging
   driver: json-file
@@ -24,6 +27,8 @@ services:
     environment:
       # Applied only on FIRST initialization of the pgdata volume; rotating it
       # later requires ALTER USER inside postgres first (see docs/deployment.md).
+      # This is the SAME pgdata volume the old SubQuery stack used (its `app` schema
+      # coexists alongside this stack's public-schema tables) -- see docker-compose.subquery.yml.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -31,84 +36,69 @@ services:
       timeout: 5s
       retries: 5
 
-  subquery-node:
+  indexer:
     build:
       context: .
-      dockerfile: docker/node.Dockerfile
-    image: ${NODE_IMAGE:-indexer-node:local}
+      dockerfile: docker/rust.Dockerfile
+      target: indexer
+    image: ${INDEXER_IMAGE:-indexer:local}
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     logging: *default-logging
     environment:
-      DB_USER: postgres
-      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      DB_DATABASE: postgres
-      DB_HOST: postgres
-      DB_PORT: 5432
-    command:
-      - -f=/app
-      - --db-schema=app
-      # Keyed Alchemy endpoint is injected at runtime so it is never committed
-      # or baked into an image. Public devnet RPC remains as fallback.
-      - --network-endpoint=https://solana-devnet.g.alchemy.com/v2/${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
-      - --network-endpoint=https://api.devnet.solana.com
-      # Must outpace devnet block production (~2.5 slots/s) to reach the tip,
-      # while staying inside Alchemy free-tier throughput (500 CU/s).
-      - --batch-size=10
-      - --workers=2
-      - --unfinalized-blocks=true
+      # Composed here, not a separate DATABASE_URL secret (ruling R2).
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/postgres
+      ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
+      RUST_LOG: ${RUST_LOG:-info,hyper=warn,h2=warn,tonic=warn,rustls=warn}
+      # ALCHEMY_GRPC_URL / ALCHEMY_RPC_URL / RPC_FALLBACK_URL / PROGRAM_ID /
+      # BACKFILL_START_SLOT / METRICS_ADDR / RECONCILE_INTERVAL all have working defaults
+      # baked into the binary (crates/indexer/src/config.rs) -- only set them here (or in
+      # .env, wired through above) if overriding one for a specific deployment.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/ready"]
-      interval: 5s
+      # Runs `indexer run`: migrations, then the startup subscribe gate (up to 30s on a
+      # slow link), then the metrics listener -- see crates/indexer/src/main.rs. curl is
+      # installed in docker/rust.Dockerfile's runtime-base stage for exactly this.
+      test: ["CMD", "curl", "-f", "http://localhost:9464/metrics"]
+      interval: 10s
       timeout: 5s
-      retries: 20
-      start_period: 30s
+      retries: 12
+      start_period: 45s
 
-  graphql-engine:
-    image: subquerynetwork/subql-query:v2.25.0
-    depends_on:
-      postgres:
-        condition: service_healthy
-      subquery-node:
-        condition: service_healthy
-    restart: unless-stopped
-    logging: *default-logging
-    ports:
-      - "${GRAPHQL_PORT:-3010}:3000"
-    environment:
-      DB_USER: postgres
-      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      DB_DATABASE: postgres
-      DB_HOST: postgres
-      DB_PORT: 5432
-    command:
-      - --name=app
-      - --playground
-      - --indexer=http://subquery-node:3000
-
-  grpc-api:
+  api:
     build:
-      context: ./grpc-api
-    image: ${GRPC_IMAGE:-indexer-grpc:local}
+      context: .
+      dockerfile: docker/rust.Dockerfile
+      target: api
+    image: ${API_IMAGE:-indexer-api:local}
     depends_on:
       postgres:
         condition: service_healthy
-      subquery-node:
-        condition: service_started
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "${GRPC_PORT:-50051}:50051"
+      - "${GRAPHQL_PORT:-3010}:3010"
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      DB_DATABASE: postgres
-      DB_SCHEMA: app
-      GRPC_PORT: 50051
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/postgres
+      GRAPHQL_PORT: "3010"
+      # 9465, not the indexer's 9464 -- crates/api/src/config.rs's own default, so the two
+      # binaries' /metrics listeners never collide when scraped from the same compose
+      # network (verified against task-5-report.md; the brief's suggested value was
+      # correct here, task-6-report.md independently confirmed it against source).
+      METRICS_ADDR: "0.0.0.0:9465"
+      # Lets /health's and syncStatus's getSlot calls use the paid Alchemy endpoint
+      # instead of falling back to public devnet (crates/api/src/config.rs tolerates this
+      # being unset -- it degrades to RPC_FALLBACK_URL -- but the primary endpoint is
+      # faster and not rate-limited).
+      ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
+      RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   prometheus:
     image: prom/prometheus:v3.13.2
@@ -125,12 +115,22 @@ services:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Task 6's prometheus.yml has `rule_files: [/etc/prometheus/alerts.yml]`; must land
+      # at exactly this path or Prometheus fails to start.
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - promdata:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       # Node metrics are only useful recent; cap the TSDB so it cannot grow
       # without bound on a small server.
       - --storage.tsdb.retention.time=15d
+    healthcheck:
+      # prom/prometheus's image is busybox-based (no curl); its wget supports --spider.
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   grafana:
     image: grafana/grafana:13.1.3
@@ -154,8 +154,16 @@ services:
       # /var/lib/grafana so it does not nest inside the grafanadata volume.
       - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafanadata:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
 
 volumes:
+  # SAME name as the old stack (docker-compose.subquery.yml) -- it is the same postgres
+  # instance/volume; the SubQuery schema `app` coexists in it, which is the rollback path.
   pgdata:
   promdata:
   grafanadata:

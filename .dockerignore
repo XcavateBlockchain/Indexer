@@ -1,0 +1,27 @@
+# Keeps the Docker build context (docker-compose.yml's `context: .`) small and avoids
+# invalidating layer caches with files no Rust build needs. Deliberately does NOT exclude
+# Cargo.toml/Cargo.lock/crates/ or migrations/ -- cargo-chef needs the whole workspace
+# manifest tree to compute its recipe, and the indexer embeds `migrations/` via sqlx at
+# runtime startup.
+
+.git/
+
+# Rust build output -- multi-GB, and rebuilt fresh inside the image anyway.
+target/
+
+# Node/SubQuery rollback-stack artifacts (docker-compose.subquery.yml builds these from
+# their own directories directly; the Carbon build never touches them).
+node_modules/
+dist/
+grpc-api/node_modules/
+grpc-api/dist/
+
+# Docs, specs and scratch state -- not needed to build a binary.
+.superpowers/
+docs/
+*.md
+
+# Local secrets -- never enter a build context.
+.env
+.env.*
+!.env.example

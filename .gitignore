@@ -1,4 +1,5 @@
 .env
+.env.compose-test
 
 node_modules/
 dist/

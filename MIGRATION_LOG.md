@@ -452,3 +452,81 @@ same network. Live-data smoke: `indexer run` + `api` against Task 5's replayed d
 incremented across four live GraphQL queries, all six alert rules evaluated `health: ok` and
 `inactive`. Harness torn down; committed configs re-checked to contain `indexer:9464`/`api:9465`,
 not the harness targets.
+
+## Phase 7 — Docker Compose (2026-08-16)
+
+The new `docker-compose.yml` replaces the SubQuery-node/graphql-engine/grpc-api trio with the two
+Carbon/Rust binaries (`indexer`, `api`) built by a new `docker/rust.Dockerfile`. The old stack
+moves unchanged (except a top-of-file "disabled rollback path" comment) to
+`docker-compose.subquery.yml`. Full report: `.superpowers/sdd/carbon-migration-spec/task-7-report.md`.
+
+### Compose topology
+
+Five services: `postgres` (unchanged `docker/pg-Dockerfile`, ruling R16), `indexer` and `api`
+(both built from `docker/rust.Dockerfile` via a `build.target`), `prometheus`, `grafana`.
+`DATABASE_URL` is composed inside the compose file from `POSTGRES_PASSWORD` (ruling R2), never a
+separate secret. Only `api` (`GRAPHQL_PORT`, default 3010) and `grafana` (`GRAFANA_PORT`, default
+3011) publish to the host; `prometheus` stays loopback-bound (`127.0.0.1:${PROMETHEUS_PORT:-9090}`,
+unchanged from the old stack); `indexer` publishes nothing. Healthchecks on every service:
+postgres `pg_isready`, indexer `curl http://localhost:9464/metrics`, api `curl
+http://localhost:3010/health`, prometheus `wget --spider http://localhost:9090/-/ready` (its
+image is busybox-based, no curl), grafana `curl http://localhost:3000/api/health`. `indexer`/`api`
+`depends_on: postgres: condition: service_healthy`; `prometheus` has no `depends_on` (kept from
+the old stack's own comment: monitoring must stay up when the monitored thing is down); `grafana`
+`depends_on: prometheus: condition: service_started`. `pgdata` keeps its old-stack name (same
+postgres instance, same volume — the SubQuery `app` schema coexists, which is the rollback path);
+`promdata`/`grafanadata` also carried over unchanged. `monitoring/prometheus.yml` and
+`monitoring/alerts.yml` are both mounted read-only (the latter at exactly
+`/etc/prometheus/alerts.yml`, which Task 6's `rule_files` entry expects); the Grafana provisioning
+and dashboard mounts needed no changes — Task 6 already verified they line up.
+
+### `docker/rust.Dockerfile`: cargo-chef + the protoc decision
+
+One Dockerfile, `chef`/`planner`/`builder` stages shared, then two final `FROM runtime-base`
+targets (`indexer`, `api`) selected via `build.target` in compose. `crates/whitelist-decoder`
+carries its own `[workspace]` table (Task 1), so it is a path dependency outside the main
+workspace that `cargo chef prepare`'s recipe cannot skeletonize; `cargo chef cook` needs its real
+files present, so the Dockerfile `COPY`s just that crate ahead of the cook step (found by a build
+failure, not anticipated — see the report). BuildKit cache mounts on `/usr/local/cargo/registry`
+and `/app/target` make the crates.io downloads and dependency compiles durable across separate
+`docker build` invocations, independent of the ordinary layer cache.
+
+**protoc**: the brief asked whether installing `protobuf-compiler` and setting `PROTOC` bypasses
+`yellowstone-grpc-proto`'s slow vendored-protobuf build. Checked directly against the vendored
+crate sources: `yellowstone-grpc-proto`'s build.rs unconditionally overwrites `PROTOC` with
+`protobuf_src::protoc()` before use, so an env var alone does nothing. The real bypass is Cargo's
+stable "Overriding Build Scripts" feature — `protobuf-src` declares `links = "protobuf-src"`, so a
+`[target.<triple>.protobuf-src] rustc-env = { INSTALL_DIR = "/usr" }` in `.cargo/config.toml`
+(generated in the Dockerfile from `rustc -vV`'s reported host triple) skips its build script
+entirely, and Debian's `protobuf-compiler` + `libprotobuf-dev` packages happen to install to
+exactly the `/usr/bin/protoc` + `/usr/include` layout it expects. Verified working end to end by
+the real build below — the vendored autotools compile never runs.
+
+### Exit verification
+
+From a clean state (`docker compose down -v`; a fresh `.env.compose-test` with throwaway local
+values plus the real `ALCHEMY_API_KEY`, never committed):
+
+- `docker compose --env-file .env.compose-test up -d --build` → all 5 services reached healthy.
+  Cold dependency build (`cargo chef cook` + `cargo build --release` for both binaries, base image
+  already local): 5m16s. Image sizes: `indexer:local` 112MB, `indexer-api:local` 106MB,
+  `indexer-postgres:local` 294MB (unchanged, `pg-Dockerfile` untouched per ruling R16).
+- Indexer logs showed the subscribe gate passing against the real Alchemy key, a `getProgramAccounts`
+  snapshot (11 accounts), and a history backfill (12 signatures) completing within seconds of
+  startup; `curl localhost:3010/health` showed `backfill_complete: true`; `/graphql` introspection
+  and representative queries (`whitelistActions`, `syncStatus`) matched the known chain-truth
+  dataset (11/11/1/2/8 rows — same as Tasks 3-5); Grafana answered on `:3011`; Prometheus (queried
+  via `docker exec` from inside its own container) showed both `indexer:9464` and `api:9465`
+  targets `health: "up"`.
+- `docker restart indexer-indexer-1` → healthy again within 15s, clean startup log
+  ("startup jobs: nothing to do"), row counts unchanged (idempotency).
+- `docker compose -f docker-compose.subquery.yml config` parses.
+- Torn down with `docker compose down` (volumes kept for Task 8); `.env.compose-test` deleted.
+
+**Incidental fix**: the repo's local `.env` had a corrupted first line (`ALCHEMY_API_KEY=` had lost
+its variable name, leaving a bare `=<value>`), which broke every bare `docker compose`
+subcommand that auto-loads `.env` (`ps`, `config`, `ls`, `exec` all failed with a Windows
+`ERROR_INVALID_PARAMETER`-shaped `setenv` error — `up`/`down`/`build` were unaffected since they
+were always invoked here with an explicit `--env-file`). Restored the variable name from the
+value already read earlier in this task's session; `.env` is gitignored and outside this task's
+tracked-file scope, so this is noted here rather than in a diff.
