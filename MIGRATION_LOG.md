@@ -638,7 +638,7 @@ All nine phases landed on branch `carbon-migration`:
 | 6 — Observability | `53967c9..f53f6ed` | Prometheus scrape/alerts, Grafana dashboard |
 | 7 — Docker Compose | `f53f6ed..ffaedeb` | `docker-compose.yml`, `docker/rust.Dockerfile`, SubQuery stack preserved as the rollback file |
 | 8 — CI + deployment | `ffaedeb..d7224c2` | `ci.yml`/`deploy.yml` adapted, rollback steps commented (not deleted) |
-| 9 — Documentation | `d7224c2..HEAD` | This section, plus the four docs and the `docs/deployment.md` update above |
+| 9 — Documentation | `d7224c2..ffd47fc` | This section, plus the four docs and the `docs/deployment.md` update above |
 
 Every phase's review is recorded Approved/clean in the controller ledger
 (`.superpowers/sdd/carbon-migration-spec/progress.md`) before the next phase started; two
