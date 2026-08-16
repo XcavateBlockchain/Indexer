@@ -276,7 +276,11 @@ pub struct CrawlDeps<'a> {
 
 /// One crawl: pages of signatures walked newest -> oldest until a stop condition.
 pub struct CrawlRequest<'a> {
-    pub rpc_url: &'a str,
+    /// Endpoints to try, in order: normally the primary (Alchemy) then the public devnet
+    /// fallback. Alchemy's free tier throttles (see MIGRATION_LOG.md), and both the signature
+    /// enumeration and the window delivery are idempotent, so failing over and re-doing a page
+    /// costs nothing but RPC calls.
+    pub rpc_urls: &'a [String],
     /// Exclusive floor: signatures with `slot < stop_below` end the walk and are not indexed.
     pub stop_below: u64,
     /// Resume point: the walk starts just below this signature. `None` = chain tip.
@@ -319,8 +323,14 @@ pub async fn crawl(
     deps: CrawlDeps<'_>,
     shutdown: CancellationToken,
 ) -> Result<CrawlSummary> {
-    let rpc =
-        RpcClient::new_with_commitment(req.rpc_url.to_string(), CommitmentConfig::confirmed());
+    if req.rpc_urls.is_empty() {
+        return Err(anyhow!("{}: no RPC endpoint configured", req.label));
+    }
+    let clients: Vec<RpcClient> = req
+        .rpc_urls
+        .iter()
+        .map(|url| RpcClient::new_with_commitment(url.clone(), CommitmentConfig::confirmed()))
+        .collect();
     let mut summary = CrawlSummary::default();
     let mut before = req.start_before;
 
@@ -329,9 +339,14 @@ pub async fn crawl(
             return Err(anyhow!("{} crawl cancelled", req.label));
         }
 
-        let page = fetch_page(&rpc, &cfg.program_id, before, req.page_size + 1)
-            .await
-            .with_context(|| format!("{} crawl: getSignaturesForAddress failed", req.label))?;
+        let page = try_endpoints(
+            req.label,
+            "getSignaturesForAddress",
+            req.rpc_urls.len(),
+            |i| fetch_page(&clients[i], &cfg.program_id, before, req.page_size + 1),
+        )
+        .await
+        .with_context(|| format!("{} crawl: getSignaturesForAddress failed", req.label))?;
         let plan = plan_window(&page, req.stop_below, req.page_size);
 
         summary.windows += 1;
@@ -379,20 +394,23 @@ pub async fn crawl(
                 plan.expected.first().map(|s| s.slot).unwrap_or_default(),
             );
 
-            run_window(
-                cfg,
-                req.rpc_url,
-                &deps,
-                CrawlWindow {
-                    before,
-                    until: plan.until,
-                    page_size: req.page_size,
-                },
-                &plan.expected,
-                req.window_idle_timeout,
-                req.label,
-                shutdown.clone(),
-            )
+            let window = CrawlWindow {
+                before,
+                until: plan.until,
+                page_size: req.page_size,
+            };
+            try_endpoints(req.label, "window delivery", req.rpc_urls.len(), |i| {
+                run_window(
+                    cfg,
+                    &req.rpc_urls[i],
+                    &deps,
+                    window,
+                    &plan.expected,
+                    req.window_idle_timeout,
+                    req.label,
+                    shutdown.clone(),
+                )
+            })
             .await?;
 
             if req.report_progress {
@@ -432,6 +450,39 @@ pub async fn crawl(
             ));
         }
     }
+}
+
+/// Run `attempt` against endpoint 0, then 1, ... until one succeeds; return the last error if
+/// none does.
+///
+/// Endpoints are addressed by index rather than by URL because the Alchemy JSON-RPC URL carries
+/// the API key in its path -- an error message or log line built from it would leak the key.
+async fn try_endpoints<T, F, Fut>(
+    label: &str,
+    what: &str,
+    endpoints: usize,
+    mut attempt: F,
+) -> Result<T>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_err = None;
+    for i in 0..endpoints {
+        match attempt(i).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if i + 1 < endpoints {
+                    log::warn!(
+                        "{label}: {what} failed on RPC endpoint #{i} ({e:#}); retrying on the \
+                         next endpoint"
+                    );
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("{label}: no RPC endpoint configured for {what}")))
 }
 
 /// One `getSignaturesForAddress` page, newest first.
@@ -540,7 +591,11 @@ async fn run_window(
     let outcome = pipe.run().await;
     drop(pipe);
     window_token.cancel();
-    let missing = watcher.await.unwrap_or_default();
+    // A panicked watcher must NOT read as "nothing missing" -- that would turn a bug into a
+    // false completeness claim.
+    let missing = watcher
+        .await
+        .map_err(|e| anyhow!("{label}: window watcher task failed: {e}"))?;
 
     if let Err(e) = outcome {
         return Err(anyhow!("{label} crawl pipeline failed: {e}"));

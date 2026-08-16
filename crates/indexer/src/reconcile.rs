@@ -101,14 +101,22 @@ pub async fn cycle(
     tracked: &TrackedAccounts,
     shutdown: CancellationToken,
 ) -> Result<Option<i64>> {
-    let rpc_url = cfg.rpc_url();
-    let rpc = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed());
+    let rpc_urls = cfg.rpc_endpoints();
 
-    // T, recorded before the crawl (see the module docs).
-    let tip = rpc
-        .get_slot_with_commitment(CommitmentConfig::confirmed())
-        .await
-        .context("reconcile: getSlot failed")?;
+    // T, recorded before the crawl (see the module docs). Tried on each endpoint in turn: a
+    // cycle that cannot read the tip cannot advance anything.
+    let mut tip = Err(anyhow::anyhow!("reconcile: no RPC endpoint configured"));
+    for url in &rpc_urls {
+        let rpc = RpcClient::new_with_commitment(url.clone(), CommitmentConfig::confirmed());
+        tip = rpc
+            .get_slot_with_commitment(CommitmentConfig::confirmed())
+            .await
+            .context("reconcile: getSlot failed");
+        if tip.is_ok() {
+            break;
+        }
+    }
+    let tip = tip?;
     crate::metrics::set_chain_tip_slot(tip);
 
     let state = db::sync_state::get_sync_state(pool)
@@ -140,7 +148,7 @@ pub async fn cycle(
     let outcome = crawl::crawl(
         cfg,
         CrawlRequest {
-            rpc_url: &rpc_url,
+            rpc_urls: &rpc_urls,
             // Everything strictly above `last_contiguous_slot`; that slot itself is already
             // covered by definition.
             stop_below: low + 1,

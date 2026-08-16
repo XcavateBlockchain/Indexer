@@ -406,6 +406,10 @@ fn spawn_startup_jobs(
                         String::new()
                     }
                 ),
+                Err(_) if shutdown.is_cancelled() => {
+                    log::info!("STARTUP JOB 1/2 stopped for shutdown; re-runs on next start");
+                    return;
+                }
                 Err(e) => log::error!(
                     "STARTUP JOB 1/2 FAILED: snapshot did not complete ({e:#}); account-state \
                      tables may be empty until `indexer snapshot` is run by hand"
@@ -436,6 +440,10 @@ fn spawn_startup_jobs(
                     "STARTUP JOB 2/2 done: {} signature(s) indexed across {} window(s)",
                     s.signatures_expected,
                     s.windows
+                ),
+                Err(_) if shutdown.is_cancelled() => log::info!(
+                    "STARTUP JOB 2/2 stopped for shutdown; it resumes from its cursor on the \
+                     next start"
                 ),
                 Err(e) => log::error!(
                     "STARTUP JOB 2/2 FAILED: history backfill did not reach the floor ({e:#}); \

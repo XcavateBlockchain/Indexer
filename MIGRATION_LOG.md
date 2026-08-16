@@ -294,3 +294,54 @@ writeup, module map, and exit-verification output:
   deploy + 1 `initialize_config` + 2 `add_admin` + 8 `assign_role`), and 11 program-owned
   accounts exist (1 `Config`, 2 `Admin`, 8 `RoleAccount`). No removals or permission updates
   have ever happened on chain, so those paths are covered by unit/integration tests only.
+
+## Phase 4 — Backfill: snapshot, history walk, contiguity (2026-08-16)
+
+Completes the data-completeness story: a `getProgramAccounts` snapshot, a resumable history
+backfill, startup orchestration in `run`, and a periodic reconciliation supervisor that owns
+`sync_state.last_contiguous_slot`.
+
+### The division of labour (the thing to know about this indexer)
+
+| Path | Job | Owns |
+| --- | --- | --- |
+| Yellowstone gRPC stream | **freshness** — a new whitelist transaction is in the database in ~1 s | `program_instructions`, `whitelist_actions`, live account state |
+| `getSignaturesForAddress` crawl (backfill + reconcile) | **completeness** — "nothing below slot T is missing" | `sync_state.last_contiguous_slot`, `backfill_complete` |
+| `getProgramAccounts` snapshot | **current state** on a program that may be idle for days | `config` / `admin` / `role_account`, `sync_state.snapshot_slot` |
+
+The stream cannot own contiguity: carbon's Yellowstone datasource re-subscribes internally on
+error and swallows auth/plan rejections in a retry loop, so a process cannot observe that it
+missed a window; and on an idle program "no updates" is the normal case, so silence proves
+nothing. Task 3's update-driven `SessionMarker` was therefore removed; `grpc_reconnects_total`
+and the reconnect loop's `gap_opened()` remain as a belt-and-braces freeze.
+
+### New schema
+
+| File | Contents |
+| --- | --- |
+| `0006_backfill_cursor.sql` | `backfill_cursor` — singleton resume cursor (oldest fully-committed signature + slot). Deleted when a walk finishes, so "a cursor exists" means "an interrupted walk is waiting to be resumed". |
+
+### New env var
+
+`RECONCILE_INTERVAL` (seconds, default 300) — how often the reconciliation supervisor re-walks
+the tip. Cost at the default: ~576 RPC requests/day (~1.4 M Alchemy CU/month, under 2 % of the
+free tier).
+
+### Findings
+
+- **carbon's `Pipeline::run()` does NOT drain on datasource cancellation.** Its
+  `ShutdownStrategy::ProcessPending` only covers carbon's own SIGINT branch; the
+  `datasource_cancellation_token` branch `break`s immediately, dropping whatever is still queued
+  in the pipeline channel. A crawl window therefore cancels the *crawler* (via the `Observed`
+  wrapper's own token) and lets the channel close naturally, which is the path that does drain.
+- **The crawler still never terminates**, so a window is bounded by our own
+  `getSignaturesForAddress` page: `before` = resume cursor, `until` = the first signature below
+  the page. A window is complete when every successful signature it enumerated has been
+  delivered — evidence, not a timeout. (Task 3's idle-watchdog `replay` subcommand is gone,
+  superseded by `backfill`.)
+- **A snapshot re-run legitimately updates rows.** It is tagged with a fresh `getSlot`, so the
+  slot guard admits it; every non-slot column is unchanged (verified by digest). Instruction and
+  action rows never change on a re-run.
+- The **deploy transaction** (slot 483386556, the `backfill_floor_slot`) is in
+  `getSignaturesForAddress` but invokes the BPF loader, not the program, so it correctly
+  produces no rows: 12 chain signatures ↔ 11 indexed.

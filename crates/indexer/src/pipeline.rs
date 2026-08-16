@@ -92,9 +92,8 @@ pub fn account_filters(program_id: &Pubkey) -> HashMap<String, SubscribeRequestF
 
 /// Everything both pipelines need that is not datasource-specific.
 ///
-/// `metrics` is a field rather than always `PrometheusMetrics` so the `replay` subcommand can
-/// wrap it and observe update arrivals (it needs them to know when the crawl has run out of
-/// history).
+/// `metrics` is a field rather than always `PrometheusMetrics` so a caller can wrap or replace
+/// the recorder (tests pass a no-op; a future job could count updates through it).
 pub struct PipeDeps<'a> {
     pub batcher: &'a Batcher,
     pub block_time: &'a Arc<BlockTimeResolver>,

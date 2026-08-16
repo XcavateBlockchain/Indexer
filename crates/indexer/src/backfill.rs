@@ -111,15 +111,16 @@ pub async fn run(
         }
     };
 
-    let rpc_url = cfg.rpc_url();
+    let rpc_urls = cfg.rpc_endpoints();
     log::info!(
         "backfill: walking {} down to floor slot {floor} via {} (page size {})",
         cfg.program_id,
-        // Never log the URL itself: the Alchemy JSON-RPC endpoint carries the key in its path.
-        if rpc_url == cfg.rpc_fallback_url {
-            cfg.rpc_fallback_url.as_str()
+        // Never log the URLs themselves: the Alchemy JSON-RPC endpoint carries the key in its
+        // path.
+        if rpc_urls.len() > 1 {
+            "<primary RPC, public devnet as fallback>"
         } else {
-            "<primary RPC>"
+            "<single RPC endpoint>"
         },
         opts.page_size,
     );
@@ -131,7 +132,7 @@ pub async fn run(
     let outcome = crawl::crawl(
         cfg,
         CrawlRequest {
-            rpc_url: &rpc_url,
+            rpc_urls: &rpc_urls,
             stop_below: floor,
             start_before,
             page_size: opts.page_size,

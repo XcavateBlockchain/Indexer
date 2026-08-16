@@ -12,7 +12,8 @@
 //! [`PrometheusMetrics`] and is exported unprefixed, exactly as carbon names it. The
 //! indexer's own metrics are the `pub fn`s at the bottom of this file.
 //!
-//! If [`install`] is never called (unit tests, `replay` runs without a metrics port) the
+//! If [`install`] is never called (unit tests, a `backfill`/`snapshot` run without `--metrics`)
+//! the
 //! `metrics` macros fall through to the global no-op recorder, so every call site here stays
 //! valid and costs nothing.
 

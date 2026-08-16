@@ -132,6 +132,18 @@ impl Config {
             .ok_or_else(|| anyhow!("ALCHEMY_API_KEY is required for this subcommand"))
     }
 
+    /// JSON-RPC endpoints in preference order: the primary, then the public devnet fallback
+    /// (deduplicated when they are the same). Callers that can retry -- the crawl, the snapshot
+    /// -- walk this list; Alchemy's free tier throttles, and every RPC read here is idempotent.
+    pub fn rpc_endpoints(&self) -> Vec<String> {
+        let primary = self.rpc_url();
+        if primary == self.rpc_fallback_url {
+            vec![primary]
+        } else {
+            vec![primary, self.rpc_fallback_url.clone()]
+        }
+    }
+
     /// Primary JSON-RPC URL: `ALCHEMY_RPC_URL` if set, else Alchemy's devnet v2 endpoint with
     /// the key in the path. Falls back to the public devnet endpoint when no key is set at
     /// all, so the DB-only subcommands stay usable without credentials.

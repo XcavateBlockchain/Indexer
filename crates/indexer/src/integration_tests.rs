@@ -13,10 +13,10 @@
 //! values below were decoded independently of this crate (by hand, from the hex) so the test
 //! is not just asserting that the decoder agrees with itself.
 //!
-//! The account path cannot be exercised by the `replay` subcommand -- the RPC transaction
-//! crawler is transaction-only -- and the live gRPC account stream only fires when an account
-//! actually changes, which on this idle program may be never. That is why the account-state
-//! verification lives here.
+//! The account path cannot be exercised by a history crawl -- the RPC transaction crawler is
+//! transaction-only -- and the live gRPC account stream only fires when an account actually
+//! changes, which on this idle program may be never. That is why the account-state verification
+//! lives here, and why the `snapshot` subcommand exists at all.
 
 use std::sync::Arc;
 
