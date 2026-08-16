@@ -1,7 +1,16 @@
 # Deployment runbook (Hetzner)
 
 The stack runs on a single Hetzner server via docker-compose. CI builds images; the server
-only pulls and runs them.
+only pulls and runs them. This covers server setup and deploy mechanics; for day-2 operations
+(reading the slot-lag panel, backfills, alerts, rolling back) see
+[../RUNBOOK.md](../RUNBOOK.md).
+
+**Migration note**: this doc covers the active Carbon/Rust stack (`docker-compose.yml`:
+postgres, indexer, api, prometheus, grafana). The previous SubQuery-based stack
+(`docker-compose.subquery.yml`) is preserved as a rollback path — see
+[../DECISIONS.md ADR-21](../DECISIONS.md#adr-21-subquery-rollback-path-preserved) and
+[../RUNBOOK.md](../RUNBOOK.md#rolling-back-to-subquery). Sections below that apply only to
+that rollback stack are marked as such.
 
 ## 1. One-time server preparation
 
@@ -28,13 +37,16 @@ chown deploy:deploy /home/deploy/.ssh/authorized_keys
 chmod 600 /home/deploy/.ssh/authorized_keys
 ```
 
-Firewall (ufw or Hetzner Cloud firewall): allow `22` (SSH) and `50051` (gRPC). Ports `3010`
-(GraphQL playground) and `3011` (Grafana) are optional — leave them closed unless you want
-them reachable from outside. Grafana at least has a password; the playground has none.
-Postgres and Prometheus are never publicly reachable: Postgres has no published port, and
-Prometheus is bound to `127.0.0.1` (reach it through an SSH tunnel, see §5). If a published
-port is already taken on the server, move it with the `GRAPHQL_PORT`/`GRPC_PORT`/
-`GRAFANA_PORT` repository variables below rather than editing the compose file.
+Firewall (ufw or Hetzner Cloud firewall): allow `22` (SSH). Ports `3010` (GraphQL +
+GraphiQL) and `3011` (Grafana) are optional — leave them closed unless you want them
+reachable from outside; Grafana at least has a password, GraphiQL has none (it's protected
+by the API's own DoS guards, not a login — see `crates/api/src/guards.rs`). Postgres and
+Prometheus are never publicly reachable: Postgres has no published port, and Prometheus is
+bound to `127.0.0.1` (reach it through an SSH tunnel, see §5). The old stack additionally
+needed `50051` (the SubQuery-era gRPC API) — no longer relevant to the active stack; only
+open it if you've rolled back to `docker-compose.subquery.yml`. If a published port is
+already taken on the server, move it with the `GRAPHQL_PORT`/`GRAFANA_PORT` repository
+variables below rather than editing the compose file.
 
 ## 2. GitHub repository secrets
 
@@ -47,27 +59,32 @@ port is already taken on the server, move it with the `GRAPHQL_PORT`/`GRPC_PORT`
 | `HETZNER_SSH_KEY` | Contents of the **private** key (`hetzner_deploy`) |
 | `HETZNER_SSH_PORT` | Optional, defaults to `22` |
 | `HETZNER_KNOWN_HOSTS` | Optional but recommended: output of `ssh-keyscan -H <host>`, pins the host key (otherwise the workflow trusts-on-first-use) |
-| `ALCHEMY_API_KEY` | Alchemy key with Solana Devnet enabled |
+| `ALCHEMY_API_KEY` | Alchemy key with Solana Devnet enabled (Yellowstone gRPC on a paid plan — see `MIGRATION_LOG.md`'s Phase 0 recon) |
 | `POSTGRES_PASSWORD` | Any strong password (stack-internal only) |
 | `GRAFANA_PASSWORD` | Grafana admin password. **Required** — the deploy fails fast if unset, because Grafana is published on `GRAFANA_PORT` and would otherwise fall back to `admin`/`admin`. |
-| `GHCR_PULL_TOKEN` | Optional: PAT with `read:packages`, only needed while the GHCR images are private. Alternatively make the three packages public and omit this. |
+| `GHCR_PULL_TOKEN` | Optional: PAT with `read:packages`, only needed while the GHCR images are private. Alternatively make the packages public and omit this. |
+
+Unchanged from the pre-migration stack — this migration introduced no new secrets (verified
+in `task-8-report.md`'s secrets accounting).
 
 ### Repository variables
 
 Same page, **Variables** tab. All are optional and change only the *host* port that the
-service is published on — the container-internal ports stay `3000`/`50051`/`9090`, so
-healthchecks, scrape targets and inter-service URLs are unaffected. Use these when a port is
-already taken on the server (`Bind for 0.0.0.0:3010 failed: port is already allocated`).
+service is published on — the container-internal ports (`3010`, `3000`, `9090`) stay fixed,
+so healthchecks, scrape targets and inter-service URLs are unaffected. Use these when a port
+is already taken on the server (`Bind for 0.0.0.0:3010 failed: port is already allocated`).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `GRAPHQL_PORT` | `3010` | Host port for the GraphQL playground |
-| `GRPC_PORT` | `50051` | Host port for the gRPC API |
+| `GRAPHQL_PORT` | `3010` | Host port for GraphQL + GraphiQL |
 | `GRAFANA_PORT` | `3011` | Host port for Grafana |
 | `PROMETHEUS_PORT` | `9090` | Host port for Prometheus, bound to `127.0.0.1` only — changing it only changes what an SSH tunnel targets |
 
 Must be a bare port number in `1-65535`; the deploy fails fast with a clear error otherwise.
-Changing `GRPC_PORT` means clients and the firewall rule must follow it.
+
+`GRPC_PORT` (the old stack's gRPC API port variable) is no longer read by the rendering
+script — safe to delete from repo Settings → Variables whenever convenient; leaving it in
+place does not fail the workflow.
 
 ## 3. Deploying
 
@@ -76,41 +93,51 @@ Changing `GRPC_PORT` means clients and the firewall rule must follow it.
 
 What the workflow does:
 
-1. Builds and pushes `ghcr.io/<repo>/node`, `ghcr.io/<repo>/grpc`, `ghcr.io/<repo>/postgres`,
-   tagged `latest` + commit SHA.
+1. Builds and pushes `ghcr.io/<repo>/indexer`, `ghcr.io/<repo>/api`, `ghcr.io/<repo>/postgres`,
+   tagged `latest` + commit SHA (`docker/rust.Dockerfile`'s `indexer`/`api` targets, plus
+   `docker/pg-Dockerfile`, unchanged).
 2. Uploads `docker-compose.yml`, the `monitoring/` directory and a rendered `.env` (pinning
    the SHA-tagged images) to `/opt/indexer`. Unlike the application code, the Prometheus and
    Grafana configs are bind-mounted rather than baked into an image, so they have to be on
    the server; `monitoring/` is replaced wholesale on each deploy, so deleting a file from
    the repo also removes it from the server.
-3. `docker compose pull && docker compose up -d --remove-orphans`, then verifies the node's
-   `/ready` endpoint plus Prometheus and Grafana, and prunes old images.
+3. `docker compose pull && docker compose up -d --remove-orphans`, then verifies `api`'s
+   `/health` endpoint plus Prometheus and Grafana (checked in-network, via `docker compose
+   exec api curl ...`), and prunes old images.
 
-**Rollback**: fastest is on the server — edit `.env` to point
-`NODE_IMAGE`/`GRPC_IMAGE`/`PG_IMAGE` at an earlier SHA tag and `docker compose up -d`
-(images from the last 7 days are still present locally; older ones re-pull from GHCR).
-Via GitHub: open the last good run of the Deploy workflow and choose **Re-run all jobs**
+**Rollback (staying on the Carbon/Rust stack)**: fastest is on the server — edit `.env` to
+point `INDEXER_IMAGE`/`API_IMAGE`/`PG_IMAGE` at an earlier SHA tag and `docker compose up -d`
+(images from the last 7 days are still present locally; older ones re-pull from GHCR). Via
+GitHub: open the last good run of the Deploy workflow and choose **Re-run all jobs**
 (`workflow_dispatch` cannot target an arbitrary commit), or `git revert` and push.
+
+**Rollback to the old SubQuery stack**: a different operation entirely — see
+[../RUNBOOK.md](../RUNBOOK.md#rolling-back-to-subquery).
 
 ## 4. Verifying a deployment
 
 ```bash
 ssh deploy@<host>
 cd /opt/indexer
-docker compose ps                       # all six services Up, node+postgres healthy
-docker compose logs -f subquery-node    # should show blocks being processed
-docker compose exec postgres psql -U postgres \
-  -c "select key, value from app._metadata where key in ('lastProcessedHeight','targetHeight');"
+docker compose ps                # all 5 services Up, indexer+api+postgres healthy
+docker compose logs -f indexer   # should show the subscribe gate passing, then
+                                  # snapshot/backfill/reconciliation progress
+curl -s http://localhost:3010/health
 ```
 
-From anywhere (gRPC):
+`/health` returns `{"last_contiguous_slot", "backfill_complete", "chain_tip_slot",
+"slot_lag", "healthy"}` — `healthy: true` once the database is reachable, `backfill_complete:
+true` once the initial history walk has finished (usually within a couple minutes at this
+program's data volume — see `task-7-report.md`'s timed verification run). GraphQL is
+equivalent for scripting against:
 
 ```bash
-grpcurl -plaintext -proto grpc-api/proto/whitelist.proto \
-  <host>:50051 realxmarket.whitelist.v1.WhitelistService/GetIndexerStatus
+curl -s -X POST http://localhost:3010/graphql -H "Content-Type: application/json" \
+  -d '{"query":"{ syncStatus { lastContiguousSlot chainTipSlot slotLag backfillComplete } }"}'
 ```
 
-`lag_slots` should shrink toward ~0 as the indexer catches up with the devnet tip.
+`slotLag` should shrink toward ~0 as the indexer catches up with the devnet tip — see
+[../RUNBOOK.md "Is the indexer behind?"](../RUNBOOK.md#is-the-indexer-behind) if it doesn't.
 
 ## 5. Operations
 
@@ -123,16 +150,26 @@ docker volume rm indexer_pgdata   # check the name: docker volume ls
 docker compose up -d
 ```
 
-History is small (indexing starts at the deploy slot), so a full reindex is quick — the bulk
-of the time is walking empty devnet slots between the program's activity and the tip.
+History is small (indexing starts at the deploy slot), so a full reindex is quick — see
+[../RUNBOOK.md "Devnet ledger reset"](../RUNBOOK.md#devnet-ledger-reset) for the full
+procedure and what triggers it.
 
-### Upgrading SubQuery images
+### Upgrading images
 
-Bump the pinned tags (`subquerynetwork/subql-node-solana:v6.3.1` in `docker/node.Dockerfile`,
-`subquerynetwork/subql-query:v2.25.0` in `docker-compose.yml`), push to `main`, and let CI
-deploy. Schema-affecting changes to `schema.graphql` require a reindex (above). The
-monitoring images (`prom/prometheus`, `grafana/grafana`) are pinned in `docker-compose.yml`
-the same way and can be bumped independently.
+Images are built and tagged by CI on every push to `main` — there's no manual version pin to
+bump for the active `indexer`/`api`/`postgres` images the way the old stack's
+`subquerynetwork/subql-node-solana`/`subql-query` tags had to be bumped by hand. Monitoring
+images (`prom/prometheus`, `grafana/grafana`) are still pinned directly in
+`docker-compose.yml` and bumped the same way as before: edit the tag, push to `main`, let CI
+deploy.
+
+Schema-affecting changes to the Postgres schema (a new `migrations/NNNN_*.sql` file) apply
+automatically on the next `indexer` startup — `crates/indexer` runs `sqlx::migrate!()` at
+launch, idempotently.
+
+**Rollback-stack only**: bumping `subquerynetwork/subql-node-solana`/`subql-query` pins in
+`docker/node.Dockerfile`/`docker-compose.subquery.yml` only matters if you've rolled back to
+that stack — see [../RUNBOOK.md](../RUNBOOK.md#rolling-back-to-subquery).
 
 ### Rotating POSTGRES_PASSWORD
 
@@ -148,14 +185,17 @@ docker compose exec postgres psql -U postgres -c "ALTER USER postgres PASSWORD '
 ```
 
 then update the `POSTGRES_PASSWORD` GitHub secret and re-deploy. (Alternatively, wipe the
-volume and reindex — history is small.)
+volume and reindex — history is small.) Note this volume is shared with the SubQuery
+rollback stack's `app` schema (`ADR-21`) — rotating the password here rotates it for both
+stacks, since it's the same postgres instance either way.
 
 ### Disk/log hygiene
 
 Container logs are capped (20 MB × 3 files per service) and the deploy workflow removes
 images unused for 7+ days after every run (recent SHA tags stay available for rollback).
-Postgres data lives in the `pgdata` named volume; Prometheus keeps 15 days of metrics in
-`promdata` (`--storage.tsdb.retention.time`), and Grafana's own state lives in `grafanadata`.
+Postgres data lives in the `pgdata` named volume (shared with the SubQuery rollback stack,
+see above); Prometheus keeps 15 days of metrics in `promdata`
+(`--storage.tsdb.retention.time`), and Grafana's own state lives in `grafanadata`.
 
 ### Monitoring
 
@@ -181,15 +221,17 @@ To check the scrape is healthy without a tunnel, ask from inside the network:
 
 ```bash
 cd /opt/indexer
-docker compose exec -T subquery-node curl -s http://prometheus:9090/api/v1/targets \
-  | grep -o '"health":"[a-z]*"'             # expect "health":"up"
+docker compose exec -T api curl -s http://prometheus:9090/api/v1/targets \
+  | grep -o '"health":"[a-z]*"'             # expect two "health":"up" (indexer + api jobs)
 ```
 
-A `down` target usually just means the node container is still booting — it serves `/metrics`
-on the same internal port 3000 as `/ready`.
+A `down` target usually just means the `indexer`/`api` container is still booting — both
+expose `/metrics` as soon as they're up (`indexer:9464`, `api:9465`).
 
-- gRPC `GetIndexerStatus` exposes `last_processed_slot`, `chain_head_slot`, `lag_slots`,
-  `healthy` — poll it from any uptime monitor with a gRPC probe, or check
-  the standard gRPC health service (`grpc.health.v1.Health/Check`).
-- The node's own HTTP endpoints (`:3000/ready`, `/health`, `/meta` inside the network) are
-  used by the compose healthcheck.
+- `curl http://localhost:3010/health` (or the `syncStatus` GraphQL field) exposes
+  `last_contiguous_slot`, `chain_tip_slot`, `slot_lag`, `healthy` — poll it from any uptime
+  monitor.
+- See [../RUNBOOK.md "Alert list"](../RUNBOOK.md#alert-list) for what each of the six
+  Prometheus alerting rules (`monitoring/alerts.yml`) means when it fires — rules only, no
+  Alertmanager (`ADR-20`), so nothing pages anyone automatically; check Prometheus's
+  `/alerts` page or Grafana's alerting view.

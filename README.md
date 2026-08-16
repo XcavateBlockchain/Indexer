@@ -1,183 +1,209 @@
 # realXmarket Whitelist Indexer
 
-Indexes the [`xcavate-whitelist`](https://github.com/XcavateBlockchain/realxmarket-solana) Solana
-program — the roles and compliance registry of the realXmarket protocol — and serves the data
-over **gRPC** and **GraphQL**.
-
-Built with [SubQuery](https://subquery.network/doc/indexer/quickstart/quickstart_chains/solana.html)
-(`@subql/node-solana`) ingesting Solana **devnet** via Alchemy JSON-RPC.
-
-```
-Solana devnet (Alchemy JSON-RPC) ──poll──► subquery-node ──────► Postgres (schema "app")
-                                                 │                   │            │
-                                        /metrics │      graphql-engine :3010   grpc-api :50051
-                                                 ▼
-                                            prometheus ──► grafana :3011
-```
+Indexes the [`xcavate-whitelist`](https://github.com/XcavateBlockchain/realxmarket-solana)
+Solana program — the roles and compliance registry of the realXmarket protocol — on **Solana
+devnet**, and serves it over GraphQL. Built on [Carbon](https://github.com/sevenlabs-hq/carbon)
+(Rust), reading a live Yellowstone gRPC stream from Alchemy plus RPC-driven backfill/snapshot
+paths for completeness. See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline, schema, and
+where the old SubQuery-based indexer's logic ended up; [DECISIONS.md](DECISIONS.md) for why
+things are built this way; [RUNBOOK.md](RUNBOOK.md) for operating it.
 
 | Program | Address (devnet) |
 |---|---|
-| xcavate-whitelist | `2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn` |
+| xcavate_whitelist | `2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn` |
 
 Indexing starts at slot **483,386,556** (program deployment), so the dataset covers the
-program's complete history. Only the whitelist program is indexed for now; the layout leaves
-room to add `regions`, `marketplace` and `property` later (one IDL + datasource each).
+program's complete history. Only the whitelist program is indexed for now — three sibling
+IDLs (`marketplace`, `property`, `regions`) sit in [`idls/`](idls/) unindexed; the layout
+leaves room to add one later (see [DECISIONS.md ADR-19](DECISIONS.md#adr-19-whitelist-only-scope)).
 
-## What gets indexed
+## Quickstart (Docker)
 
-Every one of the program's nine instructions updates two kinds of data:
+```bash
+git clone <this repo> && cd Indexer
+cp .env.example .env          # fill in ALCHEMY_API_KEY + POSTGRES_PASSWORD
+docker compose up --build
+```
 
-**Current state** (soft-deleted, so removed entries stay queryable):
+- GraphQL + GraphiQL: <http://localhost:3010/graphiql>
+- Grafana: <http://localhost:3011> (user `admin`, password `GRAFANA_PASSWORD` — defaults to
+  `admin` locally)
+- Prometheus: bound to loopback only — `ssh -L 9090:localhost:9090 <host>` in production, or
+  just `http://localhost:9090` locally
 
-- `Config` — the sudo authority + pending two-step handover.
-- `Admin` — one row per whitelist admin (`active` flag, who added it, when, in which tx).
-- `RoleAssignment` — one row per (user, role) with compliance status (`COMPLIANT`/`REVOKED`),
-  rent payer, assigning admin, and removal metadata (`REMOVED` by an admin vs `RENOUNCED` by
-  the holder). Id is `<user>-<roleIndex>`, mirroring the on-chain PDA `["role", user, role_byte]`.
+A fresh stack snapshots current state, backfills the program's full history, and starts
+tailing the live stream — all within seconds at this program's data volume (see
+`MIGRATION_LOG.md`'s Phase 7 verification for the timed run). `curl localhost:3010/health`
+reports `backfill_complete: true` once caught up.
 
-**Audit trail**:
+## Quickstart (bare cargo)
 
-- `WhitelistAction` — append-only, one row per instruction: type, subject, actor, block
-  height, block time, tx signature.
+For iterating on the Rust code without rebuilding Docker images each time. Needs Rust
+(workspace pins 1.88.0; published-crate MSRV 1.82) and a Postgres instance.
 
-Roles: `REGIONAL_OPERATOR`, `REAL_ESTATE_INVESTOR`, `REAL_ESTATE_DEVELOPER`, `LAWYER`,
-`LETTING_AGENT`, `SPV_CONFIRMATION` (variant order mirrors the Rust enum — it is borsh
-index = PDA seed byte, do not reorder).
+```bash
+# disposable test Postgres
+docker run -d --name carbon-mig-test-pg -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:16
 
-Indexing is **instruction-based** (discriminator-filtered), not log-based: instruction data and
-account lists are never truncated, while Solana logs can be. The Anchor IDL is hand-authored in
-[`idls/xcavate_whitelist.idl.json`](idls/xcavate_whitelist.idl.json) (the upstream repo commits
-no IDL and none is published on-chain); every discriminator was computed from the source
-(`sha256("global:<name>")[0..8]`) and spot-verified against live devnet transactions.
+# offline: builds against the committed .sqlx query caches, not a live DB (both crates'
+# caches are checked in under crates/{indexer,api}/.sqlx/) -- avoids needing migrations
+# applied before the code even compiles.
+SQLX_OFFLINE=true cargo build --workspace
+
+export DATABASE_URL=postgres://postgres:test@localhost:54329/postgres
+set -a; . ./.env; set +a       # ALCHEMY_API_KEY, etc — never printed
+./target/debug/indexer run &   # applies migrations itself, then live stream +
+                                # startup snapshot/backfill + reconciliation
+./target/debug/api             # GraphQL on :3010
+```
+
+`indexer`/`api` read configuration entirely from the environment (no dotenv loading inside
+the binary itself — see "Environment variables" below); `set -a; . ./.env; set +a` exports
+the repo's `.env` into the shell before running either. `indexer run` (and `snapshot`/
+`backfill`) apply pending `migrations/` automatically at startup (`sqlx::migrate!()`,
+idempotent) — no separate migration step needed. On Windows, building `crates/indexer`
+needs the MSVC linker fix and (for the Yellowstone gRPC dependency's vendored protobuf build)
+a `protoc` override — see `.superpowers/sdd/carbon-migration-spec/env-notes.md` and
+`task-3-report.md`'s "Environment" section; neither applies on Linux/CI.
+
+## Environment variables
+
+Source: [`.env.example`](.env.example), `crates/indexer/src/config.rs`,
+`crates/api/src/config.rs`.
+
+| Variable | Used by | Default | Purpose |
+|---|---|---|---|
+| `ALCHEMY_API_KEY` | indexer, api | *(required)* | Alchemy key with Solana Devnet enabled — the Yellowstone gRPC `X-Token` (indexer) and the JSON-RPC primary endpoint (both binaries' `getSlot`/`getBlockTime`/backfill calls). Both binaries refuse to start without it. |
+| `POSTGRES_PASSWORD` | postgres, indexer, api | *(required)* | Stack-internal Postgres password. Applied only on first init of the `pgdata` volume — see [docs/deployment.md](docs/deployment.md#rotating-postgres_password). `DATABASE_URL` is composed from this inside `docker-compose.yml`, never a separate secret. |
+| `RUST_LOG` | indexer, api | `info,hyper=warn,h2=warn,tonic=warn,rustls=warn` (indexer) / `info` (api) | `env_logger` filter syntax. |
+| `GRAPHQL_PORT` | api (compose) | `3010` | Published host port for GraphQL + GraphiQL. |
+| `GRAFANA_PORT` | grafana (compose) | `3011` | Published host port for Grafana. |
+| `PROMETHEUS_PORT` | prometheus (compose) | `9090` | Host port Prometheus binds, **loopback only** (`127.0.0.1`) — it has no auth. Reach it over an SSH tunnel in production. |
+| `GRAFANA_PASSWORD` | grafana (compose) | `admin` | Grafana admin password. Production deploy fails fast if unset. |
+| `PG_IMAGE` / `INDEXER_IMAGE` / `API_IMAGE` | compose | *(unset → build locally)* | Pinned GHCR image tags; written by the deploy workflow. |
+| `ALCHEMY_GRPC_URL` | indexer | `https://solana-devnet.g.alchemy.com` | Yellowstone gRPC host. |
+| `ALCHEMY_RPC_URL` | indexer, api | `https://solana-devnet.g.alchemy.com/v2/$ALCHEMY_API_KEY` | JSON-RPC primary endpoint override. |
+| `RPC_FALLBACK_URL` | indexer, api | `https://api.devnet.solana.com` | Public devnet RPC, used when the primary errors (throttling, plan limits). |
+| `PROGRAM_ID` | indexer | `2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn` | The whitelist program. |
+| `BACKFILL_START_SLOT` | indexer | `483386556` | The program's deploy slot — the backfill floor. |
+| `METRICS_ADDR` | indexer, api | `0.0.0.0:9464` (indexer) / `0.0.0.0:9465` (api) | Prometheus `/metrics` bind address — deliberately different per binary so they never collide on one host. |
+| `RECONCILE_INTERVAL` | indexer | `300` (seconds) | How often the reconciliation supervisor re-walks the tip. See [ARCHITECTURE.md §5](ARCHITECTURE.md#5-contiguity-crawler-driven-reconciliation). |
+| `DATABASE_URL` | indexer, api | — | **Not** a `.env.example` variable in the Docker path — `docker-compose.yml` composes it from `POSTGRES_PASSWORD`. Set it directly for the bare-cargo path. |
+
+Every indexer/api variable beyond `ALCHEMY_API_KEY`/`DATABASE_URL` has a working default
+baked into the binary; override only for a non-default deployment (`.env.example`'s
+"Advanced" section shows the commented-out block `docker-compose.yml` passes through).
+
+## Port map
+
+| Port | Service | Exposure |
+|---|---|---|
+| 3010 | GraphQL + GraphiQL (`api`) | published (`GRAPHQL_PORT`) |
+| 3011 | Grafana | published (`GRAFANA_PORT`) |
+| 9090 | Prometheus | loopback only (`127.0.0.1:${PROMETHEUS_PORT}`) — SSH tunnel in production, see [RUNBOOK.md](RUNBOOK.md) |
+| 9464 | `indexer` `/metrics` | internal (compose network only) |
+| 9465 | `api` `/metrics` | internal (compose network only) |
+
+`indexer` publishes nothing to the host — it has no HTTP surface a client needs, only
+`/metrics` for Prometheus inside the compose network.
+
+## Running a backfill by hand
+
+`indexer run` already does this on startup (snapshot once, then backfill once, then hands
+off to the reconciliation supervisor — see [ARCHITECTURE.md §4](ARCHITECTURE.md#4-backfill-ordering-stream-first--snapshot--history-walk)),
+but both steps are also standalone subcommands, safe to re-run against a live production
+`DATABASE_URL` at any time — every write on both paths is idempotent:
+
+```bash
+./target/debug/indexer snapshot                 # one-shot getProgramAccounts -> account state
+./target/debug/indexer backfill                 # resumable history walk down to the floor
+./target/debug/indexer backfill --floor <slot>   # stop early (see the caveat below)
+```
+
+`indexer backfill --floor` walks down to an operator-supplied slot instead of the program's
+real deploy slot. It only marks `sync_state.backfill_complete = true` (which is what lets the
+reconciliation supervisor start advancing `last_contiguous_slot`) if that floor is at or
+below `sync_state.backfill_floor_slot` — i.e. if the walk actually reached genuine history
+completeness. A higher `--floor` walks a partial range, logs a warning, and claims nothing;
+the resume cursor is left in place so a later unrestricted `indexer backfill` picks up where
+the partial walk stopped, rather than restarting from the tip. This guard exists because an
+earlier version of this indexer could be tricked into unfreezing the reconciliation
+supervisor over history it never actually walked — see `task-4-report.md`'s "Fix round 1" for
+the full incident.
+
+The reconciliation supervisor (part of `indexer run`, not a separate subcommand) is what
+*keeps* `last_contiguous_slot` current after the initial backfill completes — it re-walks a
+small window above the frontier every `RECONCILE_INTERVAL` seconds. See
+[ARCHITECTURE.md §5](ARCHITECTURE.md#5-contiguity-crawler-driven-reconciliation) for why this
+exists instead of trusting the live stream alone.
+
+## Regenerating the decoder after an IDL change
+
+`crates/whitelist-decoder` is **generated — never hand-edit it**. If `idls/xcavate_whitelist.json`
+changes (a program upgrade, a new instruction), regenerate with the exact command Task 1
+verified:
+
+```bash
+npx @sevenlabs-hq/carbon-cli@latest parse \
+  -i ./idls/xcavate_whitelist.json \
+  -o ./crates/whitelist-decoder \
+  -s anchor \
+  -c \
+  --with-postgres true \
+  --with-graphql true \
+  --with-serde true
+```
+
+**0.12.0 pin caveat**: the installed CLI generates code against `carbon-core = "0.12.0"`, and
+every other `carbon-*` dependency in this workspace (the Yellowstone datasource, the
+transaction crawler, metrics) is pinned to match — see
+[DECISIONS.md ADR-12](DECISIONS.md#adr-12-carbon-stack-pinned-at-0120). Regenerating with a
+newer `carbon-cli` that targets a different `carbon-core` version means bumping every other
+pin in the same commit, never partially. The generated crate's own `postgres`/`graphql`
+feature artifacts (migrations, GraphQL resolvers) are **not** used by this repo's storage or
+API layers — see [DECISIONS.md ADR-9](DECISIONS.md#adr-9-carbons-built-in-graphql-juniperaxum-over-postgraphilehasura)
+and the ruling R10 note in `MIGRATION_LOG.md` — only the typed instruction/account
+decoders are consumed.
+
+## Sibling IDLs
+
+`idls/marketplace.json`, `idls/property.json`, `idls/regions.json` are checked in but **not
+indexed** — user decision, whitelist-only scope for this migration (see
+[DECISIONS.md ADR-19](DECISIONS.md#adr-19-whitelist-only-scope)). Their addresses are already
+in [`addresses.json`](addresses.json). Adding one later follows the same shape as the existing
+program: a new decoder crate (generate the same way as above), its own migrations, and a
+second `.instruction()`/`.account()` pair wired into `crates/indexer/src/pipeline.rs`.
 
 ## Repository layout
 
 ```
-project.ts             SubQuery manifest (network, datasource, 9 instruction handlers)
-schema.graphql         Entity/enum definitions (→ Postgres tables + GraphQL API)
-idls/                  Hand-authored Anchor IDL for the whitelist program
-src/mappings/          Instruction handlers (typed decoders generated by `subql codegen`)
-grpc-api/              Standalone gRPC read API (see grpc-api/README.md)
-docker/                Image definitions (baked indexer node, postgres + btree_gist)
-monitoring/            Prometheus scrape config + Grafana datasource/dashboards as code
-docker-compose.yml     Full 6-service stack
-.github/workflows/     ci.yml (PR checks) + deploy.yml (build images → deploy to Hetzner)
-docs/                  design.md (architecture & decisions), deployment.md (runbook)
+crates/whitelist-decoder/   generated Carbon decoder (never hand-edited)
+crates/indexer/             the pipeline binary: run / backfill / snapshot / smoke-grpc
+crates/api/                 the GraphQL API binary (Axum + Juniper), :3010
+migrations/                 sqlx migrations (0001..0006), applied in filename order
+idls/                       xcavate_whitelist.json (indexed) + 3 unindexed siblings
+monitoring/                 Prometheus scrape config + alert rules + Grafana provisioning
+docker/                     rust.Dockerfile (indexer+api), pg-Dockerfile, node.Dockerfile (rollback)
+docker-compose.yml          the active stack: postgres, indexer, api, prometheus, grafana
+docker-compose.subquery.yml the disabled SubQuery rollback stack
+.github/workflows/          ci.yml, deploy.yml
+grpc-api/                   old gRPC read API — unwired, rollback-only
+docs/deployment.md          Hetzner ops runbook (server setup, secrets, deploy mechanics)
+ARCHITECTURE.md, DECISIONS.md, RUNBOOK.md, MIGRATION_LOG.md   this migration's documentation
 ```
-
-## Running locally
-
-Prerequisites: Node 22+, Docker with Compose.
-
-```bash
-cp .env.example .env         # fill in ALCHEMY_API_KEY and POSTGRES_PASSWORD
-npm ci
-npm run codegen              # generate types from schema.graphql + IDL
-npm run build                # bundle mappings to dist/
-docker compose up --build
-```
-
-- GraphQL playground (GraphiQL): <http://localhost:3010>
-- gRPC API: `localhost:50051` (see [grpc-api/README.md](grpc-api/README.md) for `grpcurl` examples)
-- Grafana: <http://localhost:3011> — log in as `admin` / `admin` (or `GRAFANA_PASSWORD`);
-  the "Indexer health" dashboard is already there
-
-The indexer starts at the deployment slot and reaches the current devnet tip after a while;
-`GetIndexerStatus` (gRPC) or the `_metadata` GraphQL query reports progress and lag.
-
-### Example queries
-
-GraphQL — all active role assignments:
-
-```graphql
-{
-  roleAssignments(filter: { active: { equalTo: true } }) {
-    nodes { user role permission assignedBy assignedAt }
-  }
-}
-```
-
-gRPC — check whether a user may act as a letting agent:
-
-```bash
-grpcurl -plaintext \
-  -proto grpc-api/proto/whitelist.proto \
-  -d '{"user": "CL3A65SvKXeccdQKP3pwiUiRbi6QR6psuUD1Zb1nKve", "role": "ROLE_LETTING_AGENT"}' \
-  localhost:50051 realxmarket.whitelist.v1.WhitelistService/CheckAccess
-```
-
-## Configuration
-
-All runtime configuration is environment-driven (see [`.env.example`](.env.example)):
-
-| Variable | Purpose |
-|---|---|
-| `ALCHEMY_API_KEY` | Alchemy key for `https://solana-devnet.g.alchemy.com/v2/<key>`. Injected into the node at runtime via `--network-endpoint` — never committed, never baked into an image. |
-| `POSTGRES_PASSWORD` | Stack-internal Postgres password. |
-| `GRAPHQL_PORT` / `GRPC_PORT` / `GRAFANA_PORT` | Published host ports (default 3010 / 50051 / 3011). |
-| `PROMETHEUS_PORT` | Host port for Prometheus, bound to `127.0.0.1` only (default 9090). Prometheus has no authentication, so it is never published on a public interface; reach it through an SSH tunnel. |
-| `GRAFANA_PASSWORD` | Grafana admin password (user `admin`). Defaults to `admin` locally; the deploy workflow requires the matching GitHub secret. |
-| `PG_IMAGE` / `NODE_IMAGE` / `GRPC_IMAGE` | Image overrides; set by the deploy workflow to pinned GHCR tags. Local default: `*:local` built by compose. |
 
 ## Monitoring
 
-Prometheus scrapes the indexer node's `/metrics` endpoint every 10s — `@subql/node-core`
-serves it on the node's internal port 3000, alongside `/ready` — and Grafana graphs it.
-
-- **Grafana**: <http://localhost:3011> (user `admin`, password `GRAFANA_PASSWORD`). The
-  Prometheus datasource and the **Indexer health** dashboard are provisioned from
-  [`monitoring/`](monitoring/) on every start, so a fresh container comes up ready to read.
-- **Prometheus**: bound to `127.0.0.1:9090`. It has no authentication of its own, so it is
-  never published on a public interface — reach it over an SSH tunnel when you want raw PromQL.
-
-The dashboard tracks what the node exports (all metrics carry a `subql_indexer_` prefix):
-
-| Panel | Metric | Reads as |
-|---|---|---|
-| Sync lag | `target_block_height − processing_block_height` | slots behind the devnet tip; trends toward ~0 as it catches up |
-| Slot height | `processing_` / `target_` / `best_block_height` | parallel lines mean it is keeping up with block production |
-| Indexing throughput | `rate(processed_block_count[5m])` | must beat devnet's ~2.5 slots/s to close a gap |
-| Fetch queue depth | `block_queue_size`, `blocknumber_queue_size` | pinned at 0 means starved by the RPC endpoint, not by processing |
-| Store cache | `store_cache_records_size` vs `_threshold` | entities buffered before the next Postgres flush |
-| RPC endpoint | `api_connected` | flapping means throttling and failover (see Operational notes) |
-
-Panels can be edited in the UI, but Grafana keeps the change only in its own volume — export
-the JSON and commit it over `monitoring/grafana/dashboards/indexer-health.json` to make it
-stick. To scrape something else, add a job to
-[`monitoring/prometheus.yml`](monitoring/prometheus.yml); the gRPC API exports no metrics today.
+Prometheus scrapes `indexer:9464` and `api:9465` every 10s; Grafana's **Indexer health**
+dashboard (provisioned from [`monitoring/`](monitoring/) on every start) and six alerting
+rules ([`monitoring/alerts.yml`](monitoring/alerts.yml), rules only — no Alertmanager, see
+[DECISIONS.md ADR-20](DECISIONS.md#adr-20-alerts-as-prometheus-rules-only-no-alertmanager))
+read it. See [RUNBOOK.md](RUNBOOK.md) for what each alert means and how to read the
+dashboard when the indexer looks behind.
 
 ## Deployment
 
-Pushing to `main` triggers `.github/workflows/deploy.yml`: it builds and pushes the three
-images to GHCR and then, over SSH, uploads `docker-compose.yml`, `monitoring/` and a rendered
-`.env` to the Hetzner server and runs `docker compose pull && docker compose up -d`. Deploys are atomic
-image swaps pinned to the commit SHA; to roll back, pin the previous SHA tags in the
-server's `.env` (or re-run the last good workflow run) — see the runbook.
-
-Server prerequisites, required GitHub secrets, and the operations runbook (reindexing,
-upgrades, devnet resets) are documented in [docs/deployment.md](docs/deployment.md).
-
-## Operational notes
-
-- **Alchemy free tier**: 30M CU/month, 500 CU/s. Slot-by-slot `getBlock` polling on devnet
-  (~2.5 slots/s) is CU-hungry; the compose file uses `--batch-size=10 --workers=2` (enough to
-  outpace block production without hitting the 500 CU/s cap) and lists the public devnet RPC
-  as fallback. Sustained tail-following costs roughly 5–7M CU/day, so the free monthly quota
-  lasts under a week of continuous operation. In practice, hours of continuous devnet
-  tail-following triggered sustained 429 throttling on the free tier (the node handles it:
-  it throttles, retries, and fails over — indexing slows but stays correct). If that happens,
-  swap the order of the two `--network-endpoint` flags in `docker-compose.yml` to make the
-  public devnet RPC primary, or upgrade the Alchemy plan. For a long-running deployment consider a paid tier, or swap
-  endpoint order in `docker-compose.yml` to make the public RPC primary.
-- **Devnet resets**: Solana devnet is periodically reset; if history disappears, wipe and
-  reindex (see runbook) — the program's full history is small, so this takes minutes.
-- **Reorg safety**: the node runs with `--unfinalized-blocks=true` and historical mode, so
-  short forks are rolled back correctly.
-- **Failed transactions** are not indexed (`includeFailed` defaults to false) — only executed
-  state changes appear.
-
-## Design
-
-The full architecture rationale — including why gRPC lives at the serving layer (SubQuery's
-Solana node consumes JSON-RPC only and cannot ingest Yellowstone/Geyser gRPC), the data model,
-and known risks — is in [docs/design.md](docs/design.md).
+Pushing to `main` builds and pushes GHCR images, then deploys to a Hetzner server over SSH —
+see [docs/deployment.md](docs/deployment.md) for server setup, secrets, and the deploy
+mechanics, and [RUNBOOK.md](RUNBOOK.md) for operating a running deployment (including how to
+roll back to the old SubQuery stack).

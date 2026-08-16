@@ -614,3 +614,53 @@ behavior). The full CI rust-job command sequence was reproduced locally end to e
 the exact flags: fmt, clippy, `SQLX_OFFLINE=true` build, migrate, `cargo test --workspace --locked`
 (96 tests: 71 indexer + 25 api, 0 failures), and both per-crate `cargo sqlx prepare --check` —
 all green.
+
+## Migration complete (2026-08-16)
+
+This log is not itself a deliverable (see the top of this file) — it stays in the repo as
+the migration's working record. The durable documentation it fed is:
+**[README.md](README.md)**, **[ARCHITECTURE.md](ARCHITECTURE.md)**,
+**[DECISIONS.md](DECISIONS.md)**, **[RUNBOOK.md](RUNBOOK.md)**, and the updated
+**[docs/deployment.md](docs/deployment.md)**.
+
+### What shipped
+
+All nine phases landed on branch `carbon-migration`:
+
+| Phase | Commit range | What |
+| --- | --- | --- |
+| 0 — Recon | (notes only, no commits) | Program/network/IDL/Alchemy-gRPC/Carbon-API findings, this file |
+| 1 — Decoder | `903dda2..42c63d3` | Rust workspace, generated `carbon-xcavate-whitelist-decoder` |
+| 2 — Database schema | `42c63d3..fbcfb94` | 5 migrations, `crates/indexer/src/db/` |
+| 3 — Pipeline | `fbcfb94..26ba5f7` | Carbon 0.12.0 pipeline, processors, batched writer |
+| 4 — Backfill | `26ba5f7..519f4db` | snapshot/backfill/reconcile, incl. fix round (`c33a9d8`, `e323a0d`, `35f4c83`, `519f4db`) |
+| 5 — GraphQL API | `519f4db..53967c9` | `crates/api`, DoS guards, incl. fix round (`01a604c`, `53967c9`) |
+| 6 — Observability | `53967c9..f53f6ed` | Prometheus scrape/alerts, Grafana dashboard |
+| 7 — Docker Compose | `f53f6ed..ffaedeb` | `docker-compose.yml`, `docker/rust.Dockerfile`, SubQuery stack preserved as the rollback file |
+| 8 — CI + deployment | `ffaedeb..d7224c2` | `ci.yml`/`deploy.yml` adapted, rollback steps commented (not deleted) |
+| 9 — Documentation | `d7224c2..HEAD` | This section, plus the four docs and the `docs/deployment.md` update above |
+
+Every phase's review is recorded Approved/clean in the controller ledger
+(`.superpowers/sdd/carbon-migration-spec/progress.md`) before the next phase started; two
+phases (4, 5) went through one fix round each for reviewer-found Important/Critical findings,
+both closed before that phase was marked complete.
+
+### CI/deploy secrets accounting (from Task 8, re-confirmed here)
+
+**No new secrets or repository variables are required.** Task 8's own accounting
+(`task-8-report.md`) grepped every `secrets.`/`vars.` reference in the final
+`.github/workflows/*.yml` files: the new `rust` CI job has zero secret/variable references
+(its test Postgres uses a hardcoded throwaway password, not a secret); `deploy.yml`'s set is
+byte-for-byte the same secrets the pre-migration workflow already required, minus one now-
+unused repository variable.
+
+| Name | Kind | Status |
+| --- | --- | --- |
+| `HETZNER_SSH_KEY`, `HETZNER_KNOWN_HOSTS`, `HETZNER_HOST`, `HETZNER_SSH_PORT`, `HETZNER_USER` | secrets | pre-existing, unchanged |
+| `ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`, `GRAFANA_PASSWORD` | secrets | pre-existing, unchanged |
+| `GHCR_PULL_TOKEN` | secret (optional) | pre-existing, unchanged |
+| `GRAPHQL_PORT`, `GRAFANA_PORT`, `PROMETHEUS_PORT` | repo variables | pre-existing, unchanged |
+| `GRPC_PORT` | repo variable | now unused (grpc-api dropped from the active stack, `ADR-18`); safe to delete from repo Settings → Variables whenever convenient, does not fail the workflow if left in place |
+
+If a human is setting this repo up fresh today, the secrets/variables to configure are
+exactly the ones `docs/deployment.md` §2 lists — nothing added by this migration.
