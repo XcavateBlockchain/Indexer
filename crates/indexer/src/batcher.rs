@@ -133,18 +133,44 @@ impl Batcher {
     }
 }
 
+/// Whether every write op ever pushed through a [`Batcher`] before its flusher exited actually
+/// committed. Returned by the [`JoinHandle`] `spawn` hands back, so the one-shot jobs (snapshot,
+/// history backfill, one reconciliation cycle) can tell a real commit barrier from a laundered
+/// failure before writing a completion marker that depends on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushOutcome {
+    /// Every batch this flusher ever committed, committed. Safe to trust the rows it wrote.
+    AllCommitted,
+    /// At least one batch was dropped uncommitted -- a commit kept failing and the
+    /// cancellation token fired during its retry backoff (see [`flush`]). The rows in that
+    /// batch (and, since ordering within a batch is fixed, anything sorted after them --
+    /// notably a backfill cursor sharing the batch) never landed. A caller must NOT write any
+    /// completion marker (`backfill_complete`, a cursor clear, `snapshot_slot`,
+    /// `last_contiguous_slot`) that depends on this flusher's rows having committed.
+    OpsDropped,
+}
+
+impl FlushOutcome {
+    pub fn all_committed(self) -> bool {
+        matches!(self, FlushOutcome::AllCommitted)
+    }
+}
+
 /// Creates the channel and spawns the flusher.
 ///
 /// The returned [`JoinHandle`] completes once every [`Batcher`] clone has been dropped *and*
-/// the final partial batch has been committed -- so a graceful shutdown is: drop the pipeline
-/// (which drops the processors, which drop their `Batcher`s), then await this handle.
+/// the final partial batch has been committed or dropped -- so a graceful shutdown is: drop the
+/// pipeline (which drops the processors, which drop their `Batcher`s), then await this handle.
 ///
 /// That property is also used as a **commit barrier** by the one-shot jobs (snapshot, history
 /// backfill, one reconciliation cycle): each creates its own batcher, does its work, drops the
-/// handle and awaits the flusher. When that await returns, everything the job produced is
-/// committed -- which is what makes it safe to then write `snapshot_slot`,
-/// `backfill_complete` or `last_contiguous_slot`.
-pub fn spawn(pool: PgPool, cancellation: CancellationToken) -> (Batcher, JoinHandle<()>) {
+/// handle and awaits the flusher. The [`FlushOutcome`] it resolves to says whether that barrier
+/// actually held: `AllCommitted` means everything the job produced landed, so it is safe to
+/// then write `snapshot_slot`, `backfill_complete` or `last_contiguous_slot`; `OpsDropped` means
+/// a commit kept failing until shutdown fired during its retry backoff, and the caller MUST
+/// skip those completion writes -- they would otherwise claim completeness for rows that never
+/// landed (Task-4 fix round, Finding 2).
+pub fn spawn(pool: PgPool, cancellation: CancellationToken) -> (Batcher, JoinHandle<FlushOutcome>) {
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
     let handle = tokio::spawn(flusher_loop(pool, rx, cancellation));
     (Batcher { tx }, handle)
@@ -154,10 +180,14 @@ async fn flusher_loop(
     pool: PgPool,
     mut rx: mpsc::Receiver<WriteOp>,
     cancellation: CancellationToken,
-) {
+) -> FlushOutcome {
     let mut buf: Vec<WriteOp> = Vec::with_capacity(MAX_BATCH);
     // `None` while the buffer is empty: an idle flusher must not wake up every 250 ms.
     let mut deadline: Option<tokio::time::Instant> = None;
+    // Sticky once true: one dropped batch during this flusher's lifetime is enough to make its
+    // overall report `OpsDropped`, even if later flushes (there might not be any -- shutdown is
+    // usually imminent once this happens) succeed.
+    let mut dropped_any = false;
 
     loop {
         let timer = async {
@@ -178,20 +208,24 @@ async fn flusher_loop(
                     }
                     buf.push(op);
                     if buf.len() >= MAX_BATCH {
-                        flush(&pool, &mut buf, &cancellation).await;
+                        dropped_any |= flush(&pool, &mut buf, &cancellation).await;
                         deadline = None;
                     }
                 }
                 None => {
                     // All senders dropped: commit whatever is left and finish.
-                    flush(&pool, &mut buf, &cancellation).await;
+                    dropped_any |= flush(&pool, &mut buf, &cancellation).await;
                     log::info!("batch flusher stopped (all writers dropped)");
-                    return;
+                    return if dropped_any {
+                        FlushOutcome::OpsDropped
+                    } else {
+                        FlushOutcome::AllCommitted
+                    };
                 }
             },
 
             _ = timer => {
-                flush(&pool, &mut buf, &cancellation).await;
+                dropped_any |= flush(&pool, &mut buf, &cancellation).await;
                 deadline = None;
             }
         }
@@ -199,10 +233,12 @@ async fn flusher_loop(
 }
 
 /// Commits `buf` in one transaction, retrying with exponential backoff until it succeeds or
-/// the process is cancelled. `buf` is left empty on success.
-async fn flush(pool: &PgPool, buf: &mut Vec<WriteOp>, cancellation: &CancellationToken) {
+/// the process is cancelled. `buf` is left empty either way. Returns `true` if `buf` had to be
+/// dropped uncommitted (cancelled while retrying a failed commit) -- the caller accumulates
+/// this into the [`FlushOutcome`] the flusher eventually reports.
+async fn flush(pool: &PgPool, buf: &mut Vec<WriteOp>, cancellation: &CancellationToken) -> bool {
     if buf.is_empty() {
-        return;
+        return false;
     }
 
     // Stable sort by phase: within a phase the original arrival order is preserved, which
@@ -224,7 +260,7 @@ async fn flush(pool: &PgPool, buf: &mut Vec<WriteOp>, cancellation: &Cancellatio
                     elapsed,
                 );
                 buf.clear();
-                return;
+                return false;
             }
             Err(e) => {
                 log::error!(
@@ -235,16 +271,23 @@ async fn flush(pool: &PgPool, buf: &mut Vec<WriteOp>, cancellation: &Cancellatio
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
                     _ = cancellation.cancelled() => {
+                        // This buffer never committed. Every write here IS idempotent and
+                        // WOULD be safely re-derived by the next run -- but only if nothing
+                        // downstream already told the world these rows exist. That is exactly
+                        // what `FlushOutcome::OpsDropped` (returned by the flusher this call is
+                        // part of) is for: it forces every completion-marker call site
+                        // (backfill_complete, a cursor clear, snapshot_slot,
+                        // last_contiguous_slot) to skip that write instead of laundering this
+                        // failure into a false claim of completeness. See the Task-4 fix-round
+                        // report, Finding 2.
                         log::error!(
                             "cancelled while retrying a failed flush; DROPPING {} un-committed \
-                             write ops (slots up to {max_slot}). They will be re-derived on the \
-                             next run: every write here is idempotent, the backfill cursor only \
-                             ever advances behind committed rows, and last_contiguous_slot only \
-                             ever advances after a completed reconciliation crawl.",
+                             write ops (slots up to {max_slot}); reporting FlushOutcome::OpsDropped \
+                             so the caller does not write a completion marker for them",
                             buf.len()
                         );
                         buf.clear();
-                        return;
+                        return true;
                     }
                 }
                 backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -304,6 +347,8 @@ mod tests {
     use super::WriteOp;
     use crate::db::models::{ActionType, NewAction};
     use chrono::Utc;
+    use std::str::FromStr;
+    use tokio_util::sync::CancellationToken;
 
     fn action(slot: i64) -> WriteOp {
         WriteOp::InsertAction(NewAction {
@@ -362,5 +407,38 @@ mod tests {
     fn a_batch_reports_its_highest_slot() {
         let ops = [action(10), action(30), action(20)];
         assert_eq!(ops.iter().map(WriteOp::slot).max(), Some(30));
+    }
+
+    // --- FINDING 2 (Task-4 fix round): the flusher must report a dropped batch, not just log it
+    #[tokio::test]
+    async fn a_persistently_failing_commit_that_is_cancelled_reports_dropped_ops() {
+        // A pool pointed at a database that cannot exist, on the same Postgres server the rest
+        // of this suite already requires (see env-notes.md): every commit attempt fails
+        // immediately and deterministically, no live outage or timing-sensitive setup needed to
+        // exercise `flush`'s cancellation-drop path.
+        let base = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set (see env-notes.md) to run this test");
+        let options = sqlx::postgres::PgConnectOptions::from_str(&base)
+            .expect("DATABASE_URL must be a valid postgres URL")
+            .database("indexer_test_db_that_must_not_exist_9f3c2a");
+        let pool = sqlx::postgres::PgPoolOptions::new().connect_lazy_with(options);
+
+        let cancellation = CancellationToken::new();
+        // Already cancelled: the first failed commit's `tokio::select!` between the backoff
+        // sleep and `cancellation.cancelled()` resolves to the cancellation branch immediately.
+        cancellation.cancel();
+
+        let mut buf = vec![WriteOp::SetBackfillCursor {
+            signature: "sig".into(),
+            slot: 1,
+        }];
+
+        let dropped = super::flush(&pool, &mut buf, &cancellation).await;
+        assert!(
+            dropped,
+            "a commit that can never succeed, cancelled during its retry backoff, must report \
+             dropped ops"
+        );
+        assert!(buf.is_empty(), "the dropped batch must still be cleared");
     }
 }

@@ -172,8 +172,50 @@ pub async fn cycle(
     .await;
 
     drop(bat);
-    flusher.await.ok();
+    // FINDING 2 (Task-4 fix round): awaiting the flusher is a commit barrier only if it reports
+    // one. A panicked flusher task is indistinguishable from a dropped batch here, so it is
+    // treated the same conservative way.
+    let flush_outcome = flusher.await.unwrap_or(batcher::FlushOutcome::OpsDropped);
     let summary = outcome?;
+
+    finish(
+        pool,
+        frontier,
+        flush_outcome,
+        low,
+        tip,
+        summary.signatures_expected,
+        summary.windows,
+    )
+    .await
+}
+
+/// Applies (or skips) the end-of-cycle completion effects: closing the sync gap and advancing
+/// `last_contiguous_slot` to `tip`. Split out of `cycle` so FINDING 2 (Task-4 fix round) is
+/// unit-testable without a live RPC crawl: if `flush_outcome` says the batcher had to drop a
+/// batch (a double fault -- a commit kept failing and shutdown fired during its retry backoff),
+/// the crawl's summary is not evidence that `[low+1, tip]` is actually in the database, so
+/// neither the gap-close nor the advance may happen -- the next cycle re-walks the same range
+/// (idempotent) and retries.
+async fn finish(
+    pool: &PgPool,
+    frontier: &SyncFrontier,
+    flush_outcome: batcher::FlushOutcome,
+    low: u64,
+    tip: u64,
+    signatures_expected: u64,
+    windows: usize,
+) -> Result<Option<i64>> {
+    if !flush_outcome.all_committed() {
+        log::warn!(
+            "reconcile: PARTIAL CYCLE -- write op(s) from this crawl were dropped uncommitted \
+             during a double fault (DB commit failure + shutdown); refusing to close the sync \
+             gap or advance last_contiguous_slot to {tip}, since some of the rows this cycle \
+             claims to have re-covered may be missing. The next cycle re-walks the same range \
+             (idempotent) and will retry."
+        );
+        return Ok(None);
+    }
 
     // The crawl covered [low+1, tip] in full, so any hole a stream outage left in that range has
     // just been filled.
@@ -188,9 +230,8 @@ pub async fn cycle(
         .context("reconcile: advancing last_contiguous_slot")?;
     crate::metrics::set_last_contiguous_slot(tip);
     log::info!(
-        "reconcile: crawled {} signature(s) in {} window(s) above slot {low}; last_contiguous_slot -> {tip}",
-        summary.signatures_expected,
-        summary.windows,
+        "reconcile: crawled {signatures_expected} signature(s) in {windows} window(s) above \
+         slot {low}; last_contiguous_slot -> {tip}",
     );
 
     Ok(if advanced.rows_affected() > 0 {
@@ -198,4 +239,56 @@ pub async fn cycle(
     } else {
         None
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::batcher::FlushOutcome;
+
+    // --- FINDING 2: dropped ops must skip both the gap-close and the advance ------------------
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn dropped_ops_skip_the_gap_close_and_the_advance(pool: PgPool) {
+        db::sync_state::init_sync_state(&pool, 100).await.unwrap();
+        // backfill_complete = true, but a fresh frontier starts with gap_open = true; that is
+        // exactly the pre-cycle state this test needs to see stay frozen.
+        let frontier = SyncFrontier::new(true);
+
+        let result = finish(&pool, &frontier, FlushOutcome::OpsDropped, 100, 500, 3, 1)
+            .await
+            .expect("a dropped-ops cycle must not error, only skip");
+        assert_eq!(result, None);
+        assert!(
+            frontier.gap_open(),
+            "the gap must stay open when the flush dropped ops"
+        );
+
+        let state = db::sync_state::get_sync_state(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.last_contiguous_slot, 100,
+            "last_contiguous_slot must not advance"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_clean_flush_closes_the_gap_and_advances(pool: PgPool) {
+        db::sync_state::init_sync_state(&pool, 100).await.unwrap();
+        let frontier = SyncFrontier::new(true);
+
+        let result = finish(&pool, &frontier, FlushOutcome::AllCommitted, 100, 500, 3, 1)
+            .await
+            .unwrap();
+        assert_eq!(result, Some(500));
+        assert!(!frontier.gap_open());
+
+        let state = db::sync_state::get_sync_state(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.last_contiguous_slot, 500);
+    }
 }

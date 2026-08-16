@@ -104,11 +104,12 @@ pub async fn run(
     }
 
     drop(bat);
-    flusher.await.ok();
+    // FINDING 2 (Task-4 fix round): awaiting the flusher is a commit barrier only if it reports
+    // one. A panicked flusher task is indistinguishable from a dropped batch here, so it is
+    // treated the same conservative way.
+    let flush_outcome = flusher.await.unwrap_or(batcher::FlushOutcome::OpsDropped);
 
-    db::sync_state::set_snapshot_slot(pool, slot as i64)
-        .await
-        .context("snapshot: recording sync_state.snapshot_slot")?;
+    finish(pool, flush_outcome, slot, loaded).await?;
     crate::metrics::set_snapshot_accounts_loaded(loaded as u64);
 
     log::info!(
@@ -119,6 +120,33 @@ pub async fn run(
         accounts_loaded: loaded,
         undecodable,
     })
+}
+
+/// Records `sync_state.snapshot_slot`, unless the flusher had to drop a batch (a double fault:
+/// a commit kept failing and shutdown fired during its retry backoff -- see
+/// `crate::batcher::flush`). Split out of `run` so FINDING 2 (Task-4 fix round) is unit-testable
+/// without a live RPC fetch: writing `snapshot_slot` here would claim every one of `loaded`
+/// accounts landed in the state tables, which is exactly the false claim a dropped batch would
+/// otherwise let through. A hard error, loud and resumable: `indexer snapshot` is a plain
+/// idempotent re-read of current chain state.
+async fn finish(
+    pool: &PgPool,
+    flush_outcome: batcher::FlushOutcome,
+    slot: u64,
+    loaded: usize,
+) -> Result<()> {
+    if !flush_outcome.all_committed() {
+        anyhow::bail!(
+            "snapshot: {loaded} account write(s) were dropped uncommitted during a double \
+             fault (DB commit failure + shutdown); refusing to record sync_state.snapshot_slot. \
+             Re-run `indexer snapshot` -- it is a plain idempotent re-read of current chain \
+             state."
+        );
+    }
+    db::sync_state::set_snapshot_slot(pool, slot as i64)
+        .await
+        .context("snapshot: recording sync_state.snapshot_slot")?;
+    Ok(())
 }
 
 /// `getSlot` then `getProgramAccounts`, on the primary endpoint with the public fallback behind
@@ -189,4 +217,44 @@ async fn fetch_from(url: &str, program_id: &Pubkey) -> Result<(u64, Vec<(Pubkey,
         accounts.push((pubkey, account));
     }
     Ok((slot, accounts))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::batcher::FlushOutcome;
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn dropped_ops_skip_recording_snapshot_slot(pool: PgPool) {
+        db::sync_state::init_sync_state(&pool, 100).await.unwrap();
+
+        let err = finish(&pool, FlushOutcome::OpsDropped, 999, 11)
+            .await
+            .expect_err("a double-fault flush must be a hard error");
+        assert!(err.to_string().to_lowercase().contains("dropped"));
+
+        let state = db::sync_state::get_sync_state(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.snapshot_slot, None,
+            "snapshot_slot must stay unset when the flush dropped ops"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_clean_flush_records_snapshot_slot(pool: PgPool) {
+        db::sync_state::init_sync_state(&pool, 100).await.unwrap();
+
+        finish(&pool, FlushOutcome::AllCommitted, 999, 11)
+            .await
+            .unwrap();
+
+        let state = db::sync_state::get_sync_state(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.snapshot_slot, Some(999));
+    }
 }

@@ -152,7 +152,10 @@ pub async fn run(
     .await;
 
     drop(bat);
-    flusher.await.ok();
+    // FINDING 2 (Task-4 fix round): awaiting the flusher is a commit barrier only if it reports
+    // one. A panicked flusher task is indistinguishable from a dropped batch here, so it is
+    // treated the same conservative way.
+    let flush_outcome = flusher.await.unwrap_or(batcher::FlushOutcome::OpsDropped);
 
     let summary = outcome?;
     log::info!(
@@ -174,6 +177,74 @@ pub async fn run(
         summary.stop,
         Some(StopReason::ReachedFloor) | Some(StopReason::HistoryExhausted)
     ));
+
+    finish(
+        pool,
+        frontier,
+        flush_outcome,
+        floor,
+        state.backfill_floor_slot,
+    )
+    .await?;
+
+    Ok(summary)
+}
+
+/// Applies (or skips) the post-walk completion writes. Split out of `run` for two reasons -- the
+/// two Important findings from the Task-4 review (see the fix-round report) -- and so both are
+/// unit-testable without a live RPC crawl:
+///
+/// **FINDING 2** (checked first): a crawl finishing is not proof its rows are in the database.
+/// If the flusher had to drop a batch (a double fault: a commit kept failing and shutdown fired
+/// during its retry backoff, see `crate::batcher::flush`), writing `backfill_complete` or
+/// clearing the cursor here would claim completeness for rows that never landed. This is a hard
+/// error -- loud, and resumable the same way every other backfill failure is (every write here
+/// is idempotent and the cursor, when one exists, only ever advances behind committed rows).
+///
+/// **FINDING 1**: even with every row committed, an operator-supplied `--floor` above
+/// `sync_state.backfill_floor_slot` only walked a *suffix* of history. Setting
+/// `backfill_complete` there would unfreeze the reconciliation supervisor (`reconcile.rs`) over
+/// the range below the operator's floor that this walk never visited -- exactly the "no gaps
+/// below T" lie `last_contiguous_slot` exists to prevent. Unlike Finding 2 this is NOT an error
+/// (the operator asked for exactly this range and got it): log a prominent warning and return
+/// `Ok(false)` instead. `backfill_cursor` is deliberately left untouched in this branch: the
+/// crawl already advanced it (through the batcher, committed with the rows it vouches for) to
+/// the oldest signature this partial walk actually reached, which is exactly the resume point a
+/// future *unrestricted* `indexer backfill` needs to continue down to the real floor. Clearing
+/// it here would discard that progress and force a future full walk to restart from the tip
+/// instead of resuming below the operator's floor.
+async fn finish(
+    pool: &PgPool,
+    frontier: &SyncFrontier,
+    flush_outcome: batcher::FlushOutcome,
+    effective_floor: u64,
+    backfill_floor_slot: i64,
+) -> Result<bool> {
+    if !flush_outcome.all_committed() {
+        anyhow::bail!(
+            "backfill: write op(s) from this walk were dropped uncommitted during a double \
+             fault (DB commit failure + shutdown); refusing to set sync_state.backfill_complete \
+             or clear backfill_cursor, since some of the rows this walk claims to have indexed \
+             may be missing from the database. Re-run `indexer backfill` -- it resumes from its \
+             cursor, and every write here is idempotent."
+        );
+    }
+
+    if effective_floor > backfill_floor_slot.max(0) as u64 {
+        log::warn!(
+            "backfill: PARTIAL WALK ONLY -- floor {effective_floor} is above \
+             sync_state.backfill_floor_slot {backfill_floor_slot}, so this walk covered \
+             [{effective_floor}, tip] and NOT the full history down to the program's real \
+             floor. sync_state.backfill_complete is left false and last_contiguous_slot stays \
+             frozen: completeness is NOT claimed. backfill_cursor is left untouched (it already \
+             points at the oldest signature this walk actually committed -- the correct resume \
+             point for a future unrestricted `indexer backfill`). Run `indexer backfill` with no \
+             --floor (or --floor <= {backfill_floor_slot}) to reach a state where completeness \
+             can be claimed."
+        );
+        return Ok(false);
+    }
+
     db::sync_state::set_backfill_complete(pool, true)
         .await
         .context("backfill: setting sync_state.backfill_complete")?;
@@ -188,6 +259,130 @@ pub async fn run(
     log::info!(
         "backfill: sync_state.backfill_complete = true; last_contiguous_slot may now advance"
     );
+    Ok(true)
+}
 
-    Ok(summary)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::batcher::FlushOutcome;
+
+    async fn seeded(pool: &PgPool, backfill_floor_slot: i64) {
+        db::sync_state::init_sync_state(pool, backfill_floor_slot)
+            .await
+            .expect("seed sync_state");
+    }
+
+    // --- FINDING 1: an operator floor above the real floor must never claim completeness -----
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_floor_above_the_sync_state_floor_never_claims_completeness(pool: PgPool) {
+        seeded(&pool, 100_000).await;
+        let frontier = SyncFrontier::new(false);
+
+        let claimed = finish(
+            &pool,
+            &frontier,
+            FlushOutcome::AllCommitted,
+            500_000,
+            100_000,
+        )
+        .await
+        .expect("a partial-floor walk must not error");
+
+        assert!(
+            !claimed,
+            "an operator floor above the real floor must not claim completeness"
+        );
+
+        let state = db::sync_state::get_sync_state(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !state.backfill_complete,
+            "sync_state.backfill_complete must stay false"
+        );
+        assert!(!frontier.may_advance(), "the frontier must stay frozen");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_partial_floor_walk_leaves_an_existing_cursor_untouched(pool: PgPool) {
+        seeded(&pool, 100_000).await;
+        db::backfill_cursor::set_cursor(&pool, "resume-from-here", 250_000)
+            .await
+            .expect("seed cursor");
+        let frontier = SyncFrontier::new(false);
+
+        finish(
+            &pool,
+            &frontier,
+            FlushOutcome::AllCommitted,
+            500_000,
+            100_000,
+        )
+        .await
+        .unwrap();
+
+        let cursor = db::backfill_cursor::get_cursor(&pool)
+            .await
+            .unwrap()
+            .expect("the cursor must survive a partial-floor walk, not be cleared");
+        assert_eq!(cursor.signature, "resume-from-here");
+        assert_eq!(cursor.slot, 250_000);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn a_floor_at_or_below_the_sync_state_floor_claims_completeness(pool: PgPool) {
+        seeded(&pool, 100_000).await;
+        db::backfill_cursor::set_cursor(&pool, "sig", 100_000)
+            .await
+            .expect("seed cursor");
+        let frontier = SyncFrontier::new(false);
+
+        let claimed = finish(
+            &pool,
+            &frontier,
+            FlushOutcome::AllCommitted,
+            100_000,
+            100_000,
+        )
+        .await
+        .unwrap();
+        assert!(claimed);
+
+        let state = db::sync_state::get_sync_state(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.backfill_complete);
+        assert!(frontier.may_advance());
+        assert!(
+            db::backfill_cursor::get_cursor(&pool)
+                .await
+                .unwrap()
+                .is_none(),
+            "a genuinely complete walk must clear the cursor"
+        );
+    }
+
+    // --- FINDING 2: dropped ops must skip every completion write, regardless of the floor -----
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn dropped_ops_are_a_hard_error_and_claim_nothing(pool: PgPool) {
+        seeded(&pool, 100_000).await;
+        let frontier = SyncFrontier::new(false);
+
+        let err = finish(&pool, &frontier, FlushOutcome::OpsDropped, 100_000, 100_000)
+            .await
+            .expect_err("a double-fault flush must be a hard error");
+        assert!(err.to_string().to_lowercase().contains("dropped"));
+
+        let state = db::sync_state::get_sync_state(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!state.backfill_complete);
+        assert!(!frontier.may_advance(), "the frontier must stay frozen");
+    }
 }

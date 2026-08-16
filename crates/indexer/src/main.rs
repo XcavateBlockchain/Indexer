@@ -352,8 +352,24 @@ async fn run_live() -> Result<()> {
     // Dropping the last Batcher closes the channel, which makes the flusher commit its final
     // partial batch and exit.
     drop(batcher);
-    flusher.await.ok();
-    log::info!("shutdown complete");
+    // FINDING 2 (Task-4 fix round): this batcher writes no completion marker itself (that moved
+    // to the one-shot jobs and the reconciler), so there is nothing here to skip -- but a
+    // laundered drop on the way out would still be a silent data loss an operator should know
+    // about, so report it instead of swallowing it with `.ok()`.
+    let flush_outcome = flusher.await.unwrap_or(batcher::FlushOutcome::OpsDropped);
+    if flush_outcome.all_committed() {
+        log::info!("shutdown complete");
+    } else {
+        log::warn!(
+            "shutdown complete, but the final batch(es) from the live pipeline were dropped \
+             uncommitted (a double fault: a DB commit kept failing and shutdown fired during \
+             its retry backoff, see indexer::batcher::flush). No completion marker here depends \
+             on those rows, so this is not a correctness problem by itself; the dropped \
+             instructions/accounts are simply not indexed yet and will be re-derived on the \
+             next start by the live stream (if still recent) or by `indexer backfill` \
+             (idempotent re-walk covers any gap)."
+        );
+    }
     Ok(())
 }
 
