@@ -18,6 +18,10 @@ juniper = { version = "=0.16.2", features = ["chrono"] }
 juniper_axum = "=0.2.0"
 axum = "0.8"
 
+# CORS for browser clients of /graphql: every origin by default, restricted to the
+# CORS_ALLOWED_ORIGINS list when set (see src/config.rs).
+tower-http = { version = "0.6", default-features = false, features = ["cors"] }
+
 # Pre-parses the raw query text for the depth/complexity guard -- juniper 0.16 has no built-in
 # query-cost limiter. The same crate juniper's own optional `schema-language` feature pulls in
 # (0.4), so nothing new enters the workspace's dependency *family*, just this one edge.

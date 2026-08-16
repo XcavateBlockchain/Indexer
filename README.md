@@ -77,6 +77,7 @@ Source: [`.env.example`](.env.example), `crates/indexer/src/config.rs`,
 | `POSTGRES_PASSWORD` | postgres, indexer, api | *(required)* | Stack-internal Postgres password. Applied only on first init of the `pgdata` volume — see [docs/deployment.md](docs/deployment.md#rotating-postgres_password). `DATABASE_URL` is composed from this inside `docker-compose.yml`, never a separate secret. |
 | `RUST_LOG` | indexer, api | `info,hyper=warn,h2=warn,tonic=warn,rustls=warn` (indexer) / `info` (api) | `env_logger` filter syntax. |
 | `GRAPHQL_PORT` | api (compose) | `3010` | Published host port for GraphQL + GraphiQL. |
+| `CORS_ALLOWED_ORIGINS` | api | *(unset → allow all)* | Comma-separated list of origins allowed to call `/graphql` from a browser (CORS), e.g. `https://app.example.com,http://localhost:3000`. Unset, empty, or `*` allows every origin. |
 | `GRAFANA_PORT` | grafana (compose) | `3011` | Published host port for Grafana. |
 | `PROMETHEUS_PORT` | prometheus (compose) | `9090` | Host port Prometheus binds, **loopback only** (`127.0.0.1`) — it has no auth. Reach it over an SSH tunnel in production. |
 | `GRAFANA_PASSWORD` | grafana (compose) | `admin` | Grafana admin password. Production deploy fails fast if unset. |

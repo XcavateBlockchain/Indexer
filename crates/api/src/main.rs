@@ -8,6 +8,7 @@
 //! | [`config`] | Environment-driven process configuration. |
 //! | [`db`] | The dedicated, statement-timeout-guarded read pool. |
 //! | [`chain_tip`] | Cached `getSlot` reading, shared by `/health` and `syncStatus`. |
+//! | [`graphiql`] | `GET /graphiql`: the IDE page (juniper 0.16.2's stock page is broken). |
 //! | [`graphql`] | The schema: `QueryRoot`, GraphQL object types, enums, context. |
 //! | [`guards`] | The DoS guards: page-size clamps, query depth/complexity pre-parse. |
 //! | [`health`] | `GET /health`. |
@@ -17,6 +18,7 @@
 mod chain_tip;
 mod config;
 mod db;
+mod graphiql;
 mod graphql;
 mod guards;
 mod health;
@@ -60,7 +62,11 @@ async fn main() -> Result<()> {
 
     metrics::install(cfg.metrics_addr).context("starting the metrics listener")?;
 
-    let app = router::build_router(state);
+    match &cfg.cors_allowed_origins {
+        None => log::info!("CORS: allowing every origin (set CORS_ALLOWED_ORIGINS to restrict)"),
+        Some(origins) => log::info!("CORS: restricted to {origins:?}"),
+    }
+    let app = router::build_router(state, cfg.cors_allowed_origins.clone());
 
     let listener = TcpListener::bind(cfg.graphql_addr)
         .await

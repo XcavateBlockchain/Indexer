@@ -12,6 +12,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 use anyhow::{anyhow, Context, Result};
+use axum::http::HeaderValue;
 
 /// Public devnet RPC, used when no Alchemy key is configured and as the retry target for
 /// `getSlot` (matches `crates/indexer/src/config.rs`'s `DEFAULT_RPC_FALLBACK_URL`).
@@ -35,6 +36,9 @@ pub struct Config {
     pub rpc_fallback_url: String,
     pub graphql_addr: SocketAddr,
     pub metrics_addr: SocketAddr,
+    /// `CORS_ALLOWED_ORIGINS`: `None` = allow every origin (the default), `Some(list)` = only
+    /// these origins may call the API from a browser. See [`parse_cors_origins`].
+    pub cors_allowed_origins: Option<Vec<HeaderValue>>,
 }
 
 impl Config {
@@ -71,6 +75,9 @@ impl Config {
             format!("METRICS_ADDR is not a host:port address: {metrics_addr_str}")
         })?;
 
+        let cors_allowed_origins =
+            parse_cors_origins(std::env::var("CORS_ALLOWED_ORIGINS").ok())?;
+
         Ok(Self {
             database_url,
             alchemy_api_key,
@@ -78,6 +85,7 @@ impl Config {
             rpc_fallback_url,
             graphql_addr,
             metrics_addr,
+            cors_allowed_origins,
         })
     }
 
@@ -107,6 +115,35 @@ impl Config {
     }
 }
 
+/// Parses `CORS_ALLOWED_ORIGINS`: a comma-separated list of origins allowed to call the API
+/// from a browser (`https://app.example.com,http://localhost:3000`). Unset, empty, or any
+/// entry of `*` all mean "allow every origin" (`None`). Entries are whitespace-trimmed and a
+/// trailing `/` is dropped -- browsers send the `Origin` header without one, so a
+/// `https://app.example.com/` entry in an exact-match list would otherwise silently never
+/// match.
+fn parse_cors_origins(raw: Option<String>) -> Result<Option<Vec<HeaderValue>>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let entries: Vec<&str> = raw
+        .split(',')
+        .map(|entry| entry.trim().trim_end_matches('/'))
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if entries.is_empty() || entries.contains(&"*") {
+        return Ok(None);
+    }
+    entries
+        .iter()
+        .map(|origin| {
+            HeaderValue::from_str(origin).with_context(|| {
+                format!("CORS_ALLOWED_ORIGINS entry is not a valid origin: {origin}")
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
 /// Hand-written so `DATABASE_URL`'s password and the Alchemy key (bare or embedded in
 /// `ALCHEMY_RPC_URL`) never reach a log line via `{:?}`.
 impl fmt::Debug for Config {
@@ -124,6 +161,7 @@ impl fmt::Debug for Config {
             .field("rpc_fallback_url", &self.rpc_fallback_url)
             .field("graphql_addr", &self.graphql_addr)
             .field("metrics_addr", &self.metrics_addr)
+            .field("cors_allowed_origins", &self.cors_allowed_origins)
             .finish()
     }
 }
@@ -151,7 +189,34 @@ pub fn redact_url_password(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_url_password;
+    use super::{parse_cors_origins, redact_url_password};
+
+    #[test]
+    fn cors_unset_empty_or_star_allows_all() {
+        assert_eq!(parse_cors_origins(None).unwrap(), None);
+        assert_eq!(parse_cors_origins(Some(String::new())).unwrap(), None);
+        assert_eq!(parse_cors_origins(Some(" , ".into())).unwrap(), None);
+        assert_eq!(parse_cors_origins(Some("*".into())).unwrap(), None);
+        assert_eq!(
+            parse_cors_origins(Some("https://app.example.com, *".into())).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cors_list_is_trimmed_and_trailing_slash_dropped() {
+        let origins =
+            parse_cors_origins(Some(" https://app.example.com/ ,http://localhost:3000".into()))
+                .unwrap()
+                .unwrap();
+        let origins: Vec<&str> = origins.iter().map(|v| v.to_str().unwrap()).collect();
+        assert_eq!(origins, ["https://app.example.com", "http://localhost:3000"]);
+    }
+
+    #[test]
+    fn cors_invalid_origin_is_an_error() {
+        assert!(parse_cors_origins(Some("https://app.example.com\u{7f}".into())).is_err());
+    }
 
     #[test]
     fn redacts_password_only() {

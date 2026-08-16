@@ -92,6 +92,9 @@ services:
       # being unset -- it degrades to RPC_FALLBACK_URL -- but the primary endpoint is
       # faster and not rate-limited).
       ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
+      # Comma-separated list of origins allowed to call /graphql from a browser; unset or
+      # empty allows every origin (crates/api/src/config.rs).
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       RUST_LOG: ${RUST_LOG:-info}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3010/health"]

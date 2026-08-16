@@ -263,6 +263,7 @@ dependencies = [
  "solana-commitment-config",
  "sqlx",
  "tokio",
+ "tower-http",
 ]
 
 [[package]]
