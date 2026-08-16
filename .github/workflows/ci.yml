@@ -6,32 +6,167 @@ on:
     branches: [main]
 
 jobs:
-  indexer:
-    name: SubQuery project
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npx subql codegen
-      - run: npx subql build
-      - run: npx tsc --noEmit
+  # SubQuery rollback path — disabled, see DECISIONS.md. The `rust` job below is the active
+  # CI gate for the Carbon/Rust stack; these two are kept, not deleted, so the migration can
+  # be backed out (see docker-compose.subquery.yml and MIGRATION_LOG.md).
+  #
+  # indexer:
+  #   name: SubQuery project
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 22
+  #         cache: npm
+  #     - run: npm ci
+  #     - run: npx subql codegen
+  #     - run: npx subql build
+  #     - run: npx tsc --noEmit
+  #
+  # grpc-api:
+  #   name: gRPC API
+  #   runs-on: ubuntu-latest
+  #   defaults:
+  #     run:
+  #       working-directory: grpc-api
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 22
+  #         cache: npm
+  #         cache-dependency-path: grpc-api/package-lock.json
+  #     - run: npm ci
+  #     - run: npm run build
 
-  grpc-api:
-    name: gRPC API
+  rust:
+    name: Rust (indexer + api)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: grpc-api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      # Offline by default: fmt/clippy/build read the committed .sqlx caches, the same way
+      # docker/rust.Dockerfile's build has no DB access at all. Steps that need to validate
+      # against the live services-postgres schema (tests, sqlx prepare --check) override this
+      # to "false" and set DATABASE_URL below.
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: grpc-api/package-lock.json
-      - run: npm ci
-      - run: npm run build
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # yellowstone-grpc-proto's build.rs unconditionally calls protobuf_src::protoc(), which
+      # compiles a vendored protobuf from source via autotools -- works but slow on Linux (see
+      # task-3-report.md). docker/rust.Dockerfile bypasses it with Cargo's stable
+      # build-script-override feature instead of a plain `apt-get install protobuf-compiler` +
+      # `PROTOC` env var (verified in that report not to work -- protobuf-src overwrites
+      # PROTOC itself, unconditionally, before it would ever be read). Same mechanism here,
+      # duplicated rather than shared because compose/Docker builds do not read `.github/`.
+      - name: Install protobuf toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+
+      - name: protobuf-src build-script override
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p .cargo
+          printf '[target.%s.protobuf-src]\nrustc-env = { INSTALL_DIR = "/usr" }\n' "$target" > .cargo/config.toml
+          cat .cargo/config.toml
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo build (offline, locked)
+        run: cargo build --workspace --locked
+
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --version 0.8.6 --no-default-features --features postgres,rustls --locked
+
+      - name: Run migrations
+        run: sqlx migrate run --source migrations
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+
+      # Network-dependent tests (live devnet RPC/gRPC) do not exist as #[test]/#[tokio::test]/
+      # #[sqlx::test] functions anywhere in this workspace -- verified by inspection, not
+      # assumed: every test that touches "devnet" data uses byte fixtures captured once and
+      # checked into integration_tests.rs (see task-3-report.md), and the RPC/gRPC clients
+      # built in crawl.rs/block_time.rs/grpc_smoke.rs are exercised only by the CLI
+      # subcommands (`smoke-grpc`, `snapshot`, `backfill`, `run`), which `cargo test` never
+      # invokes. Nothing needed gating; see task-8-report.md for the full grep.
+      - name: cargo test
+        run: cargo test --workspace --locked
+        env:
+          SQLX_OFFLINE: "false"
+          DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+
+      # `cargo sqlx prepare --check --workspace` from the repo root does NOT work here: the
+      # root Cargo.toml is a virtual manifest (no package of its own, `crates/whitelist-decoder`
+      # excluded as its own workspace root -- see that file's comment), so sqlx-cli has no
+      # single package to anchor a combined .sqlx against and fails with "is missing one or
+      # more queries" even when both crates' own caches (crates/indexer/.sqlx,
+      # crates/api/.sqlx) are fully current -- verified locally, not assumed. Every prior
+      # task's own `cargo sqlx prepare` re-run command already worked around this by running
+      # from inside each crate's directory, which is what generated these two .sqlx caches in
+      # the first place; check them the same way.
+      - name: cargo sqlx prepare --check (indexer)
+        working-directory: crates/indexer
+        run: cargo sqlx prepare --check -- --lib
+        env:
+          SQLX_OFFLINE: "false"
+          DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+
+      - name: cargo sqlx prepare --check (api)
+        working-directory: crates/api
+        run: cargo sqlx prepare --check -- --bin api
+        env:
+          SQLX_OFFLINE: "false"
+          DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+
+  docker-build-smoke:
+    name: Docker build smoke (no push)
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build indexer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/rust.Dockerfile
+          target: indexer
+          push: false
+          # Same scope names deploy.yml's build-and-push job uses, so this smoke build and a
+          # real deploy warm the same gha cache instead of maintaining two.
+          cache-from: type=gha,scope=indexer
+          cache-to: type=gha,scope=indexer,mode=max
+
+      - name: Build api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/rust.Dockerfile
+          target: api
+          push: false
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max

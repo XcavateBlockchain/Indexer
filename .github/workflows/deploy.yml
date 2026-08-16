@@ -38,28 +38,58 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push indexer node image
+      # SubQuery rollback path — disabled, see DECISIONS.md. Kept, not deleted, so the
+      # migration can be backed out; re-enable by uncommenting alongside
+      # docker-compose.subquery.yml.
+      #
+      # - name: Build & push indexer node image
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: .
+      #     file: docker/node.Dockerfile
+      #     push: true
+      #     tags: |
+      #       ghcr.io/${{ steps.vars.outputs.repo_lc }}/node:latest
+      #       ghcr.io/${{ steps.vars.outputs.repo_lc }}/node:${{ github.sha }}
+      #     cache-from: type=gha,scope=node
+      #     cache-to: type=gha,scope=node,mode=max
+      #
+      # - name: Build & push gRPC API image
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: grpc-api
+      #     push: true
+      #     tags: |
+      #       ghcr.io/${{ steps.vars.outputs.repo_lc }}/grpc:latest
+      #       ghcr.io/${{ steps.vars.outputs.repo_lc }}/grpc:${{ github.sha }}
+      #     cache-from: type=gha,scope=grpc
+      #     cache-to: type=gha,scope=grpc,mode=max
+
+      - name: Build & push indexer image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/node.Dockerfile
+          file: docker/rust.Dockerfile
+          target: indexer
           push: true
           tags: |
-            ghcr.io/${{ steps.vars.outputs.repo_lc }}/node:latest
-            ghcr.io/${{ steps.vars.outputs.repo_lc }}/node:${{ github.sha }}
-          cache-from: type=gha,scope=node
-          cache-to: type=gha,scope=node,mode=max
+            ghcr.io/${{ steps.vars.outputs.repo_lc }}/indexer:latest
+            ghcr.io/${{ steps.vars.outputs.repo_lc }}/indexer:${{ github.sha }}
+          cache-from: type=gha,scope=indexer
+          cache-to: type=gha,scope=indexer,mode=max
 
-      - name: Build & push gRPC API image
+      - name: Build & push api image
         uses: docker/build-push-action@v6
         with:
-          context: grpc-api
+          context: .
+          file: docker/rust.Dockerfile
+          target: api
           push: true
           tags: |
-            ghcr.io/${{ steps.vars.outputs.repo_lc }}/grpc:latest
-            ghcr.io/${{ steps.vars.outputs.repo_lc }}/grpc:${{ github.sha }}
-          cache-from: type=gha,scope=grpc
-          cache-to: type=gha,scope=grpc,mode=max
+            ghcr.io/${{ steps.vars.outputs.repo_lc }}/api:latest
+            ghcr.io/${{ steps.vars.outputs.repo_lc }}/api:${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
 
       - name: Build & push postgres image
         uses: docker/build-push-action@v6
@@ -111,7 +141,6 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD }}
           GRAPHQL_PORT: ${{ vars.GRAPHQL_PORT || '3010' }}
-          GRPC_PORT: ${{ vars.GRPC_PORT || '50051' }}
           GRAFANA_PORT: ${{ vars.GRAFANA_PORT || '3011' }}
           PROMETHEUS_PORT: ${{ vars.PROMETHEUS_PORT || '9090' }}
         run: |
@@ -153,10 +182,9 @@ jobs:
             dotenv_secret POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
             dotenv_secret GRAFANA_PASSWORD "$GRAFANA_PASSWORD"
             echo "PG_IMAGE=ghcr.io/$REPO_LC/postgres:${{ github.sha }}"
-            echo "NODE_IMAGE=ghcr.io/$REPO_LC/node:${{ github.sha }}"
-            echo "GRPC_IMAGE=ghcr.io/$REPO_LC/grpc:${{ github.sha }}"
+            echo "INDEXER_IMAGE=ghcr.io/$REPO_LC/indexer:${{ github.sha }}"
+            echo "API_IMAGE=ghcr.io/$REPO_LC/api:${{ github.sha }}"
             dotenv_port GRAPHQL_PORT "$GRAPHQL_PORT"
-            dotenv_port GRPC_PORT "$GRPC_PORT"
             dotenv_port GRAFANA_PORT "$GRAFANA_PORT"
             dotenv_port PROMETHEUS_PORT "$PROMETHEUS_PORT"
           } > server.env
@@ -187,15 +215,17 @@ jobs:
         run: |
           sleep 30
           ssh deploy-target "cd $DEPLOY_DIR && docker compose ps"
-          # The indexer node exposes /ready once it has connected to the RPC + DB.
-          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T subquery-node curl -sf http://localhost:3000/ready" \
-            && echo "indexer node is ready"
+          # The api service exposes /health once it can reach the DB (and, via ALCHEMY_API_KEY,
+          # the chain tip for syncStatus). Both `indexer` and `api` images carry curl
+          # (docker/rust.Dockerfile's runtime-base stage) -- api is used for every in-network
+          # check below since it is already the container being probed for its own health.
+          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T api curl -sf http://localhost:3010/health" \
+            && echo "api is ready"
           # Monitoring is probed from inside the compose network: Prometheus is
           # loopback-bound on the host and Grafana's port may be firewalled.
-          # The node image is the one with curl available.
-          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T subquery-node curl -sf http://prometheus:9090/-/ready >/dev/null" \
+          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T api curl -sf http://prometheus:9090/-/ready >/dev/null" \
             && echo "prometheus is ready"
-          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T subquery-node curl -sf --retry 5 --retry-delay 3 --retry-connrefused http://grafana:3000/api/health >/dev/null" \
+          ssh deploy-target "cd $DEPLOY_DIR && docker compose exec -T api curl -sf --retry 5 --retry-delay 3 --retry-connrefused http://grafana:3000/api/health >/dev/null" \
             && echo "grafana is up"
           # Remove images unused for 7+ days (keeps recent SHA tags around for
           # the .env-pin rollback path documented in docs/deployment.md).

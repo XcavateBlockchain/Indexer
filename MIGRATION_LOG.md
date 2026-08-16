@@ -530,3 +530,87 @@ subcommand that auto-loads `.env` (`ps`, `config`, `ls`, `exec` all failed with 
 were always invoked here with an explicit `--env-file`). Restored the variable name from the
 value already read earlier in this task's session; `.env` is gitignored and outside this task's
 tracked-file scope, so this is noted here rather than in a diff.
+
+## Phase 8 — CI + deployment (2026-08-16)
+
+`.github/workflows/ci.yml` and `.github/workflows/deploy.yml` are adapted, not replaced. The
+SubQuery `indexer`/`grpc-api` CI jobs and deploy's node/grpc build-push steps are commented out
+with a `# SubQuery rollback path — disabled, see DECISIONS.md` note, not deleted (spec §13). SSH
+auth, secret names, branch gating, the concurrency group, and `DEPLOY_DIR=/opt/indexer` are
+byte-for-byte unchanged — see task-8-report.md for the full line-referenced preserved-elements
+checklist. Full report: `.superpowers/sdd/carbon-migration-spec/task-8-report.md`.
+
+### ci.yml: new `rust` job
+
+`ubuntu-latest` with a `postgres:16` service container; `dtolnay/rust-toolchain@stable`
+(clippy+rustfmt) + `Swatinem/rust-cache@v2`; the same `.cargo/config.toml` protobuf-src
+build-script override `docker/rust.Dockerfile` already uses (Task 7), duplicated rather than
+shared since compose/Docker builds don't read `.github/`. Gates, in order: `cargo fmt --check` →
+`cargo clippy --workspace --all-targets -- -D warnings` → `SQLX_OFFLINE=true cargo build
+--workspace --locked` → `sqlx migrate run` → `cargo test --workspace --locked` → `cargo sqlx
+prepare --check` for **each** crate, run from inside `crates/indexer/` and `crates/api/`
+respectively — `--check --workspace` from the repo root does not work here (the root `Cargo.toml`
+is a virtual manifest with no package of its own; verified locally, see the report) — matching how
+every prior task's own `cargo sqlx prepare` re-run command already generated the two per-crate
+`.sqlx` caches. A `docker-build-smoke` job (build both Rust image targets, no push, gha-cached,
+`needs: rust`) shares its cache scopes with deploy.yml's real build-and-push job.
+
+**Network-dependent tests**: verified by inspection (not assumed) that none exist anywhere in the
+workspace — every `#[test]`/`#[tokio::test]`/`#[sqlx::test]` function either is pure logic or runs
+against the local test Postgres using devnet byte fixtures captured once and checked into
+`integration_tests.rs` (Task 3). The RPC/gRPC clients in `crawl.rs`/`block_time.rs`/
+`grpc_smoke.rs` are only reachable via CLI subcommands (`smoke-grpc`, `snapshot`, `backfill`,
+`run`), none of which `cargo test` invokes. Nothing needed gating.
+
+### deploy.yml
+
+Build & push: the SubQuery `node`/`grpc` images are replaced by `docker/rust.Dockerfile`'s
+`indexer` and `api` targets, pushed as `ghcr.io/<repo>/indexer:{latest,sha}` and
+`ghcr.io/<repo>/api:{latest,sha}` with their own gha cache scopes; the `postgres` image build is
+untouched. Rendered server `.env`: `NODE_IMAGE`/`GRPC_IMAGE` → `INDEXER_IMAGE`/`API_IMAGE` (kept
+`PG_IMAGE`); `GRPC_PORT` dropped from the rendered ports (grpc-api is out of the active stack).
+The `dotenv_secret`/`dotenv_port` helpers and their validations are untouched. Verify step: the
+`subquery-node /ready` check is replaced by `api` `/health` (curl confirmed present in both new
+images, `docker/rust.Dockerfile`'s runtime-base stage); the in-network prometheus `/-/ready` and
+grafana `/api/health` checks now exec from `api` instead of `subquery-node` (same retry pattern).
+The upload step, image-prune step, and `docker-compose.subquery.yml` are unchanged — the rollback
+compose file is **not** uploaded to the server (it stays git-only; uploading it would invite an
+accidental `up`).
+
+### CI/deploy secrets and vars — grepped from the final workflows, not assumed
+
+| Name | Kind | File(s) | Status |
+| --- | --- | --- | --- |
+| `GITHUB_TOKEN` | secret (built-in) | deploy.yml | pre-existing |
+| `HETZNER_SSH_KEY` | secret | deploy.yml | pre-existing |
+| `HETZNER_KNOWN_HOSTS` | secret | deploy.yml | pre-existing |
+| `HETZNER_HOST` | secret | deploy.yml | pre-existing |
+| `HETZNER_SSH_PORT` | secret | deploy.yml | pre-existing |
+| `HETZNER_USER` | secret | deploy.yml | pre-existing |
+| `ALCHEMY_API_KEY` | secret | deploy.yml | pre-existing |
+| `POSTGRES_PASSWORD` | secret | deploy.yml | pre-existing |
+| `GRAFANA_PASSWORD` | secret | deploy.yml | pre-existing |
+| `GHCR_PULL_TOKEN` | secret (optional) | deploy.yml | pre-existing |
+| `GRAPHQL_PORT` | repo var | deploy.yml | pre-existing |
+| `GRAFANA_PORT` | repo var | deploy.yml | pre-existing |
+| `PROMETHEUS_PORT` | repo var | deploy.yml | pre-existing |
+| `GRPC_PORT` | repo var | — (removed from rendering) | now unused; safe to delete from repo Settings → Variables whenever convenient, does not fail the workflow if left in place |
+
+**No new secrets or vars.** `ci.yml`'s new `rust` job has zero `secrets.`/`vars.` references — its
+Postgres service uses a hardcoded throwaway password (`test`), not a secret, matching ruling R2
+(no `DATABASE_URL` secret; compose composes it, and CI's own test DB needs no persistence either).
+
+### Verification
+
+`actionlint` (via its docker image) on both files: **0 findings on `ci.yml`**; `deploy.yml` has the
+same 12 pre-existing info-level shellcheck findings (`SC2029`/`SC2086`, all inside the untouched
+SSH `run:` blocks) as the original file — byte-identical count and rule set, confirmed by running
+actionlint against the original committed files first as a baseline. `docker compose config` with
+a synthetic rendered `.env` (`INDEXER_IMAGE`/`API_IMAGE`/`PG_IMAGE` + the three ports) resolved
+every pin correctly and validated clean. The extracted `Render server .env` script, dry-run with
+fake values, produced the exact expected `.env` and correctly rejected a missing secret with the
+`::error::` message and exit 1 (empty output file, matching the pre-existing, unmodified failure
+behavior). The full CI rust-job command sequence was reproduced locally end to end, in order, with
+the exact flags: fmt, clippy, `SQLX_OFFLINE=true` build, migrate, `cargo test --workspace --locked`
+(96 tests: 71 indexer + 25 api, 0 failures), and both per-crate `cargo sqlx prepare --check` —
+all green.
