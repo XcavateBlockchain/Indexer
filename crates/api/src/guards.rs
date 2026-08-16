@@ -82,10 +82,12 @@ pub const MAX_QUERY_BYTES: usize = 20_000;
 /// ABORTS THE WHOLE PROCESS in a debug build once nesting reaches roughly the high 30s/low 40s
 /// (release builds happen to survive only because `combine`'s own internal recursion cap kicks
 /// in first, around 48-50 levels) -- i.e. without this scan, a single unauthenticated `/graphql`
-/// request is a process-level denial of service, not merely a rejected query. 34 sits
-/// comfortably above every legitimate depth this guard ever admits (the relaxed meta-only cap is
-/// [`META_MAX_DEPTH`] = 15) and comfortably below the observed debug-build abort threshold.
-pub const MAX_BRACE_DEPTH: usize = 34;
+/// request is a process-level denial of service, not merely a rejected query. The observed
+/// debug-build overflow threshold was 36 on one host, but that number varies by platform and
+/// stack size, so 25 is used instead of trimming the margin to the observed value: it keeps a
+/// full 10 levels of headroom over the relaxed meta-only cap ([`META_MAX_DEPTH`] = 15) while
+/// staying comfortably below every observed abort threshold on any host.
+pub const MAX_BRACE_DEPTH: usize = 25;
 
 /// Clamp a client-supplied `first` to `[0, MAX_FIRST]`, defaulting to [`DEFAULT_FIRST`] when
 /// omitted. Never errors -- an abusive `first: 100000` silently becomes `100`.

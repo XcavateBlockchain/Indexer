@@ -182,6 +182,40 @@ impl fmt::Debug for Config {
     }
 }
 
+/// Redacts an Alchemy API key embedded in a `/v2/<KEY>` URL path segment inside arbitrary text,
+/// e.g. an already-formatted error message.
+///
+/// The key never appears in a URL we construct for logging (see `redact_url_password` above and
+/// the "never log the URL" comments throughout `crawl.rs`/`snapshot.rs`/`block_time.rs`), but it
+/// can still reach a log line indirectly: reqwest 0.12's `Error` Display appends
+/// `" for url (<url>)"`, and solana-rpc-client's `RpcClient` attaches the same keyed URL via
+/// `error_for_status()`. Any `{e}`/`{e:#}` formatting of such an error -- or of an anyhow chain
+/// that wraps one -- would otherwise print the key. This scans for every `/v2/` occurrence and
+/// replaces the run of non-slash, non-whitespace characters that follows it with `***`, so it is
+/// applied at the log call site as a last line of defence regardless of how many layers of
+/// context/anyhow wrapping the original error passed through.
+///
+/// Idempotent, and does nothing to a bare trailing `/v2/` with no key characters after it (no
+/// key was there to begin with, so nothing is redacted).
+pub fn redact_key(s: &str) -> String {
+    const NEEDLE: &str = "/v2/";
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(idx) = rest.find(NEEDLE) {
+        out.push_str(&rest[..idx + NEEDLE.len()]);
+        rest = &rest[idx + NEEDLE.len()..];
+        let key_len = rest
+            .find(|c: char| c == '/' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        if key_len > 0 {
+            out.push_str("***");
+        }
+        rest = &rest[key_len..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `postgres://user:secret@host/db` -> `postgres://user:***@host/db`.
 pub fn redact_url_password(url: &str) -> String {
     let Some(scheme_end) = url.find("://") else {
@@ -205,7 +239,7 @@ pub fn redact_url_password(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_url_password;
+    use super::{redact_key, redact_url_password};
 
     #[test]
     fn redacts_password_only() {
@@ -222,6 +256,56 @@ mod tests {
         assert_eq!(
             redact_url_password("postgres://postgres@localhost/postgres"),
             "postgres://postgres@localhost/postgres"
+        );
+    }
+
+    // --- redact_key ------------------------------------------------------------------------
+
+    #[test]
+    fn redact_key_hides_a_key_mid_string() {
+        // The key run extends to the next slash/whitespace, so it also swallows immediately
+        // trailing punctuation like reqwest's closing `)` -- that is a feature, not a bug: it
+        // errs on the side of redacting too much rather than leaving a fragment of the key
+        // visible.
+        let s = "reqwest::Error { kind: Status(429) } for url \
+                  (https://solana-devnet.g.alchemy.com/v2/AbCdEf0123456789)";
+        let redacted = redact_key(s);
+        assert!(!redacted.contains("AbCdEf0123456789"));
+        assert_eq!(
+            redacted,
+            "reqwest::Error { kind: Status(429) } for url \
+             (https://solana-devnet.g.alchemy.com/v2/***"
+        );
+    }
+
+    #[test]
+    fn redact_key_hides_every_occurrence() {
+        let s = "primary https://a.example.com/v2/KEY1 failed; fallback \
+                  https://b.example.com/v2/KEY2 failed too";
+        assert_eq!(
+            redact_key(s),
+            "primary https://a.example.com/v2/*** failed; fallback \
+             https://b.example.com/v2/*** failed too"
+        );
+    }
+
+    #[test]
+    fn redact_key_does_not_touch_a_bare_v2_at_the_end_of_string() {
+        // Nothing follows `/v2/`, so there is no key to redact -- must be a no-op, not a
+        // spurious `/v2/***`.
+        let s = "some diagnostic mentioning the path /v2/";
+        assert_eq!(redact_key(s), s);
+    }
+
+    #[test]
+    fn redact_key_is_idempotent() {
+        let once =
+            redact_key("failed for url (https://solana-devnet.g.alchemy.com/v2/AbCdEf0123456789)");
+        let twice = redact_key(&once);
+        assert_eq!(once, twice);
+        assert_eq!(
+            once,
+            "failed for url (https://solana-devnet.g.alchemy.com/v2/***"
         );
     }
 }

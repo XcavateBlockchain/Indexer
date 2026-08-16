@@ -24,7 +24,7 @@ use clap::{Parser, Subcommand};
 use indexer::backfill::{self, BackfillOptions};
 use indexer::batcher;
 use indexer::block_time::BlockTimeResolver;
-use indexer::config::{redact_url_password, Config};
+use indexer::config::{redact_key, redact_url_password, Config};
 use indexer::db;
 use indexer::metrics::PrometheusMetrics;
 use indexer::pipeline::{self, PipeDeps};
@@ -310,7 +310,12 @@ async fn run_live() -> Result<()> {
         if shutdown.is_cancelled() {
             match outcome {
                 Ok(()) => log::info!("pipeline stopped for shutdown"),
-                Err(e) => log::error!("pipeline stopped for shutdown with an error: {e}"),
+                // The pipeline error can embed a block_time getBlockTime failure against the
+                // keyed Alchemy RPC endpoint -- redact before logging.
+                Err(e) => log::error!(
+                    "pipeline stopped for shutdown with an error: {}",
+                    redact_key(&e.to_string())
+                ),
             }
             break;
         }
@@ -333,8 +338,11 @@ async fn run_live() -> Result<()> {
             Ok(()) => log::warn!(
                 "gRPC stream ended cleanly after {session_duration:?}; reconnecting in {backoff:?}"
             ),
+            // Same redaction as above: this error can embed a block_time RPC failure against
+            // the keyed Alchemy endpoint.
             Err(e) => log::error!(
-                "gRPC stream failed after {session_duration:?} ({e}); reconnecting in {backoff:?}"
+                "gRPC stream failed after {session_duration:?} ({}); reconnecting in {backoff:?}",
+                redact_key(&e.to_string())
             ),
         }
 
@@ -426,9 +434,12 @@ fn spawn_startup_jobs(
                     log::info!("STARTUP JOB 1/2 stopped for shutdown; re-runs on next start");
                     return;
                 }
+                // `{e:#}` walks the whole anyhow chain, which can include a getProgramAccounts
+                // failure against the keyed Alchemy RPC endpoint -- redact before logging.
                 Err(e) => log::error!(
-                    "STARTUP JOB 1/2 FAILED: snapshot did not complete ({e:#}); account-state \
-                     tables may be empty until `indexer snapshot` is run by hand"
+                    "STARTUP JOB 1/2 FAILED: snapshot did not complete ({}); account-state \
+                     tables may be empty until `indexer snapshot` is run by hand",
+                    redact_key(&format!("{e:#}"))
                 ),
             }
         } else {
@@ -461,10 +472,13 @@ fn spawn_startup_jobs(
                     "STARTUP JOB 2/2 stopped for shutdown; it resumes from its cursor on the \
                      next start"
                 ),
+                // Same redaction as STARTUP JOB 1/2: this chain can include a crawl failure
+                // against the keyed Alchemy RPC endpoint.
                 Err(e) => log::error!(
-                    "STARTUP JOB 2/2 FAILED: history backfill did not reach the floor ({e:#}); \
+                    "STARTUP JOB 2/2 FAILED: history backfill did not reach the floor ({}); \
                      backfill_complete stays false and last_contiguous_slot stays frozen. Re-run \
-                     `indexer backfill` -- it resumes from its cursor."
+                     `indexer backfill` -- it resumes from its cursor.",
+                    redact_key(&format!("{e:#}"))
                 ),
             }
         } else {

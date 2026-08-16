@@ -57,7 +57,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::batcher::{Batcher, WriteOp};
-use crate::config::Config;
+use crate::config::{redact_key, Config};
 use crate::pipeline::{self, PipeDeps};
 
 /// A transaction the crawler delivered.
@@ -456,7 +456,10 @@ pub async fn crawl(
 /// none does.
 ///
 /// Endpoints are addressed by index rather than by URL because the Alchemy JSON-RPC URL carries
-/// the API key in its path -- an error message or log line built from it would leak the key.
+/// the API key in its path. The per-attempt warning below still formats the underlying error
+/// (useful for diagnosing throttling/outages), so that text is passed through
+/// [`crate::config::redact_key`] before it reaches the log -- reqwest/solana-rpc-client's Error
+/// Display can append the keyed URL via `" for url (<url>)"`, which would otherwise leak it.
 async fn try_endpoints<T, F, Fut>(
     label: &str,
     what: &str,
@@ -474,8 +477,9 @@ where
             Err(e) => {
                 if i + 1 < endpoints {
                     log::warn!(
-                        "{label}: {what} failed on RPC endpoint #{i} ({e:#}); retrying on the \
-                         next endpoint"
+                        "{label}: {what} failed on RPC endpoint #{i} ({}); retrying on the \
+                         next endpoint",
+                        redact_key(&format!("{e:#}")),
                     );
                 }
                 last_err = Some(e);

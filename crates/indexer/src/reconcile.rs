@@ -43,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::batcher;
 use crate::block_time::BlockTimeResolver;
-use crate::config::Config;
+use crate::config::{redact_key, Config};
 use crate::crawl::{self, CrawlDeps, CrawlRequest};
 use crate::db;
 use crate::metrics::PrometheusMetrics;
@@ -79,7 +79,14 @@ pub async fn supervise(
             // A failed cycle is not fatal: the next one re-walks the same range (nothing was
             // advanced, so the range only grows) and the live stream keeps the data fresh
             // meanwhile.
-            Err(e) => log::error!("reconcile cycle failed (will retry next interval): {e:#}"),
+            //
+            // `{e:#}` walks the whole anyhow context chain, which can include a getSlot/crawl
+            // failure against the keyed Alchemy RPC endpoint (see crate::config::redact_key) --
+            // redact before logging.
+            Err(e) => log::error!(
+                "reconcile cycle failed (will retry next interval): {}",
+                redact_key(&format!("{e:#}"))
+            ),
         }
 
         tokio::select! {

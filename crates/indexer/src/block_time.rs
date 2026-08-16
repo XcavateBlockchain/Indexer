@@ -26,6 +26,8 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
 use tokio::sync::Mutex;
 
+use crate::config::redact_key;
+
 /// How many slot -> timestamp pairs to keep. A slot is ~400 ms, so this is a bit over an hour
 /// of devnet history -- far more than any realistic in-flight batch needs, and bounded so a
 /// long-running process cannot grow this map without limit.
@@ -95,10 +97,14 @@ impl BlockTimeResolver {
                     return to_datetime(slot, ts);
                 }
                 Err(e) => {
+                    // The primary endpoint is Alchemy, and reqwest/solana-rpc-client's Error
+                    // Display can append " for url (<url>)" -- redact before logging, never the
+                    // raw error.
                     log::warn!(
-                        "getBlockTime({slot}) failed on the {} endpoint (attempt {}/{MAX_ATTEMPTS}): {e}",
+                        "getBlockTime({slot}) failed on the {} endpoint (attempt {}/{MAX_ATTEMPTS}): {}",
                         if use_fallback { "fallback" } else { "primary" },
                         attempt + 1,
+                        redact_key(&e.to_string()),
                     );
                     last_err = Some(e);
                     tokio::time::sleep(backoff).await;

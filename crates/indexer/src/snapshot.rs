@@ -45,7 +45,7 @@ use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
 use crate::batcher;
-use crate::config::Config;
+use crate::config::{redact_key, Config};
 use crate::db;
 use crate::processors::{account_write_op, TrackedAccounts};
 
@@ -161,9 +161,13 @@ async fn fetch(cfg: &Config) -> Result<(u64, Vec<(Pubkey, Account)>)> {
         match fetch_from(url, &cfg.program_id).await {
             Ok(result) => return Ok(result),
             Err(e) => {
-                // Never log the URL: the Alchemy JSON-RPC endpoint carries the API key in its
-                // path.
-                log::warn!("snapshot: {label} RPC failed ({e}); trying the next endpoint");
+                // Never log the raw error: the Alchemy JSON-RPC endpoint carries the API key in
+                // its path, and reqwest/solana-rpc-client's Error Display can append it via
+                // " for url (<url>)" -- redact before logging.
+                log::warn!(
+                    "snapshot: {label} RPC failed ({}); trying the next endpoint",
+                    redact_key(&e.to_string())
+                );
                 last_err = Some(e);
             }
         }

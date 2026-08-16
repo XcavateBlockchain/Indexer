@@ -1,10 +1,10 @@
 # DISABLED ROLLBACK PATH -- the old SubQuery stack, preserved unchanged for emergency
 # rollback only. Do NOT `up` this file in normal operation; the active stack is
 # docker-compose.yml (the Carbon/Rust indexer + api). See MIGRATION_LOG.md and
-# .superpowers/sdd/carbon-migration-spec/DECISIONS.md (ruling R5) for why this is kept
-# instead of deleted: grpc-api (the old gRPC read API) lives only here, and this is the
-# fallback if the Carbon migration needs to be backed out. `docker compose -f
-# docker-compose.subquery.yml config` should still parse; it is not exercised by CI.
+# DECISIONS.md (ruling R5) for why this is kept instead of deleted: grpc-api (the old
+# gRPC read API) lives only here, and this is the fallback if the Carbon migration
+# needs to be backed out. `docker compose -f docker-compose.subquery.yml config`
+# should still parse; it is not exercised by CI.
 #
 # Full indexer stack: postgres + SubQuery Solana node + GraphQL + gRPC API,
 # plus Prometheus/Grafana monitoring.
