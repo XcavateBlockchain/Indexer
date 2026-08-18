@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM marketplace_investor_position\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR investor = $2)\n          AND ($3::bool IS NULL OR cancelled = $3)\n          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "74ef877c478920e15e0aa34a3f30f76a4c141cb8f73e83ff33c52ae75395019f"
+}

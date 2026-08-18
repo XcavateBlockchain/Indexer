@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, owner, amount, locked_amount\n        FROM marketplace_share_holding\n        WHERE ($1::bigint IS NULL OR asset_id = $1)\n          AND ($2::bytea IS NULL OR owner = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $4 OFFSET $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "owner",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "locked_amount",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9694bdf316435806485a418cd60b54422736a8decd426b81709dd2acd95e9ec6"
+}

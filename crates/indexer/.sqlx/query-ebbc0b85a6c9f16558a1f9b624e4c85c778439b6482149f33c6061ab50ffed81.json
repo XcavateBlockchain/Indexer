@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO marketplace_investor_position (pubkey, slot, lamports, closed_at_slot,\n            listing_id, investor, payment_mint, payment_account, share_amount,\n            reserved_share_amount, paid_funds, paid_tax, paid_fee, reserved_funds,\n            reserved_tax, reserved_fee, cancelled, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot                  = EXCLUDED.slot,\n            lamports              = EXCLUDED.lamports,\n            closed_at_slot        = EXCLUDED.closed_at_slot,\n            listing_id            = EXCLUDED.listing_id,\n            investor              = EXCLUDED.investor,\n            payment_mint          = EXCLUDED.payment_mint,\n            payment_account       = EXCLUDED.payment_account,\n            share_amount          = EXCLUDED.share_amount,\n            reserved_share_amount = EXCLUDED.reserved_share_amount,\n            paid_funds            = EXCLUDED.paid_funds,\n            paid_tax              = EXCLUDED.paid_tax,\n            paid_fee              = EXCLUDED.paid_fee,\n            reserved_funds        = EXCLUDED.reserved_funds,\n            reserved_tax          = EXCLUDED.reserved_tax,\n            reserved_fee          = EXCLUDED.reserved_fee,\n            cancelled             = EXCLUDED.cancelled,\n            bump                  = EXCLUDED.bump\n        WHERE marketplace_investor_position.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bool",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ebbc0b85a6c9f16558a1f9b624e4c85c778439b6482149f33c6061ab50ffed81"
+}

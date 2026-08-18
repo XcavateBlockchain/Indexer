@@ -780,6 +780,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50085799d24728d29148fd8b7a618b39f88c5f0784112c883ce46908e7d0b168"
 
 [[package]]
+name = "carbon-marketplace-decoder"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "carbon-core",
+ "serde",
+ "serde-big-array",
+ "serde_json",
+ "solana-account",
+ "solana-instruction",
+ "solana-pubkey 3.0.0",
+ "sqlx",
+ "sqlx_migrator",
+]
+
+[[package]]
 name = "carbon-proc-macros"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -791,6 +808,40 @@ dependencies = [
  "quote",
  "serde",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "carbon-property-decoder"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "carbon-core",
+ "serde",
+ "serde-big-array",
+ "serde_json",
+ "solana-account",
+ "solana-instruction",
+ "solana-pubkey 3.0.0",
+ "sqlx",
+ "sqlx_migrator",
+]
+
+[[package]]
+name = "carbon-regions-decoder"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "carbon-core",
+ "serde",
+ "serde-big-array",
+ "serde_json",
+ "solana-account",
+ "solana-instruction",
+ "solana-pubkey 3.0.0",
+ "sqlx",
+ "sqlx_migrator",
 ]
 
 [[package]]
@@ -2338,6 +2389,9 @@ dependencies = [
  "async-trait",
  "bs58",
  "carbon-core",
+ "carbon-marketplace-decoder",
+ "carbon-property-decoder",
+ "carbon-regions-decoder",
  "carbon-rpc-transaction-crawler-datasource",
  "carbon-xcavate-whitelist-decoder",
  "carbon-yellowstone-grpc-datasource",

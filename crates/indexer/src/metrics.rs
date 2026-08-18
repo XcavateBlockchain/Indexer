@@ -120,9 +120,12 @@ pub fn install(addr: SocketAddr) -> Result<()> {
     // `rate(decode_skipped_total[5m]) > 0` reads "no data" rather than "healthy" -- which is
     // exactly backwards for metrics whose whole purpose is to be zero.
     inc_grpc_reconnect_by(0);
-    add_backfill_signatures_fetched(0);
-    for reason in ["missing_account", "empty_absolute_path", "serialize"] {
-        metrics::counter!(DECODE_SKIPPED_TOTAL, "reason" => reason).increment(0);
+    for program in crate::programs::PROGRAMS {
+        add_backfill_signatures_fetched(program.name, 0);
+        for reason in ["missing_account", "empty_absolute_path", "serialize"] {
+            metrics::counter!(DECODE_SKIPPED_TOTAL, "program" => program.name, "reason" => reason)
+                .increment(0);
+        }
     }
     for source in ["stream", "cache", "rpc", "rpc_fallback"] {
         metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(0);
@@ -185,10 +188,11 @@ pub fn record_flush(duration: Duration, rows: usize) {
     metrics::histogram!(DB_FLUSH_ROWS).record(rows as f64);
 }
 
-/// A decoded instruction that could not be mapped. `reason` is a low-cardinality label
-/// (see `mapping::MappingError::reason`), never a signature or a pubkey.
-pub fn inc_decode_skipped(reason: &'static str) {
-    metrics::counter!(DECODE_SKIPPED_TOTAL, "reason" => reason).increment(1);
+/// A decoded instruction that could not be mapped. `program` is the registry name and
+/// `reason` a low-cardinality label (see `mapping::MappingError::reason`) -- never a
+/// signature or a pubkey.
+pub fn inc_decode_skipped(program: &'static str, reason: &'static str) {
+    metrics::counter!(DECODE_SKIPPED_TOTAL, "program" => program, "reason" => reason).increment(1);
 }
 
 pub fn inc_grpc_reconnect() {
@@ -204,24 +208,28 @@ pub fn inc_block_time_lookup(source: &'static str) {
     metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(1);
 }
 
-/// Oldest slot the running history walk has committed (it walks downwards, so this falls).
-pub fn set_backfill_last_processed_slot(slot: u64) {
-    metrics::gauge!(BACKFILL_LAST_PROCESSED_SLOT).set(slot as f64);
+/// Oldest slot one program's running history walk has committed (it walks downwards, so this
+/// falls). Labelled by program: the walks are independent.
+pub fn set_backfill_last_processed_slot(program: &'static str, slot: u64) {
+    metrics::gauge!(BACKFILL_LAST_PROCESSED_SLOT, "program" => program).set(slot as f64);
 }
 
-/// Signatures returned by one `getSignaturesForAddress` page.
-pub fn add_backfill_signatures_fetched(n: u64) {
-    metrics::counter!(BACKFILL_SIGNATURES_FETCHED_TOTAL).increment(n);
+/// Signatures returned by one `getSignaturesForAddress` page of one program's crawl.
+pub fn add_backfill_signatures_fetched(program: &'static str, n: u64) {
+    metrics::counter!(BACKFILL_SIGNATURES_FETCHED_TOTAL, "program" => program).increment(n);
 }
 
-pub fn set_snapshot_accounts_loaded(n: u64) {
-    metrics::gauge!(SNAPSHOT_ACCOUNTS_LOADED).set(n as f64);
+pub fn set_snapshot_accounts_loaded(program: &'static str, n: u64) {
+    metrics::gauge!(SNAPSHOT_ACCOUNTS_LOADED, "program" => program).set(n as f64);
 }
 
 pub fn set_chain_tip_slot(slot: u64) {
     metrics::gauge!(CHAIN_TIP_SLOT).set(slot as f64);
 }
 
-pub fn set_last_contiguous_slot(slot: u64) {
-    metrics::gauge!(LAST_CONTIGUOUS_SLOT).set(slot as f64);
+/// One program's `sync_state.last_contiguous_slot`. The operator lag panel/alert uses
+/// `chain_tip_slot - min(last_contiguous_slot)`: the fleet is only as caught-up as its
+/// laggiest program.
+pub fn set_last_contiguous_slot(program: &'static str, slot: u64) {
+    metrics::gauge!(LAST_CONTIGUOUS_SLOT, "program" => program).set(slot as f64);
 }

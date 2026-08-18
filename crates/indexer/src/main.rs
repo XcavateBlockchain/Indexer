@@ -21,6 +21,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
+
 use indexer::backfill::{self, BackfillOptions};
 use indexer::batcher;
 use indexer::block_time::BlockTimeResolver;
@@ -28,6 +30,7 @@ use indexer::config::{redact_key, redact_url_password, Config};
 use indexer::db;
 use indexer::metrics::PrometheusMetrics;
 use indexer::pipeline::{self, PipeDeps};
+use indexer::programs::ProgramSpec;
 use indexer::sync_frontier::SyncFrontier;
 use indexer::{reconcile, snapshot};
 use solana_pubkey::Pubkey;
@@ -52,7 +55,7 @@ const STREAM_SETTLE: Duration = Duration::from_secs(5);
 #[derive(Parser)]
 #[command(
     name = "indexer",
-    about = "Xcavate whitelist indexer (Carbon pipeline)"
+    about = "realXmarket indexer (Carbon pipeline): whitelist, regions, marketplace, property"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -71,11 +74,17 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },
-    /// Walk the program's transaction history newest -> oldest down to the floor slot, through
-    /// the same pipes as the live stream. Resumable; safe to re-run.
+    /// Walk each configured program's transaction history newest -> oldest down to its floor
+    /// slot, through the same pipes as the live stream. Resumable; safe to re-run.
     Backfill {
-        /// Stop below this slot. Defaults to `sync_state.backfill_floor_slot`.
+        /// Only this program (a registry name, e.g. `marketplace`). Default: every program
+        /// selected by `PROGRAMS` (itself defaulting to all).
         #[arg(long)]
+        program: Option<String>,
+        /// Stop below this slot. Requires --program (a shared floor across programs with
+        /// different deploy slots would be meaningless). Defaults to that program's
+        /// `sync_state.backfill_floor_slot`.
+        #[arg(long, requires = "program")]
         floor: Option<u64>,
         /// `getSignaturesForAddress` page size (also the commit/cursor granularity).
         #[arg(long, default_value_t = backfill::DEFAULT_PAGE_SIZE)]
@@ -88,9 +97,12 @@ enum Command {
         #[arg(long)]
         metrics: bool,
     },
-    /// Take a `getProgramAccounts` snapshot of current account state and write it through the
-    /// slot-guarded upserts.
+    /// Take a `getProgramAccounts` snapshot of each configured program's current account
+    /// state and write it through the slot-guarded upserts.
     Snapshot {
+        /// Only this program (a registry name). Default: every configured program.
+        #[arg(long)]
+        program: Option<String>,
         /// Serve `/metrics` during the snapshot (see `backfill --metrics`).
         #[arg(long)]
         metrics: bool,
@@ -112,12 +124,14 @@ async fn main() -> Result<()> {
         Command::Run => run_live().await,
         Command::SmokeGrpc { timeout } => run_smoke(Duration::from_secs(timeout)).await,
         Command::Backfill {
+            program,
             floor,
             page_size,
             window_idle_timeout,
             metrics,
         } => {
             run_backfill(
+                program,
                 BackfillOptions {
                     floor,
                     page_size,
@@ -127,7 +141,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Snapshot { metrics } => run_snapshot(metrics).await,
+        Command::Snapshot { program, metrics } => run_snapshot(program, metrics).await,
     }
 }
 
@@ -135,21 +149,26 @@ async fn main() -> Result<()> {
 struct Started {
     cfg: Config,
     pool: sqlx::PgPool,
-    frontier: Arc<SyncFrontier>,
+    /// One sync frontier per configured program, keyed by program id.
+    frontiers: reconcile::Frontiers,
     block_time: Arc<BlockTimeResolver>,
     tracked: indexer::processors::TrackedAccounts,
-    state: db::sync_state::SyncState,
+    /// Each configured program's sync-state row at startup, in `cfg.programs` order.
+    states: Vec<(&'static ProgramSpec, db::sync_state::SyncState)>,
 }
 
 async fn start() -> Result<Started> {
     let cfg = Config::from_env()?;
     let database_url = cfg.require_database_url()?.to_string();
     log::info!(
-        "starting indexer: program={} database={} grpc={} backfill_start_slot={} metrics={}",
-        cfg.program_id,
+        "starting indexer: programs={} database={} grpc={} metrics={}",
+        cfg.programs
+            .iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>()
+            .join(","),
         redact_url_password(&database_url),
         cfg.grpc_url,
-        cfg.backfill_start_slot,
         cfg.metrics_addr,
     );
 
@@ -162,27 +181,41 @@ async fn start() -> Result<Started> {
         .context("running migrations")?;
     log::info!("migrations applied");
 
-    db::sync_state::init_sync_state(&pool, cfg.backfill_start_slot as i64)
-        .await
-        .context("seeding sync_state")?;
-    let state = db::sync_state::get_sync_state(&pool)
-        .await
-        .context("reading sync_state")?
-        .context("sync_state row missing immediately after init")?;
-    log::info!(
-        "sync_state: last_contiguous_slot={} backfill_complete={} backfill_floor_slot={} snapshot_slot={:?}",
-        state.last_contiguous_slot,
-        state.backfill_complete,
-        state.backfill_floor_slot,
-        state.snapshot_slot,
-    );
-
-    let frontier = Arc::new(SyncFrontier::new(state.backfill_complete));
+    let mut states = Vec::with_capacity(cfg.programs.len());
+    let mut frontiers: reconcile::Frontiers = HashMap::new();
+    for program in &cfg.programs {
+        let pid = program.id.to_bytes().to_vec();
+        db::sync_state::init_sync_state(&pool, &pid, program.deploy_slot as i64)
+            .await
+            .with_context(|| format!("seeding sync_state for {}", program.name))?;
+        let state = db::sync_state::get_sync_state(&pool, &pid)
+            .await
+            .with_context(|| format!("reading sync_state for {}", program.name))?
+            .with_context(|| {
+                format!(
+                    "sync_state row missing immediately after init for {}",
+                    program.name
+                )
+            })?;
+        log::info!(
+            "sync_state[{}]: last_contiguous_slot={} backfill_complete={} backfill_floor_slot={} snapshot_slot={:?}",
+            program.name,
+            state.last_contiguous_slot,
+            state.backfill_complete,
+            state.backfill_floor_slot,
+            state.snapshot_slot,
+        );
+        frontiers.insert(
+            program.id,
+            Arc::new(SyncFrontier::new(state.backfill_complete)),
+        );
+        states.push((*program, state));
+    }
 
     // Seed the deletion-tracking set from the database. Without this, a restarted process
     // would be blind to the closure of every PDA it had not yet seen an update for.
     let tracked = pipeline::new_tracked_accounts();
-    let seeds = db::accounts::open_account_pubkeys(&pool)
+    let seeds = db::close::open_account_pubkeys(&pool)
         .await
         .context("seeding account_deletions_tracked")?;
     {
@@ -212,10 +245,10 @@ async fn start() -> Result<Started> {
     Ok(Started {
         cfg,
         pool,
-        frontier,
+        frontiers,
         block_time,
         tracked,
-        state,
+        states,
     })
 }
 
@@ -225,7 +258,12 @@ async fn run_live() -> Result<()> {
     let api_key = cfg.require_api_key()?.to_string();
 
     indexer::metrics::install(cfg.metrics_addr)?;
-    indexer::metrics::set_last_contiguous_slot(started.state.last_contiguous_slot.max(0) as u64);
+    for (program, state) in &started.states {
+        indexer::metrics::set_last_contiguous_slot(
+            program.name,
+            state.last_contiguous_slot.max(0) as u64,
+        );
+    }
 
     // --- startup subscribe gate --------------------------------------------------------------
     // carbon's Yellowstone datasource subscribes inside a spawned task and only `log::error!`s a
@@ -262,7 +300,7 @@ async fn run_live() -> Result<()> {
     let supervisor = {
         let cfg = Config::from_env()?;
         let pool = started.pool.clone();
-        let frontier = started.frontier.clone();
+        let frontiers = started.frontiers.clone();
         let block_time = started.block_time.clone();
         let tracked = started.tracked.clone();
         let shutdown = shutdown.clone();
@@ -271,7 +309,7 @@ async fn run_live() -> Result<()> {
             reconcile::supervise(
                 &cfg,
                 &pool,
-                &frontier,
+                &frontiers,
                 &block_time,
                 &tracked,
                 interval,
@@ -295,6 +333,7 @@ async fn run_live() -> Result<()> {
                 block_time: &started.block_time,
                 tracked: &started.tracked,
                 metrics: Arc::new(PrometheusMetrics),
+                programs: &cfg.programs,
             },
             ds_cancel.clone(),
         )
@@ -321,9 +360,12 @@ async fn run_live() -> Result<()> {
         }
 
         // The stream session ended without us asking it to: whatever happened on chain in the
-        // meantime may be a hole. The next reconciliation crawl re-covers that range and closes
-        // the gap; until then the frontier is frozen.
-        started.frontier.gap_opened();
+        // meantime may be a hole for EVERY subscribed program (they share the one stream).
+        // The next reconciliation crawls re-cover that range per program and close the gaps;
+        // until then each frontier is frozen.
+        for frontier in started.frontiers.values() {
+            frontier.gap_opened();
+        }
         indexer::metrics::inc_grpc_reconnect();
 
         // A session that stayed up for a while was healthy; the next failure is a new
@@ -381,148 +423,216 @@ async fn run_live() -> Result<()> {
     Ok(())
 }
 
-/// The two one-shot startup jobs, in the order spec §7 requires: snapshot (if the database has
-/// never had one) then history backfill (if it never completed). Both run behind the live
-/// stream and neither blocks it; each owns its own batcher, so a slow backfill cannot stall the
-/// live pipe's writes.
+/// The one-shot startup jobs, in the order spec §7 requires and per program: snapshot (if
+/// that program's database has never had one) then history backfill (if it never completed).
+/// All run behind the live stream and none blocks it; each job owns its own batcher, so a
+/// slow backfill cannot stall the live pipe's writes. Programs are walked sequentially --
+/// their histories are tiny and the RPC budget is the scarce resource.
 fn spawn_startup_jobs(
     started: &Started,
     connected_slot: Option<u64>,
     shutdown: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
-    let need_snapshot = started.state.snapshot_slot.is_none();
-    let need_backfill = !started.state.backfill_complete;
+    let jobs: Vec<(&'static ProgramSpec, bool, bool)> = started
+        .states
+        .iter()
+        .map(|(program, state)| {
+            (
+                *program,
+                state.snapshot_slot.is_none(),
+                !state.backfill_complete,
+            )
+        })
+        .collect();
     let pool = started.pool.clone();
-    let frontier = started.frontier.clone();
+    let frontiers = started.frontiers.clone();
     let block_time = started.block_time.clone();
     let tracked = started.tracked.clone();
 
     tokio::spawn(async move {
         let Ok(cfg) = Config::from_env() else { return };
 
-        if !need_snapshot && !need_backfill {
+        if jobs.iter().all(|(_, snap, backfill)| !snap && !backfill) {
             log::info!(
-                "startup jobs: nothing to do (snapshot_slot is set and backfill_complete is true)"
+                "startup jobs: nothing to do (every program's snapshot_slot is set and \
+                 backfill_complete is true)"
             );
             return;
         }
 
-        // See STREAM_SETTLE: the stream has to be subscribed before the snapshot reads state.
+        // See STREAM_SETTLE: the stream has to be subscribed before the snapshots read state.
         tokio::select! {
             _ = tokio::time::sleep(STREAM_SETTLE) => {}
             _ = shutdown.cancelled() => return,
         }
 
-        if need_snapshot {
-            log::info!(
-                "STARTUP JOB 1/2: taking the getProgramAccounts snapshot (stream connected at \
-                 slot {connected_slot:?}; the stream has been writing since before this read, so \
-                 no account change can fall between them)"
-            );
-            match snapshot::run(&cfg, &pool, &tracked, shutdown.clone()).await {
-                Ok(s) => log::info!(
-                    "STARTUP JOB 1/2 done: {} account(s) at slot {}{}",
-                    s.accounts_loaded,
-                    s.slot,
-                    if s.undecodable > 0 {
-                        format!(" ({} undecodable!)", s.undecodable)
-                    } else {
-                        String::new()
+        for (program, need_snapshot, need_backfill) in jobs {
+            if shutdown.is_cancelled() {
+                return;
+            }
+
+            if need_snapshot {
+                log::info!(
+                    "STARTUP JOB [{}] 1/2: taking the getProgramAccounts snapshot (stream \
+                     connected at slot {connected_slot:?}; the stream has been writing since \
+                     before this read, so no account change can fall between them)",
+                    program.name
+                );
+                match snapshot::run(&cfg, program, &pool, &tracked, shutdown.clone()).await {
+                    Ok(s) => log::info!(
+                        "STARTUP JOB [{}] 1/2 done: {} account(s) at slot {}{}",
+                        program.name,
+                        s.accounts_loaded,
+                        s.slot,
+                        if s.undecodable > 0 {
+                            format!(" ({} undecodable!)", s.undecodable)
+                        } else {
+                            String::new()
+                        }
+                    ),
+                    Err(_) if shutdown.is_cancelled() => {
+                        log::info!(
+                            "STARTUP JOB [{}] 1/2 stopped for shutdown; re-runs on next start",
+                            program.name
+                        );
+                        return;
                     }
-                ),
-                Err(_) if shutdown.is_cancelled() => {
-                    log::info!("STARTUP JOB 1/2 stopped for shutdown; re-runs on next start");
-                    return;
+                    // `{e:#}` walks the whole anyhow chain, which can include a
+                    // getProgramAccounts failure against the keyed Alchemy RPC endpoint --
+                    // redact before logging.
+                    Err(e) => log::error!(
+                        "STARTUP JOB [{}] 1/2 FAILED: snapshot did not complete ({}); its \
+                         account-state tables may be empty until `indexer snapshot` is run by \
+                         hand",
+                        program.name,
+                        redact_key(&format!("{e:#}"))
+                    ),
                 }
-                // `{e:#}` walks the whole anyhow chain, which can include a getProgramAccounts
-                // failure against the keyed Alchemy RPC endpoint -- redact before logging.
-                Err(e) => log::error!(
-                    "STARTUP JOB 1/2 FAILED: snapshot did not complete ({}); account-state \
-                     tables may be empty until `indexer snapshot` is run by hand",
-                    redact_key(&format!("{e:#}"))
-                ),
+            } else {
+                log::info!(
+                    "STARTUP JOB [{}] 1/2 skipped: sync_state.snapshot_slot is already set",
+                    program.name
+                );
             }
-        } else {
-            log::info!("STARTUP JOB 1/2 skipped: sync_state.snapshot_slot is already set");
-        }
 
-        if shutdown.is_cancelled() {
-            return;
-        }
-
-        if need_backfill {
-            log::info!("STARTUP JOB 2/2: running the history backfill down to the floor slot");
-            match backfill::run(
-                &cfg,
-                &pool,
-                &frontier,
-                &block_time,
-                &tracked,
-                BackfillOptions::default(),
-                shutdown.clone(),
-            )
-            .await
-            {
-                Ok(s) => log::info!(
-                    "STARTUP JOB 2/2 done: {} signature(s) indexed across {} window(s)",
-                    s.signatures_expected,
-                    s.windows
-                ),
-                Err(_) if shutdown.is_cancelled() => log::info!(
-                    "STARTUP JOB 2/2 stopped for shutdown; it resumes from its cursor on the \
-                     next start"
-                ),
-                // Same redaction as STARTUP JOB 1/2: this chain can include a crawl failure
-                // against the keyed Alchemy RPC endpoint.
-                Err(e) => log::error!(
-                    "STARTUP JOB 2/2 FAILED: history backfill did not reach the floor ({}); \
-                     backfill_complete stays false and last_contiguous_slot stays frozen. Re-run \
-                     `indexer backfill` -- it resumes from its cursor.",
-                    redact_key(&format!("{e:#}"))
-                ),
+            if shutdown.is_cancelled() {
+                return;
             }
-        } else {
-            log::info!("STARTUP JOB 2/2 skipped: sync_state.backfill_complete is already true");
+
+            if need_backfill {
+                let Some(frontier) = frontiers.get(&program.id) else {
+                    log::error!(
+                        "STARTUP JOB [{}] 2/2: no frontier registered; skipping",
+                        program.name
+                    );
+                    continue;
+                };
+                log::info!(
+                    "STARTUP JOB [{}] 2/2: running the history backfill down to the floor slot",
+                    program.name
+                );
+                match backfill::run(
+                    &cfg,
+                    program,
+                    &pool,
+                    frontier,
+                    &block_time,
+                    &tracked,
+                    BackfillOptions::default(),
+                    shutdown.clone(),
+                )
+                .await
+                {
+                    Ok(s) => log::info!(
+                        "STARTUP JOB [{}] 2/2 done: {} signature(s) indexed across {} window(s)",
+                        program.name,
+                        s.signatures_expected,
+                        s.windows
+                    ),
+                    Err(_) if shutdown.is_cancelled() => log::info!(
+                        "STARTUP JOB [{}] 2/2 stopped for shutdown; it resumes from its cursor \
+                         on the next start",
+                        program.name
+                    ),
+                    // Same redaction as 1/2: this chain can include a crawl failure against
+                    // the keyed Alchemy RPC endpoint.
+                    Err(e) => log::error!(
+                        "STARTUP JOB [{}] 2/2 FAILED: history backfill did not reach the floor \
+                         ({}); backfill_complete stays false and last_contiguous_slot stays \
+                         frozen. Re-run `indexer backfill` -- it resumes from its cursor.",
+                        program.name,
+                        redact_key(&format!("{e:#}"))
+                    ),
+                }
+            } else {
+                log::info!(
+                    "STARTUP JOB [{}] 2/2 skipped: sync_state.backfill_complete is already true",
+                    program.name
+                );
+            }
         }
     })
 }
 
-async fn run_backfill(opts: BackfillOptions, serve_metrics: bool) -> Result<()> {
+async fn run_backfill(
+    program_filter: Option<String>,
+    opts: BackfillOptions,
+    serve_metrics: bool,
+) -> Result<()> {
     let started = start().await?;
     if serve_metrics {
         if let Err(e) = indexer::metrics::install(started.cfg.metrics_addr) {
             log::warn!("continuing without a metrics listener: {e}");
         }
     }
+
+    let programs = select_programs(&started.cfg, program_filter.as_deref())?;
 
     let shutdown = CancellationToken::new();
     spawn_ctrl_c_watcher(shutdown.clone());
 
-    let summary = backfill::run(
-        &started.cfg,
-        &started.pool,
-        &started.frontier,
-        &started.block_time,
-        &started.tracked,
-        opts,
-        shutdown,
-    )
-    .await?;
+    for program in programs {
+        let frontier = started
+            .frontiers
+            .get(&program.id)
+            .context("frontier missing for a configured program")?;
+        let summary = backfill::run(
+            &started.cfg,
+            program,
+            &started.pool,
+            frontier,
+            &started.block_time,
+            &started.tracked,
+            BackfillOptions {
+                floor: opts.floor,
+                page_size: opts.page_size,
+                window_idle_timeout: opts.window_idle_timeout,
+            },
+            shutdown.clone(),
+        )
+        .await?;
 
-    println!(
-        "backfill complete: {} signature(s) indexed, {} skipped as failed-on-chain, {} window(s), stop={:?}",
-        summary.signatures_expected, summary.signatures_failed, summary.windows, summary.stop
-    );
+        println!(
+            "backfill[{}] complete: {} signature(s) indexed, {} skipped as failed-on-chain, {} window(s), stop={:?}",
+            program.name,
+            summary.signatures_expected,
+            summary.signatures_failed,
+            summary.windows,
+            summary.stop
+        );
+    }
     Ok(())
 }
 
-async fn run_snapshot(serve_metrics: bool) -> Result<()> {
+async fn run_snapshot(program_filter: Option<String>, serve_metrics: bool) -> Result<()> {
     let started = start().await?;
     if serve_metrics {
         if let Err(e) = indexer::metrics::install(started.cfg.metrics_addr) {
             log::warn!("continuing without a metrics listener: {e}");
         }
     }
+
+    let programs = select_programs(&started.cfg, program_filter.as_deref())?;
 
     let shutdown = CancellationToken::new();
     spawn_ctrl_c_watcher(shutdown.clone());
@@ -531,25 +641,54 @@ async fn run_snapshot(serve_metrics: bool) -> Result<()> {
     // spec §7 does not apply here -- the operator is either seeding a database before starting
     // the indexer (in which case `run` will re-snapshot only if snapshot_slot is unset) or
     // repairing state next to a running indexer, whose stream is already up.
-    let summary = snapshot::run(
-        &started.cfg,
-        &started.pool,
-        &started.tracked,
-        shutdown.clone(),
-    )
-    .await?;
+    for program in programs {
+        let summary = snapshot::run(
+            &started.cfg,
+            program,
+            &started.pool,
+            &started.tracked,
+            shutdown.clone(),
+        )
+        .await?;
 
-    println!(
-        "snapshot complete: {} account(s) written at slot {}{}",
-        summary.accounts_loaded,
-        summary.slot,
-        if summary.undecodable > 0 {
-            format!(", {} undecodable", summary.undecodable)
-        } else {
-            String::new()
-        }
-    );
+        println!(
+            "snapshot[{}] complete: {} account(s) written at slot {}{}",
+            program.name,
+            summary.accounts_loaded,
+            summary.slot,
+            if summary.undecodable > 0 {
+                format!(", {} undecodable", summary.undecodable)
+            } else {
+                String::new()
+            }
+        );
+    }
     Ok(())
+}
+
+/// Resolve a `--program` filter against the configured set (which itself honours `PROGRAMS`).
+fn select_programs(cfg: &Config, filter: Option<&str>) -> Result<Vec<&'static ProgramSpec>> {
+    match filter {
+        None => Ok(cfg.programs.clone()),
+        Some(name) => {
+            let program = cfg
+                .programs
+                .iter()
+                .find(|p| p.name == name)
+                .copied()
+                .with_context(|| {
+                    format!(
+                        "--program {name} is not among the configured programs ({})",
+                        cfg.programs
+                            .iter()
+                            .map(|p| p.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            Ok(vec![program])
+        }
+    }
 }
 
 async fn run_smoke(timeout: Duration) -> Result<()> {

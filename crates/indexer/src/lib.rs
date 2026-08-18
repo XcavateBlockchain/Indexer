@@ -1,4 +1,4 @@
-//! The Xcavate whitelist indexer.
+//! The realXmarket indexer: the whitelist, regions, marketplace and property programs.
 //!
 //! Module map:
 //!
@@ -6,7 +6,8 @@
 //! | --- | --- |
 //! | [`db`] | Storage layer (Task 2): slot-guarded upserts, idempotent inserts, sync state. |
 //! | [`config`] | Environment-driven process configuration. |
-//! | [`mapping`] | Pure decoded-instruction -> rows mapping (the port of `mappingHandlers.ts`). |
+//! | [`programs`] | The static registry of indexed programs (names, addresses, floors). |
+//! | [`mapping`] | Pure decoded-instruction -> rows mappings, one submodule per program. |
 //! | [`block_time`] | Slot -> block time, cached, with an RPC fallback (ruling R14). |
 //! | [`batcher`] | The single writer: buffers `WriteOp`s, commits one batch per transaction. |
 //! | [`processors`] | The three carbon processors (instructions, accounts, deletions). |
@@ -37,6 +38,7 @@ pub mod mapping;
 pub mod metrics;
 pub mod pipeline;
 pub mod processors;
+pub mod programs;
 pub mod reconcile;
 pub mod snapshot;
 pub mod sync_frontier;

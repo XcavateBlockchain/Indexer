@@ -54,10 +54,22 @@ async fn main() -> Result<()> {
     // tables we do not populate) is never referenced.
     let schema: Arc<Schema> = carbon_core::graphql::server::build_schema(QueryRoot);
 
+    let program_filter = cfg.programs.as_ref().map(|programs| {
+        log::info!(
+            "PROGRAMS scope: sync aggregates cover {}",
+            programs
+                .iter()
+                .map(|p| p.registry_name())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        programs.iter().map(|p| p.as_program_id_bytes()).collect()
+    });
     let state = Arc::new(ApiState {
         pool,
         chain_tip,
         schema,
+        program_filter,
     });
 
     metrics::install(cfg.metrics_addr).context("starting the metrics listener")?;

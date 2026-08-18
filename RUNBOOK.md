@@ -22,8 +22,12 @@ Three signals, cheapest first:
    `crates/api/src/health.rs`'s doc comment). `backfill_complete: false` after the stack has
    had a few minutes means the initial backfill hasn't finished yet — expected right after a
    fresh deploy or a volume wipe, not expected hours later.
-3. **`syncStatus` GraphQL query** — same fields as `/health` plus nothing extra; use this if
-   you want them alongside an application query in one round trip.
+3. **`syncStatus` GraphQL query** — the same fleet aggregates as `/health` (min
+   `lastContiguousSlot` / AND `backfillComplete` across programs) plus a per-program
+   breakdown in its `programs` field — the first place to look when the aggregate is behind:
+   it names which program is dragging. If the stack runs with a narrowed `PROGRAMS` subset,
+   set the api's `PROGRAMS` to the same value so the excluded programs' frozen rows don't
+   drag both surfaces (see README's environment table).
 
 ### "Frozen frontier" — what it looks like and what usually unfreezes it
 
@@ -87,15 +91,16 @@ Safe to run repeatedly, including on a database where a previous backfill alread
 (it re-walks and re-verifies the whole range — idempotent, changes zero rows if nothing was
 actually missing) and including after an interruption (kill, crash, redeploy) mid-walk.
 
-**Cursor semantics**: `backfill_cursor` (one singleton row) records the oldest signature
-whose whole page has already committed. It is written *through the batcher*, sorted after
+**Cursor semantics**: `backfill_cursor` (one row per program) records the oldest signature
+of that program's walk whose whole page has already committed. It is written *through the batcher*, sorted after
 the rows of its own page, so it can never claim a page whose rows didn't land — and it's
 deleted the moment a walk reaches its stop condition, so "a cursor exists" means exactly "an
 interrupted walk is waiting to be resumed." A plain re-run with no flags automatically
 resumes below that cursor rather than restarting from the tip.
 
-**The `--floor` guard**: `indexer backfill --floor <slot>` stops the walk early instead of at
-the program's real deploy slot. It only marks `sync_state.backfill_complete = true` (which is
+**The `--floor` guard**: `indexer backfill --program <name> --floor <slot>` (`--floor`
+requires `--program`; a shared floor across programs with different deploy slots would be
+meaningless) stops that program's walk early instead of at its real deploy slot. It only marks `sync_state.backfill_complete = true` (which is
 what allows the reconciliation supervisor to start advancing `last_contiguous_slot`) if the
 supplied floor is at or below the database's own `sync_state.backfill_floor_slot` — i.e. if
 the walk genuinely reached full history completeness. A higher `--floor` logs a warning and
@@ -108,14 +113,19 @@ for the incident this guard closed).
 
 ## After a program upgrade
 
-1. **Regenerate the decoder** (README's ["Regenerating the decoder"](README.md#regenerating-the-decoder-after-an-idl-change)
-   section has the exact command):
+1. **Regenerate the upgraded program's decoder** (README's
+   ["Regenerating a decoder"](README.md#regenerating-a-decoder-after-an-idl-change)
+   section has the exact command; substitute the program's IDL and crate directory):
    ```bash
-   npx @sevenlabs-hq/carbon-cli@latest parse -i ./idls/xcavate_whitelist.json \
-     -o ./crates/whitelist-decoder -s anchor -c \
+   npx @sevenlabs-hq/carbon-cli@latest parse -i ./idls/<program>.json \
+     -o ./crates/<program>-decoder -s anchor -c \
      --with-postgres true --with-graphql true --with-serde true
    ```
-   Rebuild and redeploy both binaries.
+   (`xcavate_whitelist.json` -> `whitelist-decoder`; the other three match their names.)
+   If the upgrade added/removed account types or changed close semantics, the program's
+   migrations, `crates/indexer/src/mapping/<program>.rs` and `db/` module need matching
+   updates — re-read the on-chain source's `close =` constraints. Rebuild and redeploy both
+   binaries.
 2. **Check the decode-failure panel** ("Decode failures" on the Grafana dashboard —
    `rate(updates_failed[5m])` + `decode_skipped_total` by `reason`) after the upgrade ships.
    A nonzero rate here means the deployed program's account layout or instruction shape
@@ -139,8 +149,8 @@ than before, or the reconciliation supervisor's crawl reports slots that no long
 Solana devnet is periodically reset by the network operators, which orphans all prior
 history.
 
-**Recovery** (minutes, at this program's data volume — its whole history is ~12 signatures
-and 11 accounts as of this migration):
+**Recovery** (minutes, at these programs' data volume — the whole four-program history is
+~26 signatures and ~20 accounts as of ADR-22):
 
 ```bash
 docker compose down
@@ -149,11 +159,13 @@ docker compose up -d
 ```
 
 A fresh `pgdata` volume means a fresh `sync_state` too, so `indexer run`'s normal startup
-path (snapshot, then backfill from the new deploy slot) does the full rebuild automatically —
-no manual `indexer snapshot`/`backfill` needed unless you want to watch it happen. If the
-program's on-chain address or deploy slot changed as part of the reset recovery (e.g. it was
-redeployed at a new slot), update `addresses.json` and `BACKFILL_START_SLOT`/`PROGRAM_ID`
-accordingly before redeploying — see the README's environment variable table.
+path (per-program snapshot, then backfill from each program's deploy slot) does the full
+rebuild automatically — no manual `indexer snapshot`/`backfill` needed unless you want to
+watch it happen. If a program's on-chain address or deploy slot changed as part of the reset
+recovery (e.g. it was redeployed at a new slot), update `addresses.json` AND the compiled-in
+registry (`crates/indexer/src/programs.rs` — the addresses come from the regenerated decoder
+crates' `PROGRAM_ID` consts, the deploy slots are literals there) and rebuild; there is no
+env override for either (see README's environment table for why).
 
 ## Rolling back to SubQuery
 
@@ -190,7 +202,7 @@ nothing pages anyone on its own; check Prometheus's `/alerts` page or Grafana's 
 | Alert | Fires when | What it means |
 |---|---|---|
 | `SlotLagHigh` | `chain_tip_slot - last_contiguous_slot > 3000` for 5m | The proven-contiguous freshness lag is over ~20 minutes of devnet blocks. Ground truth — the metric that actually catches a stream outage the datasource silently healed itself from (see `IndexerDown` below). Check "Is the indexer behind?" above. |
-| `DecodeFailures` | `updates_failed` or `decode_skipped_total` increased in 10m | An instruction decoded but couldn't be mapped, or a processor returned an error. Per the old handlers' stance and this indexer's (`ADR-10`), only reachable if the deployed program's layout diverges from the checked-in IDL — treat as a data-integrity signal, not noise. See "After a program upgrade" above. |
+| `DecodeFailures` | `updates_failed` or `decode_skipped_total` increased in 10m | An instruction decoded but couldn't be mapped, or a processor returned an error. Per the old handlers' stance and this indexer's (`ADR-10`), only reachable if a deployed program's layout diverges from its checked-in IDL — treat as a data-integrity signal, not noise. See "After a program upgrade" above. |
 | `IndexerDown` | `up{job="indexer"} == 0` for 2m | Prometheus can't scrape `indexer:9464` — the process is down, or its container isn't running. **Caveat**: carbon's Yellowstone datasource re-subscribes internally on a stream error without the process (or this scrape target) ever going down, so a short stream drop the datasource healed itself will *not* trip this. `SlotLagHigh` is what catches that case. |
 | `ApiDown` | `up{job="api"} == 0` for 2m | Prometheus can't scrape `api:9465` — the GraphQL API process/container is down. |
 | `ReconnectStorm` | `grpc_reconnects_total` increased by more than 5 in 15m | Repeated gRPC stream rebuilds — usually Alchemy throttling, a network problem, or an unhealthy upstream. Undercounts brief blips the datasource heals internally (same caveat as `IndexerDown`); treat as a lower bound. |

@@ -1,0 +1,123 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, investor, payment_mint,\n               payment_account, share_amount, reserved_share_amount, paid_funds, paid_tax,\n               paid_fee, reserved_funds, reserved_tax, reserved_fee, cancelled\n        FROM marketplace_investor_position\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR investor = $2)\n          AND ($3::bool IS NULL OR cancelled = $3)\n          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $5 OFFSET $6\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "listing_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "investor",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "payment_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "payment_account",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "reserved_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "paid_funds",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "paid_tax",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "paid_fee",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "reserved_funds",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "reserved_tax",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "reserved_fee",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "cancelled",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9fe2c6919d12309f6df5d2471e4459b550a312ede25a93166c4c1c9c3f66aa16"
+}

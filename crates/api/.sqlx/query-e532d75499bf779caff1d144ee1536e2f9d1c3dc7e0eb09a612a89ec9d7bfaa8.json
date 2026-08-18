@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT program_id, last_contiguous_slot, backfill_complete, backfill_floor_slot,\n                   snapshot_slot\n            FROM sync_state\n            WHERE ($1::bytea[] IS NULL OR program_id = ANY($1))\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "program_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_contiguous_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "backfill_complete",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "backfill_floor_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "snapshot_slot",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "ByteaArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "e532d75499bf779caff1d144ee1536e2f9d1c3dc7e0eb09a612a89ec9d7bfaa8"
+}

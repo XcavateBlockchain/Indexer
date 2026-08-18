@@ -21,8 +21,8 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "chain_tip_slot - last_contiguous_slot",
-          "legendFormat": "lag",
+          "expr": "chain_tip_slot - ignoring(program) group_right last_contiguous_slot",
+          "legendFormat": "lag {{program}}",
           "instant": true
         }
       ],
@@ -69,7 +69,7 @@
           "refId": "B",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "last_contiguous_slot",
-          "legendFormat": "last_contiguous_slot"
+          "legendFormat": "last_contiguous_slot {{program}}"
         }
       ],
       "options": {
@@ -130,7 +130,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Decode failures",
-      "description": "updates_failed (carbon-core: the processor returned Err) and decode_skipped_total by reason (missing_account, empty_absolute_path, serialize -- an instruction decoded but could not be mapped to a whitelist_actions row). Both should sit at zero; see the DecodeFailures alert.",
+      "description": "updates_failed (carbon-core: the processor returned Err) and decode_skipped_total by reason (missing_account, empty_absolute_path, serialize -- an instruction decoded but could not be mapped to its program's rows). Both should sit at zero; see the DecodeFailures alert.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
@@ -143,8 +143,8 @@
         {
           "refId": "B",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (reason) (rate(decode_skipped_total[5m]))",
-          "legendFormat": "decode_skipped: {{reason}}"
+          "expr": "sum by (program, reason) (rate(decode_skipped_total[5m]))",
+          "legendFormat": "decode_skipped: {{program}}/{{reason}}"
         }
       ],
       "options": {
@@ -313,7 +313,7 @@
       "id": 9,
       "type": "timeseries",
       "title": "Backfill progress: last processed slot",
-      "description": "backfill_last_processed_slot -- oldest slot the running history walk has committed (falls monotonically while a walk is in progress, then freezes once complete; only the history walk sets it, not reconciliation -- task-4-report.md). The horizontal line marks backfill_floor_slot (483386556): the walk is done once this reaches it.",
+      "description": "backfill_last_processed_slot -- oldest slot the running history walk has committed (falls monotonically while a walk is in progress, then freezes once complete; only the history walk sets it, not reconciliation -- task-4-report.md). The horizontal line marks the oldest program's backfill_floor_slot (the whitelist's deploy slot 483386556; the sibling programs' floors sit within ~300 slots of it): a program's walk is done once its series reaches its floor.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 12, "y": 24 },
       "targets": [
@@ -321,7 +321,7 @@
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "backfill_last_processed_slot",
-          "legendFormat": "backfill_last_processed_slot"
+          "legendFormat": "backfill_last_processed_slot {{program}}"
         }
       ],
       "options": {
@@ -362,7 +362,7 @@
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "snapshot_accounts_loaded",
-          "legendFormat": "accounts",
+          "legendFormat": "accounts {{program}}",
           "instant": true
         }
       ],

@@ -52,10 +52,11 @@ services:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/postgres
       ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
       RUST_LOG: ${RUST_LOG:-info,hyper=warn,h2=warn,tonic=warn,rustls=warn}
-      # ALCHEMY_GRPC_URL / ALCHEMY_RPC_URL / RPC_FALLBACK_URL / PROGRAM_ID /
-      # BACKFILL_START_SLOT / METRICS_ADDR / RECONCILE_INTERVAL all have working defaults
-      # baked into the binary (crates/indexer/src/config.rs) -- only set them here (or in
-      # .env, wired through above) if overriding one for a specific deployment.
+      # ALCHEMY_GRPC_URL / ALCHEMY_RPC_URL / RPC_FALLBACK_URL / PROGRAMS / METRICS_ADDR /
+      # RECONCILE_INTERVAL all have working defaults baked into the binary
+      # (crates/indexer/src/config.rs; the default PROGRAMS set is all four programs) --
+      # only set them here (or in .env, wired through above) if overriding one for a
+      # specific deployment.
     healthcheck:
       # Runs `indexer run`: migrations, then the startup subscribe gate (up to 30s on a
       # slow link), then the metrics listener -- see crates/indexer/src/main.rs. curl is

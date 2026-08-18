@@ -1,0 +1,273 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, developer, asset_id,\n               share_price, listed_share_amount, sold_share_amount, reserved_share_amount,\n               tax_paid_by_developer, tax_bps, marketplace_fee_bps, investor_fee_bps,\n               max_ownership_bps, listing_expiry, claiming_time, claim_deadline,\n               legal_process_time, lawyer_voting_time, min_voting_quorum_bps, position_count,\n               legal_deadline, deposit, developer_lawyer, developer_lawyer_costs,\n               developer_lawyer_doc_status, developer_lawyer_documents_hash, spv_lawyer,\n               spv_lawyer_costs, spv_lawyer_doc_status, spv_lawyer_documents_hash,\n               second_attempt, developer_engaged, spv_costs_due, spv_costs_payee, collected,\n               spv_election_expiry, spv_election_candidate_count, spv_election_round, status\n        FROM marketplace_listing\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR developer = $2)\n          AND ($3::text IS NULL OR status = $3)\n          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $5 OFFSET $6\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "listing_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "developer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "share_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "listed_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "sold_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "reserved_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "tax_paid_by_developer",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "tax_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "marketplace_fee_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "investor_fee_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "max_ownership_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "listing_expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 17,
+        "name": "claiming_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 18,
+        "name": "claim_deadline",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 19,
+        "name": "legal_process_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 20,
+        "name": "lawyer_voting_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 21,
+        "name": "min_voting_quorum_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 22,
+        "name": "position_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 23,
+        "name": "legal_deadline",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 24,
+        "name": "deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 25,
+        "name": "developer_lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 26,
+        "name": "developer_lawyer_costs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 27,
+        "name": "developer_lawyer_doc_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 28,
+        "name": "developer_lawyer_documents_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 29,
+        "name": "spv_lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 30,
+        "name": "spv_lawyer_costs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 31,
+        "name": "spv_lawyer_doc_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 32,
+        "name": "spv_lawyer_documents_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 33,
+        "name": "second_attempt",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 34,
+        "name": "developer_engaged",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 35,
+        "name": "spv_costs_due",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 36,
+        "name": "spv_costs_payee",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 37,
+        "name": "collected",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 38,
+        "name": "spv_election_expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 39,
+        "name": "spv_election_candidate_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 40,
+        "name": "spv_election_round",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 41,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Text",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "545e407c261eec45220b575625208b3720416d6ede9b365ca6677077d9ad538b"
+}

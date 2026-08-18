@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM property_letting\n        WHERE ($1::bigint IS NULL OR asset_id = $1)\n          AND ($2::bytea IS NULL OR agent = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4f0df901e760d186f58b9711d02bfc5d1f489aa56ff1b6a9b2fef0465802421d"
+}

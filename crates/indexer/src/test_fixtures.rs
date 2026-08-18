@@ -63,8 +63,13 @@ pub fn decoded(
     data: XcavateWhitelistInstruction,
     accounts: &[Pubkey],
 ) -> DecodedInstruction<XcavateWhitelistInstruction> {
+    decoded_for(carbon_xcavate_whitelist_decoder::PROGRAM_ID, data, accounts)
+}
+
+/// The generic form, for the sibling programs' decoded-instruction fixtures.
+pub fn decoded_for<T>(program_id: Pubkey, data: T, accounts: &[Pubkey]) -> DecodedInstruction<T> {
     DecodedInstruction {
-        program_id: carbon_xcavate_whitelist_decoder::PROGRAM_ID,
+        program_id,
         data,
         accounts: accounts
             .iter()

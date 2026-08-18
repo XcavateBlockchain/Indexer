@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT min(last_contiguous_slot) AS \"last_contiguous_slot\",\n               bool_and(backfill_complete) AS \"backfill_complete\"\n        FROM sync_state\n        WHERE ($1::bytea[] IS NULL OR program_id = ANY($1))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "last_contiguous_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "backfill_complete",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "ByteaArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "74b7e43d8a423e7dbf17d207e65df727d5364bc6f546933d7c4f05ca53c0058c"
+}

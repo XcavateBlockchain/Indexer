@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO program_instructions\n            (program_id, signature, ix_index, inner_index, slot, block_time, ix_name, accounts, data)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n        ON CONFLICT (signature, ix_index, inner_index) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int2",
+        "Int2",
+        "Int8",
+        "Timestamptz",
+        "Text",
+        "ByteaArray",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7c42ae1ae43665f67b38268561335273edba072054cb694740d800880d8bf194"
+}

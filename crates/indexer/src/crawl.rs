@@ -57,7 +57,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::batcher::{Batcher, WriteOp};
-use crate::config::{redact_key, Config};
+use crate::config::redact_key;
 use crate::pipeline::{self, PipeDeps};
 
 /// A transaction the crawler delivered.
@@ -266,16 +266,30 @@ impl<D: Datasource + Send + Sync + 'static> Datasource for Observed<D> {
     }
 }
 
-/// Everything one crawl needs beyond [`Config`].
+/// Everything one crawl needs beyond the request itself.
 pub struct CrawlDeps<'a> {
     pub batcher: &'a Batcher,
     pub block_time: &'a Arc<crate::block_time::BlockTimeResolver>,
     pub tracked: &'a crate::processors::TrackedAccounts,
     pub metrics: Arc<dyn carbon_core::metrics::Metrics>,
+    /// The configured program set, forwarded to `pipeline::common_pipes` (only configured
+    /// programs' pairs are registered -- see the pipeline module docs).
+    pub programs: &'a [&'static crate::programs::ProgramSpec],
 }
 
 /// One crawl: pages of signatures walked newest -> oldest until a stop condition.
 pub struct CrawlRequest<'a> {
+    /// The program whose signature history this crawl walks.
+    pub program: &'static crate::programs::ProgramSpec,
+    /// If set, an endpoint must prove its confirmed view has reached this slot (one `getSlot`
+    /// per page, BEFORE the page is fetched) or its pages are rejected and the next endpoint
+    /// is tried. The reconciler sets this to the tick's tip: it is about to claim "no gaps
+    /// below tip", and a page served by a node still behind the tip can silently omit
+    /// signatures the tip-reading node had already confirmed -- failing over to the public
+    /// fallback after an Alchemy 429 is exactly when the two views diverge. `None` for the
+    /// history backfill: its claim is about the floor, and the range between its starting
+    /// tip and the first reconcile advance is re-walked by that first reconcile cycle anyway.
+    pub min_page_view_slot: Option<u64>,
     /// Endpoints to try, in order: normally the primary (Alchemy) then the public devnet
     /// fallback. Alchemy's free tier throttles (see MIGRATION_LOG.md), and both the signature
     /// enumeration and the window delivery are idempotent, so failing over and re-doing a page
@@ -318,7 +332,6 @@ pub struct CrawlSummary {
 /// a finished one, because the caller turns "finished" into `backfill_complete` or into an
 /// advance of `last_contiguous_slot`.
 pub async fn crawl(
-    cfg: &Config,
     req: CrawlRequest<'_>,
     deps: CrawlDeps<'_>,
     shutdown: CancellationToken,
@@ -343,7 +356,15 @@ pub async fn crawl(
             req.label,
             "getSignaturesForAddress",
             req.rpc_urls.len(),
-            |i| fetch_page(&clients[i], &cfg.program_id, before, req.page_size + 1),
+            |i| {
+                fetch_page(
+                    &clients[i],
+                    &req.program.id,
+                    before,
+                    req.page_size + 1,
+                    req.min_page_view_slot,
+                )
+            },
         )
         .await
         .with_context(|| format!("{} crawl: getSignaturesForAddress failed", req.label))?;
@@ -353,7 +374,7 @@ pub async fn crawl(
         summary.signatures_enumerated += plan.expected.len() as u64 + plan.failed.len() as u64;
         summary.signatures_expected += plan.expected.len() as u64;
         summary.signatures_failed += plan.failed.len() as u64;
-        crate::metrics::add_backfill_signatures_fetched(page.len() as u64);
+        crate::metrics::add_backfill_signatures_fetched(req.program.name, page.len() as u64);
         if let Some(first) = plan.expected.first() {
             summary.newest_slot = summary.newest_slot.max(Some(first.slot));
         }
@@ -401,7 +422,7 @@ pub async fn crawl(
             };
             try_endpoints(req.label, "window delivery", req.rpc_urls.len(), |i| {
                 run_window(
-                    cfg,
+                    req.program.id,
                     &req.rpc_urls[i],
                     &deps,
                     window,
@@ -415,7 +436,7 @@ pub async fn crawl(
 
             if req.report_progress {
                 if let Some(oldest) = plan.expected.last() {
-                    crate::metrics::set_backfill_last_processed_slot(oldest.slot);
+                    crate::metrics::set_backfill_last_processed_slot(req.program.name, oldest.slot);
                 }
             }
         }
@@ -426,6 +447,7 @@ pub async fn crawl(
             if let Some(cursor) = &plan.next_cursor {
                 deps.batcher
                     .push(WriteOp::SetBackfillCursor {
+                        program_id: req.program.id.to_bytes().to_vec(),
                         signature: cursor.signature.to_string(),
                         slot: cursor.slot as i64,
                     })
@@ -495,7 +517,24 @@ async fn fetch_page(
     program_id: &Pubkey,
     before: Option<Signature>,
     limit: usize,
+    min_view_slot: Option<u64>,
 ) -> Result<Vec<SigInfo>> {
+    // Prove the node's confirmed view has reached the required slot BEFORE fetching the
+    // page: a node's slot only advances, so a pre-check at >= T guarantees the page it then
+    // serves cannot omit signatures confirmed at or below T. (Checking after the page would
+    // prove nothing -- the node could have caught up in between.)
+    if let Some(required) = min_view_slot {
+        let view = rpc
+            .get_slot_with_commitment(CommitmentConfig::confirmed())
+            .await
+            .context("getSlot (page-view check) failed")?;
+        if view < required {
+            return Err(anyhow!(
+                "endpoint's confirmed view ({view}) is behind the required slot ({required}); \
+                 its pages could silently omit recent signatures"
+            ));
+        }
+    }
     let page = rpc
         .get_signatures_for_address_with_config(
             program_id,
@@ -524,7 +563,7 @@ async fn fetch_page(
 /// Run one crawler window and return once every expected signature has been processed.
 #[allow(clippy::too_many_arguments)]
 async fn run_window(
-    cfg: &Config,
+    program_id: solana_pubkey::Pubkey,
     rpc_url: &str,
     deps: &CrawlDeps<'_>,
     window: CrawlWindow,
@@ -538,12 +577,13 @@ async fn run_window(
     let window_token = CancellationToken::new();
 
     let mut pipe = pipeline::build_crawl(
-        cfg,
+        program_id,
         rpc_url,
         PipeDeps {
             batcher: deps.batcher,
             block_time: deps.block_time,
             tracked: deps.tracked,
+            programs: deps.programs,
             metrics: deps.metrics.clone(),
         },
         window,

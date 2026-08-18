@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT program_id, last_contiguous_slot, backfill_complete, backfill_floor_slot, snapshot_slot, updated_at\n        FROM sync_state WHERE program_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "program_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_contiguous_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "backfill_complete",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "backfill_floor_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "snapshot_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "4d5b1bdd5322fc91d5c9251a80760deeb20169aa7585ed2bd410b34bc36d39fb"
+}

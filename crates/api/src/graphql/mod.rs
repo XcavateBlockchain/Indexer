@@ -2,6 +2,7 @@
 
 pub mod context;
 pub mod enums;
+pub mod programs;
 pub mod query;
 pub mod types;
 

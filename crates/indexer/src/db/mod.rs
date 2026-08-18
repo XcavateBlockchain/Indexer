@@ -15,8 +15,12 @@
 pub mod accounts;
 pub mod actions;
 pub mod backfill_cursor;
+pub mod close;
 pub mod instructions;
+pub mod marketplace;
 pub mod models;
+pub mod property;
+pub mod regions;
 pub mod sync_state;
 
 #[cfg(test)]

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM marketplace_lawyer\n        WHERE ($1::bytea IS NULL OR lawyer = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a7928ff4583997604f5f00e1d5b672c729cbbbb816b1121d3e77e261ea2c92ab"
+}

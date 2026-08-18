@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::db;
+use crate::db::close::StateTable;
 use crate::db::models::{AdminAccount, ConfigAccount, NewAction, NewInstruction, RoleAccountRow};
 
 /// Flush when this many ops are buffered.
@@ -49,30 +50,43 @@ pub enum WriteOp {
     UpsertConfig(ConfigAccount),
     UpsertAdmin(AdminAccount),
     UpsertRoleAccount(RoleAccountRow),
+    UpsertRegionsAccount(db::regions::RegionsAccountRow),
+    UpsertMarketplaceAccount(db::marketplace::MarketplaceAccountRow),
+    UpsertPropertyAccount(db::property::PropertyAccountRow),
     InsertInstruction(NewInstruction),
     InsertAction(NewAction),
-    /// Instruction-driven close of an `admin` PDA (ruling R11).
-    CloseAdmin {
+    /// Instruction-driven close of a PDA in a known state table (ruling R11).
+    CloseAccount {
+        table: StateTable,
         pubkey: Vec<u8>,
         slot: i64,
     },
-    /// Instruction-driven close of a `role_account` PDA (ruling R11).
-    CloseRoleAccount {
+    /// The one conditional close in the protocol: property's `remove_letting_agent` closes
+    /// the `LettingAgent` PDA on-chain only when the removed location was its last. The
+    /// mapper cannot decide that (it is pure, no DB), so the decision is made by the write
+    /// itself against the stored row -- see `db::property::close_letting_agent_if_last`.
+    CloseLettingAgentIfLast {
         pubkey: Vec<u8>,
+        /// The removed location's postcode as a UTF-8 string, matching the shape the
+        /// `locations` JSONB stores.
+        removed_postcode: String,
         slot: i64,
     },
     /// Close driven by carbon's `AccountDeletion`, which carries only `{pubkey, slot}` and so
-    /// cannot say which table the pubkey belongs to. Tries all three; each is a guarded
-    /// `UPDATE ... WHERE pubkey = $1 AND slot < $2`, so the two that do not match are no-ops.
+    /// cannot say which table the pubkey belongs to. Tries every state table; each is a
+    /// guarded `UPDATE ... WHERE pubkey = $1 AND slot < $2`, so the ones that do not match
+    /// are no-ops.
     CloseUnknownAccount {
         pubkey: Vec<u8>,
         slot: i64,
     },
-    /// The history backfill's resume cursor: "every transaction at or above this signature has
-    /// been committed". Pushed *after* the rows of the page it describes, and sorted last
-    /// within its batch, so it can never be committed ahead of them -- if the process dies in
-    /// between, the cursor is simply one page stale and that page is walked again.
+    /// One program's history-backfill resume cursor: "every transaction of this program at or
+    /// above this signature has been committed". Pushed *after* the rows of the page it
+    /// describes, and sorted last within its batch, so it can never be committed ahead of
+    /// them -- if the process dies in between, the cursor is simply one page stale and that
+    /// page is walked again.
     SetBackfillCursor {
+        program_id: Vec<u8>,
         signature: String,
         slot: i64,
     },
@@ -86,10 +100,13 @@ impl WriteOp {
             WriteOp::UpsertConfig(r) => r.slot,
             WriteOp::UpsertAdmin(r) => r.slot,
             WriteOp::UpsertRoleAccount(r) => r.slot,
+            WriteOp::UpsertRegionsAccount(r) => r.slot(),
+            WriteOp::UpsertMarketplaceAccount(r) => r.slot(),
+            WriteOp::UpsertPropertyAccount(r) => r.slot(),
             WriteOp::InsertInstruction(r) => r.slot,
             WriteOp::InsertAction(r) => r.slot,
-            WriteOp::CloseAdmin { slot, .. }
-            | WriteOp::CloseRoleAccount { slot, .. }
+            WriteOp::CloseAccount { slot, .. }
+            | WriteOp::CloseLettingAgentIfLast { slot, .. }
             | WriteOp::CloseUnknownAccount { slot, .. }
             | WriteOp::SetBackfillCursor { slot, .. } => *slot,
         }
@@ -98,11 +115,16 @@ impl WriteOp {
     /// Position of this op's kind in the within-transaction ordering (see module docs).
     fn phase(&self) -> u8 {
         match self {
-            WriteOp::UpsertConfig(_) | WriteOp::UpsertAdmin(_) | WriteOp::UpsertRoleAccount(_) => 0,
+            WriteOp::UpsertConfig(_)
+            | WriteOp::UpsertAdmin(_)
+            | WriteOp::UpsertRoleAccount(_)
+            | WriteOp::UpsertRegionsAccount(_)
+            | WriteOp::UpsertMarketplaceAccount(_)
+            | WriteOp::UpsertPropertyAccount(_) => 0,
             WriteOp::InsertInstruction(_) => 1,
             WriteOp::InsertAction(_) => 2,
-            WriteOp::CloseAdmin { .. }
-            | WriteOp::CloseRoleAccount { .. }
+            WriteOp::CloseAccount { .. }
+            | WriteOp::CloseLettingAgentIfLast { .. }
             | WriteOp::CloseUnknownAccount { .. } => 3,
             WriteOp::SetBackfillCursor { .. } => 4,
         }
@@ -316,25 +338,48 @@ async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<(), sqlx::Error>
             WriteOp::UpsertRoleAccount(row) => {
                 db::accounts::upsert_role_account(&mut *tx, row.clone()).await?;
             }
+            WriteOp::UpsertRegionsAccount(row) => {
+                db::regions::upsert(&mut *tx, row).await?;
+            }
+            WriteOp::UpsertMarketplaceAccount(row) => {
+                db::marketplace::upsert(&mut *tx, row).await?;
+            }
+            WriteOp::UpsertPropertyAccount(row) => {
+                db::property::upsert(&mut *tx, row).await?;
+            }
             WriteOp::InsertInstruction(row) => {
                 db::instructions::insert_instruction(&mut *tx, row.clone()).await?;
             }
             WriteOp::InsertAction(row) => {
                 db::actions::insert_action(&mut *tx, row.clone()).await?;
             }
-            WriteOp::CloseAdmin { pubkey, slot } => {
-                db::accounts::close_admin(&mut *tx, pubkey, *slot).await?;
+            WriteOp::CloseAccount {
+                table,
+                pubkey,
+                slot,
+            } => {
+                db::close::close_in_table(&mut *tx, *table, pubkey, *slot).await?;
             }
-            WriteOp::CloseRoleAccount { pubkey, slot } => {
-                db::accounts::close_role_account(&mut *tx, pubkey, *slot).await?;
+            WriteOp::CloseLettingAgentIfLast {
+                pubkey,
+                removed_postcode,
+                slot,
+            } => {
+                let postcode = serde_json::Value::String(removed_postcode.clone());
+                db::property::close_letting_agent_if_last(&mut *tx, pubkey, &postcode, *slot)
+                    .await?;
             }
             WriteOp::CloseUnknownAccount { pubkey, slot } => {
-                db::accounts::close_config(&mut *tx, pubkey, *slot).await?;
-                db::accounts::close_admin(&mut *tx, pubkey, *slot).await?;
-                db::accounts::close_role_account(&mut *tx, pubkey, *slot).await?;
+                for table in StateTable::ALL {
+                    db::close::close_in_table(&mut *tx, *table, pubkey, *slot).await?;
+                }
             }
-            WriteOp::SetBackfillCursor { signature, slot } => {
-                db::backfill_cursor::set_cursor(&mut *tx, signature, *slot).await?;
+            WriteOp::SetBackfillCursor {
+                program_id,
+                signature,
+                slot,
+            } => {
+                db::backfill_cursor::set_cursor(&mut *tx, program_id, signature, *slot).await?;
             }
         }
     }
@@ -372,10 +417,12 @@ mod tests {
             // claims "everything above this is committed") is pushed first here, and must still
             // end up committed last.
             WriteOp::SetBackfillCursor {
+                program_id: vec![9],
                 signature: "sig".into(),
                 slot: 1,
             },
-            WriteOp::CloseAdmin {
+            WriteOp::CloseAccount {
+                table: crate::db::close::StateTable::Admin,
                 pubkey: vec![1],
                 slot: 1,
             },
@@ -388,6 +435,7 @@ mod tests {
                 bump: 1,
             }),
             WriteOp::InsertInstruction(crate::db::models::NewInstruction {
+                program_id: vec![9],
                 signature: vec![0],
                 ix_index: 0,
                 inner_index: -1,
@@ -429,6 +477,7 @@ mod tests {
         cancellation.cancel();
 
         let mut buf = vec![WriteOp::SetBackfillCursor {
+            program_id: vec![9],
             signature: "sig".into(),
             slot: 1,
         }];

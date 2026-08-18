@@ -25,6 +25,10 @@ use super::sync_state::{
     set_snapshot_slot,
 };
 
+/// A fixed 32-byte program id for program-keyed tables (sync_state, backfill_cursor,
+/// program_instructions).
+const PID: &[u8] = &[7u8; 32];
+
 fn bt(slot: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(1_700_000_000 + slot, 0).unwrap()
 }
@@ -305,6 +309,7 @@ async fn soft_close_role_account_guards_and_clears_on_recreate(pool: PgPool) -> 
 #[sqlx::test(migrations = "../../migrations")]
 async fn insert_instruction_is_idempotent(pool: PgPool) -> sqlx::Result<()> {
     let row = NewInstruction {
+        program_id: PID.to_vec(),
         signature: vec![7; 64],
         ix_index: 0,
         inner_index: -1,
@@ -357,6 +362,7 @@ async fn instruction_and_action_insert_share_one_transaction(pool: PgPool) -> sq
     insert_instruction(
         &mut *tx,
         NewInstruction {
+            program_id: PID.to_vec(),
             signature: vec![1; 64],
             ix_index: 0,
             inner_index: -1,
@@ -403,32 +409,32 @@ async fn instruction_and_action_insert_share_one_transaction(pool: PgPool) -> sq
 #[sqlx::test(migrations = "../../migrations")]
 async fn sync_state_lifecycle(pool: PgPool) -> sqlx::Result<()> {
     // Uninitialized: no row yet.
-    assert!(get_sync_state(&pool).await?.is_none());
+    assert!(get_sync_state(&pool, PID).await?.is_none());
 
-    init_sync_state(&pool, 1_000).await?;
-    let s = get_sync_state(&pool).await?.expect("row after init");
+    init_sync_state(&pool, PID, 1_000).await?;
+    let s = get_sync_state(&pool, PID).await?.expect("row after init");
     assert_eq!(s.last_contiguous_slot, 1_000);
     assert_eq!(s.backfill_floor_slot, 1_000);
     assert!(!s.backfill_complete);
     assert_eq!(s.snapshot_slot, None);
 
     // A second init is a no-op (ON CONFLICT DO NOTHING) -- floor doesn't change.
-    init_sync_state(&pool, 9_999).await?;
-    let s = get_sync_state(&pool).await?.unwrap();
+    init_sync_state(&pool, PID, 9_999).await?;
+    let s = get_sync_state(&pool, PID).await?.unwrap();
     assert_eq!(s.backfill_floor_slot, 1_000);
 
-    advance_last_contiguous_slot(&pool, 1_500).await?;
-    let s = get_sync_state(&pool).await?.unwrap();
+    advance_last_contiguous_slot(&pool, PID, 1_500).await?;
+    let s = get_sync_state(&pool, PID).await?.unwrap();
     assert_eq!(s.last_contiguous_slot, 1_500);
 
     // Regression is guarded: advancing "backwards" does nothing.
-    advance_last_contiguous_slot(&pool, 1_200).await?;
-    let s = get_sync_state(&pool).await?.unwrap();
+    advance_last_contiguous_slot(&pool, PID, 1_200).await?;
+    let s = get_sync_state(&pool, PID).await?.unwrap();
     assert_eq!(s.last_contiguous_slot, 1_500);
 
-    set_snapshot_slot(&pool, 1_800).await?;
-    set_backfill_complete(&pool, true).await?;
-    let s = get_sync_state(&pool).await?.unwrap();
+    set_snapshot_slot(&pool, PID, 1_800).await?;
+    set_backfill_complete(&pool, PID, true).await?;
+    let s = get_sync_state(&pool, PID).await?.unwrap();
     assert_eq!(s.snapshot_slot, Some(1_800));
     assert!(s.backfill_complete);
     Ok(())
@@ -1007,19 +1013,19 @@ async fn config_view_reflects_state_table_and_latest_action(pool: PgPool) -> sql
 #[sqlx::test(migrations = "../../migrations")]
 async fn backfill_cursor_lifecycle(pool: PgPool) -> sqlx::Result<()> {
     assert!(
-        get_cursor(&pool).await?.is_none(),
+        get_cursor(&pool, PID).await?.is_none(),
         "a fresh database has no cursor"
     );
 
-    set_cursor(&pool, "sigA", 500).await?;
-    let c = get_cursor(&pool)
+    set_cursor(&pool, PID, "sigA", 500).await?;
+    let c = get_cursor(&pool, PID)
         .await?
         .expect("cursor after the first page");
     assert_eq!((c.signature.as_str(), c.slot), ("sigA", 500));
 
     // The walk descends: the second page overwrites the first (singleton row).
-    set_cursor(&pool, "sigB", 400).await?;
-    let c = get_cursor(&pool)
+    set_cursor(&pool, PID, "sigB", 400).await?;
+    let c = get_cursor(&pool, PID)
         .await?
         .expect("cursor after the second page");
     assert_eq!((c.signature.as_str(), c.slot), ("sigB", 400));
@@ -1030,13 +1036,210 @@ async fn backfill_cursor_lifecycle(pool: PgPool) -> sqlx::Result<()> {
 
     // A re-run from the tip legitimately moves the cursor back UP: it is a walk position, not a
     // high-water mark, so it must NOT be guarded the way `last_contiguous_slot` is.
-    set_cursor(&pool, "sigZ", 900).await?;
-    assert_eq!(get_cursor(&pool).await?.unwrap().slot, 900);
+    set_cursor(&pool, PID, "sigZ", 900).await?;
+    assert_eq!(get_cursor(&pool, PID).await?.unwrap().slot, 900);
 
-    clear_cursor(&pool).await?;
+    clear_cursor(&pool, PID).await?;
     assert!(
-        get_cursor(&pool).await?.is_none(),
+        get_cursor(&pool, PID).await?.is_none(),
         "a finished walk leaves no cursor"
     );
+    Ok(())
+}
+
+// ============================================================================================
+// Multi-program additions (migrations 0007..0010): the generic close must work against EVERY
+// state table (it is dynamic SQL over an enum -- this test is what catches schema drift), the
+// sibling tables must hold the same slot-guard contract as the whitelist's, and property's
+// conditional letting-agent close must only fire when the removed location was the last one.
+// ============================================================================================
+
+use super::close::{close_in_table, open_account_pubkeys, StateTable};
+use super::property::{close_letting_agent_if_last, upsert_letting_agent, LettingAgentRow};
+use super::regions::{upsert_vote_record, Vote, VoteRecordRow};
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_generic_close_matches_every_state_table(pool: PgPool) -> sqlx::Result<()> {
+    // Not a behavioural test per table (the guard semantics are covered elsewhere) -- an
+    // existence test: every StateTable::ALL entry must name a real table with the shared
+    // pubkey/slot/closed_at_slot columns, or the dynamic UPDATE errors here instead of in
+    // production's CloseUnknownAccount path.
+    for table in StateTable::ALL {
+        if let Err(e) = close_in_table(&pool, *table, &pk(1), 100).await {
+            panic!("close_in_table failed for {:?}: {e}", table.table_name());
+        }
+    }
+    Ok(())
+}
+
+fn vote_record(pubkey: Vec<u8>, slot: i64, power: i64) -> VoteRecordRow {
+    VoteRecordRow {
+        pubkey,
+        slot,
+        lamports: 1_000,
+        proposal_id: 7,
+        voter: pk(2),
+        region_id: 1,
+        vote: Vote::Yes,
+        power,
+        expiry: 123,
+        bump: 255,
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn slot_guard_holds_on_a_sibling_table(pool: PgPool) -> sqlx::Result<()> {
+    let pubkey = pk(1);
+    upsert_vote_record(&pool, &vote_record(pubkey.clone(), 200, 10)).await?;
+    upsert_vote_record(&pool, &vote_record(pubkey.clone(), 100, 99)).await?;
+
+    let row = sqlx::query("SELECT slot, power, vote FROM regions_vote_record WHERE pubkey = $1")
+        .bind(&pubkey)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<i64, _>("slot"), 200);
+    assert_eq!(row.get::<i64, _>("power"), 10);
+    assert_eq!(row.get::<String, _>("vote"), "YES");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_sibling_close_guards_and_a_newer_write_revives(pool: PgPool) -> sqlx::Result<()> {
+    let pubkey = pk(1);
+    upsert_vote_record(&pool, &vote_record(pubkey.clone(), 100, 10)).await?;
+
+    // Guarded close: an older close is a no-op, a newer one lands.
+    close_in_table(&pool, StateTable::RegionsVoteRecord, &pubkey, 50).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM regions_vote_record WHERE pubkey = $1")
+        .bind(&pubkey)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+
+    close_in_table(&pool, StateTable::RegionsVoteRecord, &pubkey, 150).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM regions_vote_record WHERE pubkey = $1")
+        .bind(&pubkey)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), Some(150));
+
+    // PDA re-created at the same address: the newer live write revives the row.
+    upsert_vote_record(&pool, &vote_record(pubkey.clone(), 200, 20)).await?;
+    let row =
+        sqlx::query("SELECT closed_at_slot, power FROM regions_vote_record WHERE pubkey = $1")
+            .bind(&pubkey)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+    assert_eq!(row.get::<i64, _>("power"), 20);
+    Ok(())
+}
+
+fn letting_agent(pubkey: Vec<u8>, slot: i64, locations: serde_json::Value) -> LettingAgentRow {
+    LettingAgentRow {
+        pubkey,
+        slot,
+        lamports: 1_000,
+        wallet: pk(2),
+        region_id: 1,
+        locations,
+        rent_payer: pk(3),
+        bump: 255,
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_conditional_letting_agent_close_fires_only_on_the_last_location(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    let postcode = serde_json::Value::String("M11AE".to_string());
+
+    // Two locations left: removing one must NOT close the row.
+    let two = pk(1);
+    upsert_letting_agent(
+        &pool,
+        &letting_agent(
+            two.clone(),
+            100,
+            serde_json::json!([
+                {"postcode": "M11AE", "assigned_count": 0, "deposit": 5},
+                {"postcode": "SW1A1AA", "assigned_count": 0, "deposit": 5},
+            ]),
+        ),
+    )
+    .await?;
+    close_letting_agent_if_last(&pool, &two, &postcode, 150).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM property_letting_agent WHERE pubkey = $1")
+        .bind(&two)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+
+    // One matching location left: the close lands (and is slot-guarded).
+    let one = pk(4);
+    upsert_letting_agent(
+        &pool,
+        &letting_agent(
+            one.clone(),
+            100,
+            serde_json::json!([{"postcode": "M11AE", "assigned_count": 0, "deposit": 5}]),
+        ),
+    )
+    .await?;
+    close_letting_agent_if_last(&pool, &one, &postcode, 50).await?; // older: no-op
+    let row = sqlx::query("SELECT closed_at_slot FROM property_letting_agent WHERE pubkey = $1")
+        .bind(&one)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+
+    close_letting_agent_if_last(&pool, &one, &postcode, 150).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM property_letting_agent WHERE pubkey = $1")
+        .bind(&one)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), Some(150));
+
+    // One location left but a DIFFERENT postcode removed: stale-state protection, no close.
+    let other = pk(5);
+    upsert_letting_agent(
+        &pool,
+        &letting_agent(
+            other.clone(),
+            100,
+            serde_json::json!([{"postcode": "SW1A1AA", "assigned_count": 0, "deposit": 5}]),
+        ),
+    )
+    .await?;
+    close_letting_agent_if_last(&pool, &other, &postcode, 150).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM property_letting_agent WHERE pubkey = $1")
+        .bind(&other)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn open_account_pubkeys_unions_every_programs_tables(pool: PgPool) -> sqlx::Result<()> {
+    // One open whitelist row, one open sibling row, one closed sibling row.
+    upsert_admin(
+        &pool,
+        AdminAccount {
+            pubkey: pk(1),
+            slot: 100,
+            lamports: 1,
+            admin: pk(9),
+            bump: 1,
+        },
+    )
+    .await?;
+    upsert_vote_record(&pool, &vote_record(pk(2), 100, 10)).await?;
+    upsert_vote_record(&pool, &vote_record(pk(3), 100, 10)).await?;
+    close_in_table(&pool, StateTable::RegionsVoteRecord, &pk(3), 150).await?;
+
+    let mut open = open_account_pubkeys(&pool).await?;
+    open.sort();
+    assert_eq!(open, vec![pk(1), pk(2)]);
     Ok(())
 }

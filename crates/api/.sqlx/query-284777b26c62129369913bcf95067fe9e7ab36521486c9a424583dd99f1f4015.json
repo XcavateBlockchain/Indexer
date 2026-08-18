@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, wallet, region_id, locations, rent_payer\n        FROM property_letting_agent\n        WHERE ($1::bytea IS NULL OR wallet = $1)\n          AND ($2::int IS NULL OR region_id = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $4 OFFSET $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "wallet",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "region_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "locations",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "rent_payer",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int4",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "284777b26c62129369913bcf95067fe9e7ab36521486c9a424583dd99f1f4015"
+}

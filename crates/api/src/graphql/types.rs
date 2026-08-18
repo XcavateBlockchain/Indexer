@@ -17,7 +17,7 @@ use carbon_core::graphql::primitives::I64;
 use chrono::{DateTime, Utc};
 use juniper::{GraphQLObject, ID};
 
-use super::enums::{ActionType, Permission, RemovalKind, Role};
+use super::enums::{ActionType, Permission, ProgramName, RemovalKind, Role};
 
 /// Singleton (`id = "config"`): the sudo authority that manages whitelist admins.
 #[derive(GraphQLObject, Clone, Debug)]
@@ -110,7 +110,11 @@ pub struct AccessCheck {
     pub compliant: bool,
 }
 
-/// Replaces the old SubQuery `_metadata` surface.
+/// Replaces the old SubQuery `_metadata` surface. With four programs indexed, the top-level
+/// fields are fleet aggregates -- the stack is only as caught-up as its laggiest program:
+/// `lastContiguousSlot` is the minimum across programs, `backfillComplete` is true only when
+/// every program's backfill is complete, `snapshotSlot` is the oldest snapshot (null if any
+/// program has never been snapshotted). Per-program detail is in `programs`.
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct SyncStatus {
     pub last_contiguous_slot: I64,
@@ -118,4 +122,41 @@ pub struct SyncStatus {
     pub snapshot_slot: Option<I64>,
     pub chain_tip_slot: I64,
     pub slot_lag: I64,
+    pub programs: Vec<ProgramSyncStatus>,
+}
+
+/// One program's `sync_state` row.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct ProgramSyncStatus {
+    pub program: ProgramName,
+    pub last_contiguous_slot: I64,
+    pub backfill_complete: bool,
+    pub backfill_floor_slot: I64,
+    pub snapshot_slot: Option<I64>,
+}
+
+/// One row of the shared `program_instructions` history: every successfully indexed
+/// instruction of every indexed program, with its decoded args as JSON. `id` is
+/// `"<txSignature>-<ixIndex>"` for a top-level instruction and
+/// `"<txSignature>-<ixIndex>.<innerIndex>"` for a CPI.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct ProgramInstruction {
+    pub id: ID,
+    pub program: ProgramName,
+    pub tx_signature: String,
+    pub ix_index: i32,
+    pub inner_index: i32,
+    pub slot: I64,
+    pub block_time: DateTime<Utc>,
+    pub ix_name: String,
+    /// The instruction's account list, in order, base58.
+    pub accounts: Vec<String>,
+    /// The decoded instruction args as JSON text (the decoder enum's serde shape).
+    pub data: String,
+}
+
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct ProgramInstructionConnection {
+    pub nodes: Vec<ProgramInstruction>,
+    pub total_count: i32,
 }

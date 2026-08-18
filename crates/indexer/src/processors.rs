@@ -1,61 +1,68 @@
-//! The three carbon processors: instructions, account updates, account deletions.
+//! The carbon processors: instructions, account updates, account deletions.
 //!
-//! All three are thin. They decode-adjacent work only: convert carbon's types into
+//! All are thin. They do decode-adjacent work only: convert carbon's types into
 //! [`crate::batcher::WriteOp`]s and hand them to the batcher, then return. No processor opens
 //! a database transaction, because holding one would stall carbon's single update loop for the
 //! length of a round trip.
 //!
+//! The instruction and account processors are generic over a [`ProgramMapper`] -- one typed
+//! instantiation per program is registered on the pipeline (`pipeline::common_pipes`), each
+//! paired with that program's decoder. The deletion processor is shared: an `AccountDeletion`
+//! carries only `{pubkey, slot}` and pubkeys are globally unique, so one processor (and one
+//! tracked-accounts set) serves every program.
+//!
 //! One deliberate exception to "thin": the instruction processor may `await` a `getBlockTime`
 //! RPC call on a cache miss. Ruling R14 requires it -- `block_time` is `NOT NULL` in both
-//! tables and the Yellowstone transaction stream does not carry it, so the alternatives are
-//! blocking briefly or writing a guessed timestamp. We block.
+//! history tables and the Yellowstone transaction stream does not carry it, so the
+//! alternatives are blocking briefly or writing a guessed timestamp. We block.
 
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use carbon_core::account::{AccountProcessorInputType, DecodedAccount};
+use carbon_core::account::AccountProcessorInputType;
 use carbon_core::datasource::AccountDeletion;
 use carbon_core::error::{CarbonResult, Error as CarbonError};
 use carbon_core::instruction::InstructionProcessorInputType;
 use carbon_core::metrics::MetricsCollection;
 use carbon_core::processor::Processor;
-use carbon_xcavate_whitelist_decoder::accounts::XcavateWhitelistAccount;
-use carbon_xcavate_whitelist_decoder::instructions::XcavateWhitelistInstruction;
 use solana_pubkey::Pubkey;
 use tokio::sync::RwLock;
 
 use crate::batcher::{Batcher, WriteOp};
 use crate::block_time::BlockTimeResolver;
-use crate::db::models::{AdminAccount, ConfigAccount, RoleAccountRow};
-use crate::mapping::{self, PendingClose};
+use crate::mapping::{self, PendingClose, ProgramMapper};
 
 /// The set of PDAs the Yellowstone datasource should watch for deletion.
 ///
 /// Carbon only emits `AccountDeletion` for pubkeys present in this set (the datasource checks
 /// it before synthesising the event), so it has to be fed: seeded at startup from every
-/// still-open state row, and extended with every account update we see.
+/// still-open state row across every program's tables, and extended with every account update
+/// we see. One shared set serves all programs -- pubkeys are globally unique.
 pub type TrackedAccounts = Arc<RwLock<HashSet<Pubkey>>>;
 
 // --- instructions ---------------------------------------------------------------------------
 
-pub struct InstructionProcessor {
+pub struct InstructionProcessor<M: ProgramMapper> {
     batcher: Batcher,
     block_time: Arc<BlockTimeResolver>,
+    _mapper: PhantomData<M>,
 }
 
-impl InstructionProcessor {
+impl<M: ProgramMapper> InstructionProcessor<M> {
     pub fn new(batcher: Batcher, block_time: Arc<BlockTimeResolver>) -> Self {
         Self {
             batcher,
             block_time,
+            _mapper: PhantomData,
         }
     }
 }
 
 #[async_trait]
-impl Processor for InstructionProcessor {
-    type InputType = InstructionProcessorInputType<XcavateWhitelistInstruction>;
+impl<M: ProgramMapper> Processor for InstructionProcessor<M> {
+    type InputType = InstructionProcessorInputType<M::Ix>;
 
     async fn process(
         &mut self,
@@ -69,11 +76,11 @@ impl Processor for InstructionProcessor {
             .await
             .map_err(|e| CarbonError::Custom(e.to_string()))?;
 
-        let mapped = match mapping::map_instruction(&metadata, &decoded, block_time) {
+        let mapped = match M::map_instruction(&metadata, &decoded, block_time) {
             Ok(Some(mapped)) => mapped,
-            // The decoder's synthetic `CpiEvent` variant. This program emits log events, not
-            // CPI events, so this is unreachable in practice -- but it is a legitimate
-            // "nothing to write", not a failure.
+            // The decoder's synthetic `CpiEvent` variant. Every program in this protocol
+            // emits log events, not CPI events, so this is unreachable in practice -- but it
+            // is a legitimate "nothing to write", not a failure.
             Ok(None) => return Ok(()),
             Err(e) => {
                 // An instruction that decoded against this program's IDL but does not fit the
@@ -82,9 +89,10 @@ impl Processor for InstructionProcessor {
                 // integrity beats liveness"); the equivalent here is failing the update, which
                 // logs, bumps carbon's `updates_failed`, and skips the rest of this
                 // transaction rather than writing a half-mapped history.
-                crate::metrics::inc_decode_skipped(e.reason());
+                crate::metrics::inc_decode_skipped(M::NAME, e.reason());
                 log::error!(
-                    "unmappable whitelist instruction in tx {} at path {}: {e}",
+                    "unmappable {} instruction in tx {} at path {}: {e}",
+                    M::NAME,
                     tx.signature,
                     mapping::instruction_index(&metadata.absolute_path),
                 );
@@ -92,18 +100,34 @@ impl Processor for InstructionProcessor {
             }
         };
 
-        let mut ops = Vec::with_capacity(3);
+        let mut ops = Vec::with_capacity(2 + mapped.closes.len());
         ops.push(WriteOp::InsertInstruction(mapped.instruction));
-        ops.push(WriteOp::InsertAction(mapped.action));
+        if let Some(action) = mapped.action {
+            ops.push(WriteOp::InsertAction(action));
+        }
         // Ruling R11: an instruction that closes a PDA has to soft-close the state row itself.
         // The account stream cannot do it -- a closed account stops matching the owner filter,
         // so the last thing we would ever see for that pubkey is its pre-close state.
-        if let Some(close) = mapped.close {
+        for close in mapped.closes {
             ops.push(match close {
-                PendingClose::Admin { pubkey, slot } => WriteOp::CloseAdmin { pubkey, slot },
-                PendingClose::RoleAccount { pubkey, slot } => {
-                    WriteOp::CloseRoleAccount { pubkey, slot }
-                }
+                PendingClose::Account {
+                    table,
+                    pubkey,
+                    slot,
+                } => WriteOp::CloseAccount {
+                    table,
+                    pubkey,
+                    slot,
+                },
+                PendingClose::LettingAgentIfLast {
+                    pubkey,
+                    removed_postcode,
+                    slot,
+                } => WriteOp::CloseLettingAgentIfLast {
+                    pubkey,
+                    removed_postcode,
+                    slot,
+                },
             });
         }
 
@@ -116,20 +140,25 @@ impl Processor for InstructionProcessor {
 
 // --- account updates ------------------------------------------------------------------------
 
-pub struct AccountProcessor {
+pub struct AccountProcessor<M: ProgramMapper> {
     batcher: Batcher,
     tracked: TrackedAccounts,
+    _mapper: PhantomData<M>,
 }
 
-impl AccountProcessor {
+impl<M: ProgramMapper> AccountProcessor<M> {
     pub fn new(batcher: Batcher, tracked: TrackedAccounts) -> Self {
-        Self { batcher, tracked }
+        Self {
+            batcher,
+            tracked,
+            _mapper: PhantomData,
+        }
     }
 }
 
 #[async_trait]
-impl Processor for AccountProcessor {
-    type InputType = AccountProcessorInputType<XcavateWhitelistAccount>;
+impl<M: ProgramMapper> Processor for AccountProcessor<M> {
+    type InputType = AccountProcessorInputType<M::Acc>;
 
     async fn process(
         &mut self,
@@ -140,59 +169,14 @@ impl Processor for AccountProcessor {
         // pipe instead of being dropped by the datasource.
         self.tracked.write().await.insert(meta.pubkey);
 
-        let op = account_write_op(meta.pubkey, meta.slot as i64, raw.lamports as i64, &decoded);
+        // `lamports` comes from the raw account (the decoded wrapper carries it too, but the
+        // raw account is the authoritative copy carbon received).
+        let op = M::account_write_op(meta.pubkey, meta.slot as i64, raw.lamports as i64, &decoded);
 
         self.batcher
             .push(op)
             .await
             .map_err(|e| CarbonError::Custom(format!("batcher channel closed: {e}")))
-    }
-}
-
-/// Decoded account -> state-table upsert. `lamports` comes from the raw account (the decoded
-/// wrapper carries it too, but the raw account is the authoritative copy carbon received).
-///
-/// Shared with the `getProgramAccounts` snapshot loader ([`crate::snapshot`]), which decodes
-/// with the same decoder and then calls this: the snapshot must produce byte-identical rows to
-/// the live account stream, and the only way to guarantee that is to run the same mapping.
-///
-/// `closed_at_slot` is not a field here on purpose: Task 2's upserts hardcode `NULL` for it in
-/// the `VALUES` list and include it in the `DO UPDATE SET` column list, so any live update at a
-/// newer slot revives a soft-closed row. That is the correct behaviour for a PDA that is
-/// closed and later re-created at the same address.
-pub(crate) fn account_write_op(
-    pubkey: Pubkey,
-    slot: i64,
-    lamports: i64,
-    decoded: &DecodedAccount<XcavateWhitelistAccount>,
-) -> WriteOp {
-    let pubkey = pubkey.to_bytes().to_vec();
-    match &decoded.data {
-        XcavateWhitelistAccount::Config(config) => WriteOp::UpsertConfig(ConfigAccount {
-            pubkey,
-            slot,
-            lamports,
-            authority: config.authority.to_bytes().to_vec(),
-            pending_authority: config.pending_authority.map(|p| p.to_bytes().to_vec()),
-            bump: config.bump as i16,
-        }),
-        XcavateWhitelistAccount::Admin(admin) => WriteOp::UpsertAdmin(AdminAccount {
-            pubkey,
-            slot,
-            lamports,
-            admin: admin.admin.to_bytes().to_vec(),
-            bump: admin.bump as i16,
-        }),
-        XcavateWhitelistAccount::RoleAccount(role) => WriteOp::UpsertRoleAccount(RoleAccountRow {
-            pubkey,
-            slot,
-            lamports,
-            user_pubkey: role.user.to_bytes().to_vec(),
-            role: mapping::role_from_chain(&role.role),
-            permission: mapping::permission_from_chain(&role.permission),
-            rent_payer: role.rent_payer.to_bytes().to_vec(),
-            bump: role.bump as i16,
-        }),
     }
 }
 

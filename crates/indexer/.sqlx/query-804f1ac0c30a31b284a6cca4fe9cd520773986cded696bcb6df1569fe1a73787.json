@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO sync_state (program_id, last_contiguous_slot, backfill_complete, backfill_floor_slot, snapshot_slot)\n        VALUES ($1, $2, FALSE, $2, NULL)\n        ON CONFLICT (program_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "804f1ac0c30a31b284a6cca4fe9cd520773986cded696bcb6df1569fe1a73787"
+}

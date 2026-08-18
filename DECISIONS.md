@@ -350,7 +350,7 @@ consumer of the old `CheckAccess` RPC has to switch transports (gRPC → GraphQL
 the same semantics. If gRPC itself (not just this one query) turns out to still be needed,
 `grpc-api/`'s source is the starting point, not a green field.
 
-## ADR-19: Whitelist-only scope
+## ADR-19: Whitelist-only scope *(superseded by ADR-22)*
 
 **Context.** User decision (recon phase). Four fresh IDLs (`xcavate_whitelist`, `regions`,
 `marketplace`, `property`) were dropped into `idls/` at the start of this migration, but the
@@ -366,6 +366,8 @@ later: generate its decoder the same way (ADR-1's `carbon-cli` command), give it
 migration files, and wire a second `.instruction()`/`.account()` pair into the pipeline. Not
 attempted or scaffolded here — `idls/marketplace.json`, `idls/property.json`,
 `idls/regions.json` are inert data files today.
+
+*Superseded*: ADR-22 executed exactly this recipe for all three sibling programs.
 
 ## ADR-20: Alerts as Prometheus rules only, no Alertmanager
 
@@ -408,3 +410,87 @@ already sitting in `app`, untouched, as long as the volume was never wiped. See
 kept; deleting `docker-compose.subquery.yml`, the commented CI/deploy blocks, and `grpc-api/`
 together is the natural cleanup once the migration is confirmed stable in production and the
 rollback path is no longer wanted.
+
+## ADR-22: All four programs indexed (supersedes ADR-19)
+
+**Context.** ADR-19 deferred the three sibling programs (`regions`, `marketplace`,
+`property`) whose IDLs sat inert in `idls/`. Their extension recipe was pre-planned there;
+this ADR records executing it and the decisions the recipe left open.
+
+**Decision.** One process, one live Yellowstone subscription, one merged pipeline indexes all
+four programs. Concretely:
+
+- **Decoders**: one generated crate per program (`crates/{marketplace,property,regions}-decoder`),
+  produced by the same pinned `carbon-cli` 0.12.0 invocation as the whitelist's (verified
+  byte-identical regeneration first), never hand-edited, workspace-`exclude`d like the
+  whitelist's. All four decoder+processor pairs are registered on the one pipeline; each
+  decoder self-filters by its compiled-in program id.
+- **Program registry** (`crates/indexer/src/programs.rs`): the compiled-in table of names,
+  addresses (taken from the decoder crates' `PROGRAM_ID` consts, asserted against
+  `addresses.json` by a test) and deploy slots (the per-program backfill floors:
+  regions 483386626, marketplace 483386726, property 483386809 — read off
+  `getSignaturesForAddress` and matching MIGRATION_LOG's recon). The `PROGRAM_ID` /
+  `BACKFILL_START_SLOT` env overrides are **removed**: a decoder only recognises its
+  compiled-in program, so overriding the address always produced a subscription that decoded
+  nothing (the trap is now structurally impossible). A `PROGRAMS` env var narrows the indexed
+  subset by registry name instead.
+- **Per-program sync bookkeeping** (migration 0007): `sync_state` and `backfill_cursor` are
+  re-keyed by `program_id` (the old singleton rows are adopted as the whitelist's, preserving
+  production progress); `program_instructions` gains a `program_id` column (all pre-existing
+  rows are the whitelist's by construction) and a program-scoped name index, because the four
+  Anchor programs share instruction names. Backfill, snapshot, reconciliation and the
+  in-memory sync frontier all became per-program; the reconciler reads one chain tip per tick
+  for all programs, and a live-stream session end opens every program's gap (they share the
+  one stream).
+- **State tables** (migrations 0008–0010): one slot-guarded table per account type, 0002's
+  exact pattern, named `<program>_<entity>` (the whitelist's three keep their legacy
+  unprefixed names; `PropertyLetting` collapses the duplicated word to `property_letting`).
+  Integer widths: u8→SMALLINT, u16→INT (u16 max exceeds SMALLINT; on-chain bps validation is
+  deliberately not relied on), u32/u64/i64→BIGINT (u64 above i64::MAX would fail loudly —
+  same accepted caveat as `lamports`). Fixed-shape nested structs are flattened into typed
+  columns (`spv_election_*`, `developer_lawyer_*`, `election_*`); genuine lists are JSONB in
+  shapes this indexer constructs (pubkeys as base58 strings, postcodes as UTF-8 strings) —
+  NOT the decoder's serde output; postcode-style byte strings are BYTEA.
+- **No action log for siblings.** `whitelist_actions` and its fold views exist for SubQuery
+  parity only; the siblings never had a SubQuery surface to be faithful to. Their current
+  state is the account tables and their history is `program_instructions` (now exposed via
+  the `programInstructions` GraphQL query, decoded args as JSON).
+- **Closes**: each program's account-closing instructions were read off its on-chain source's
+  `close =` constraints (per-instruction account positions — the same account type closes at
+  different positions in different instructions, and two marketplace instructions close two
+  PDAs at once). One genuinely conditional close exists in the protocol — property's
+  `remove_letting_agent` closes the `LettingAgent` PDA only when the removed location was its
+  last — and since the mapper is pure, that decision is made by the batcher's SQL against the
+  stored row (`db::property::close_letting_agent_if_last`), self-healing under stale state
+  like every other slot-guarded write. The deletion-pipe safety net now tries every state
+  table via one enum-constrained dynamic close (`db::close`), exercised table-by-table in
+  `db::tests`.
+- **ADR-10 revisited per program**, as it requires. All three siblings emit events with
+  log-based `emit!` (never `emit_cpi!`), so the decoders' synthetic `CpiEvent` variants stay
+  unreachable, exactly like the whitelist. Derivability: most sibling events are recoverable
+  from instruction args plus the stored account rows, but a handful are honestly NOT
+  derivable at instruction-mapping time — clock-computed deadlines (`RegionProposed.expiry`,
+  `ResignationInitiated`/`resign` due timestamps), mint-supply-derived bonds
+  (`RegionClaimed.collateral`), on-chain election outcomes (`SpvElectionFinalized`,
+  `AgentElectionFinalized`), and payment-math amounts (`PropertySharesBought`, `DealPayout`,
+  `CancelledFeesSettled`). Every such value that is *persisted* into a tracked account is
+  still captured by the account stream in the same slot; the residual gap is event payloads
+  that live only in logs (computed payout splits). Indexing transaction logs is the
+  documented follow-up if that gap ever matters; it is a new subsystem, not a per-program
+  tweak.
+- **GraphQL**: the sibling entities join the same hand-written juniper surface (ADR-9 stands)
+  as unprefixed connections (`listings`, `regions`, `voteRecords`, ...; only the three
+  per-program configs are prefixed, `marketplaceConfig` etc.), delegated to per-program
+  resolver modules so `QueryRoot` stays an index. `syncStatus` and `/health` report fleet
+  aggregates (min / AND across programs — the stack is only as caught-up as its laggiest
+  program) plus a per-program breakdown. Per-program metrics gain a `program` label, and the
+  alert/dashboard PromQL was rewritten for the labelled series.
+
+**Consequences.** The dataset now covers the full history and current state of the whole
+realXmarket protocol on devnet, from each program's deploy slot. Existing GraphQL consumers
+are unaffected (the whitelist surface is unchanged; `syncStatus` keeps its fields with
+aggregate semantics and gains `programs`). A redeployed production database is adopted
+in-place by migration 0007 without re-backfilling the whitelist. RPC budget scales linearly
+with programs (~4x reconcile cost — still under 6% of Alchemy's free tier). The revisit
+trigger in ADR-9 (PostGraphile/Hasura once the query surface grows) is now materially closer:
+the hand-written surface is ~24 connections across four programs.

@@ -664,3 +664,40 @@ unused repository variable.
 
 If a human is setting this repo up fresh today, the secrets/variables to configure are
 exactly the ones `docs/deployment.md` §2 lists — nothing added by this migration.
+
+## Phase 10 — Sibling programs (2026-08-18)
+
+Executes ADR-19's pre-planned extension recipe: the three sibling programs (`regions`,
+`marketplace`, `property`) are now indexed alongside the whitelist by the same process. The
+decisions this phase made and the deviations it needed are recorded as
+[DECISIONS.md ADR-22](DECISIONS.md#adr-22-all-four-programs-indexed-supersedes-adr-19); the
+per-program analysis that fed them (account field maps, `close =` constraint tables, ADR-10
+event-derivability audits, on-chain source cross-checks) was done against
+`XcavateBlockchain/realxmarket-solana` at the time of this phase.
+
+### Findings worth keeping
+
+| Finding | Detail |
+| --- | --- |
+| Decoder regeneration is reproducible | `carbon-cli` 0.12.0 `parse -i <idl> -o <dir> -c -s anchor --with-serde true` regenerates `crates/whitelist-decoder` byte-identically — the same invocation generated the three sibling crates, so all four are provably untouched generator output. `cargo fmt --all` DOES reformat the excluded decoder crates (plain `cargo fmt`, which CI runs, does not) — never run `--all`. |
+| Sibling deploy slots re-verified on-chain | regions 483386626, marketplace 483386726, property 483386809 (oldest `getSignaturesForAddress` entries; whitelist re-derived as 483386556, matching Phase 0). One signature per program is its deploy transaction, which touches the program id without invoking it — enumerated by the crawl, decoded by nothing, correctly producing no rows. |
+| `account_required` AND-semantics trap avoided | multi-program transaction filtering needs one keyed filter entry per program; appending ids to one entry's `account_required` list would match only transactions touching ALL of them. |
+| Close positions are per-instruction facts | the same account type closes at different account-list indices in different instructions (regions `RegionState` @3 vs @4; marketplace `InvestorPosition` @4 vs @5), two marketplace instructions close two PDAs each, marketplace `close_case` closes nothing despite its name, and property `remove_letting_agent` is the protocol's one *conditional* close (runtime `close()`, only when the removed location was the agent's last) — decided in the batcher's SQL against the stored row, since the mapper is pure. |
+| Sibling events are log-`emit!`, like the whitelist | no `emit_cpi!` anywhere in the protocol; the ADR-10 derivability audit per program is summarized in ADR-22 (a handful of event payloads — clock deadlines, mint-supply bonds, election outcomes, payout splits — are not derivable at instruction-mapping time; those persisted into tracked accounts are still captured by the account stream). |
+| u16 -> INT, not SMALLINT | u16 max (65,535) exceeds SMALLINT; on-chain bps validation (<= 10,000) is real today but deliberately not relied on for column widths. |
+| Migration 0007 adopts production state in-place | the `sync_state`/`backfill_cursor` singletons become the whitelist's per-program rows and every pre-existing `program_instructions` row is backfilled with the whitelist's `program_id` — correct by construction, because the whitelist was the only thing the indexer could previously write. |
+
+### Verification
+
+- `cargo fmt --check`, `clippy --workspace --all-targets` (zero warnings),
+  `SQLX_OFFLINE=true cargo build --workspace --locked`, 133 tests across both crates against
+  a live migrated Postgres, per-crate `cargo sqlx prepare --check` (both `.sqlx` caches
+  regenerated), and the `docker/rust.Dockerfile` indexer target built clean.
+- End-to-end against live devnet (public RPC, fresh database): `indexer snapshot` decoded
+  and wrote every account of all four programs (11 whitelist / 5 regions / 3 marketplace /
+  1 property, zero undecodable); `indexer backfill` walked all four histories to
+  `HistoryExhausted` (12/8/4/2 signatures, zero mapping failures); the GraphQL API served
+  the new surfaces with values cross-checked against `addresses.json` ground truth (the
+  region PDA, operator owner, both postcodes, both lawyer wallets, the accepted payment
+  mints) and the legacy whitelist surface (`admins`, `roleAssignments`, `checkAccess`)
+  unchanged.

@@ -1,8 +1,9 @@
-//! The history backfill's resume cursor (`migrations/0006_backfill_cursor.sql`).
+//! The history backfill's resume cursors (`migrations/0006_backfill_cursor.sql`, re-keyed
+//! per program by `migrations/0007_multi_program_sync.sql`).
 //!
-//! Singleton row, written by the backfill after every fully-committed page of signatures and
-//! deleted when a walk reaches its stop condition. See [`crate::backfill`] for the semantics;
-//! this module is only the SQL.
+//! One row per program with an interrupted walk, written by that program's backfill after
+//! every fully-committed page of signatures and deleted when the walk reaches its stop
+//! condition. See [`crate::backfill`] for the semantics; this module is only the SQL.
 
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgQueryResult;
@@ -16,11 +17,12 @@ pub struct BackfillCursor {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Upsert the cursor. Unconditional (no slot guard): the backfill is a single walker moving
-/// strictly downwards, and a re-run that starts from the tip legitimately moves the cursor back
-/// up before walking down past it again.
+/// Upsert one program's cursor. Unconditional (no slot guard): a backfill is a single walker
+/// moving strictly downwards through one program's history, and a re-run that starts from the
+/// tip legitimately moves the cursor back up before walking down past it again.
 pub async fn set_cursor<'e, E>(
     executor: E,
+    program_id: &[u8],
     signature: &str,
     slot: i64,
 ) -> Result<PgQueryResult, sqlx::Error>
@@ -29,12 +31,13 @@ where
 {
     sqlx::query!(
         r#"
-        INSERT INTO backfill_cursor (id, signature, slot, updated_at)
-        VALUES (1, $1, $2, now())
-        ON CONFLICT (id) DO UPDATE SET signature = EXCLUDED.signature,
-                                       slot = EXCLUDED.slot,
-                                       updated_at = now()
+        INSERT INTO backfill_cursor (program_id, signature, slot, updated_at)
+        VALUES ($1, $2, $3, now())
+        ON CONFLICT (program_id) DO UPDATE SET signature = EXCLUDED.signature,
+                                               slot = EXCLUDED.slot,
+                                               updated_at = now()
         "#,
+        program_id,
         signature,
         slot,
     )
@@ -42,24 +45,34 @@ where
     .await
 }
 
-pub async fn get_cursor<'e, E>(executor: E) -> Result<Option<BackfillCursor>, sqlx::Error>
+pub async fn get_cursor<'e, E>(
+    executor: E,
+    program_id: &[u8],
+) -> Result<Option<BackfillCursor>, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
     sqlx::query_as!(
         BackfillCursor,
-        r#"SELECT signature, slot, updated_at FROM backfill_cursor WHERE id = 1"#
+        r#"SELECT signature, slot, updated_at FROM backfill_cursor WHERE program_id = $1"#,
+        program_id,
     )
     .fetch_optional(executor)
     .await
 }
 
-/// Drop the cursor: the walk finished, so there is nothing to resume.
-pub async fn clear_cursor<'e, E>(executor: E) -> Result<PgQueryResult, sqlx::Error>
+/// Drop one program's cursor: its walk finished, so there is nothing to resume.
+pub async fn clear_cursor<'e, E>(
+    executor: E,
+    program_id: &[u8],
+) -> Result<PgQueryResult, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
-    sqlx::query!(r#"DELETE FROM backfill_cursor WHERE id = 1"#)
-        .execute(executor)
-        .await
+    sqlx::query!(
+        r#"DELETE FROM backfill_cursor WHERE program_id = $1"#,
+        program_id,
+    )
+    .execute(executor)
+    .await
 }

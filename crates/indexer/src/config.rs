@@ -7,15 +7,11 @@
 
 use std::fmt;
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use solana_pubkey::Pubkey;
 
-/// The whitelist program on devnet. Same value as the decoder crate's `PROGRAM_ID`; kept as a
-/// string default so `PROGRAM_ID` can be overridden from the environment without a rebuild.
-pub const DEFAULT_PROGRAM_ID: &str = "2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn";
+use crate::programs::{self, ProgramSpec};
 
 /// Alchemy's Solana devnet Yellowstone gRPC host. The API key travels as the `X-Token`
 /// header (the datasource's `x_token` argument), NOT in the URL path -- unlike JSON-RPC.
@@ -23,10 +19,6 @@ pub const DEFAULT_GRPC_URL: &str = "https://solana-devnet.g.alchemy.com";
 
 /// Public devnet RPC, used when `ALCHEMY_RPC_URL` errors (throttling, plan limits).
 pub const DEFAULT_RPC_FALLBACK_URL: &str = "https://api.devnet.solana.com";
-
-/// Slot the whitelist program was deployed at; the floor for backfill and the initial
-/// `sync_state.last_contiguous_slot`. There is nothing to index below it.
-pub const DEFAULT_BACKFILL_START_SLOT: u64 = 483_386_556;
 
 /// Prometheus scrape endpoint. 0.0.0.0 (not 127.0.0.1) so the metrics port is reachable from
 /// another container in the compose stack.
@@ -50,10 +42,10 @@ pub struct Config {
     rpc_url: Option<String>,
     /// `RPC_FALLBACK_URL`, default [`DEFAULT_RPC_FALLBACK_URL`].
     pub rpc_fallback_url: String,
-    /// `PROGRAM_ID`, default [`DEFAULT_PROGRAM_ID`].
-    pub program_id: Pubkey,
-    /// `BACKFILL_START_SLOT`, default [`DEFAULT_BACKFILL_START_SLOT`].
-    pub backfill_start_slot: u64,
+    /// `PROGRAMS` (comma-separated registry names), default: every program in
+    /// [`crate::programs::PROGRAMS`]. Each program's address and backfill floor (its deploy
+    /// slot) are compiled in -- see the registry for why they are not env-overridable.
+    pub programs: Vec<&'static ProgramSpec>,
     /// `METRICS_ADDR`, default [`DEFAULT_METRICS_ADDR`].
     pub metrics_addr: SocketAddr,
     /// `RECONCILE_INTERVAL` (seconds), default [`DEFAULT_RECONCILE_INTERVAL_SECS`].
@@ -68,17 +60,30 @@ impl Config {
             .ok()
             .filter(|k| !k.is_empty());
 
-        let program_id_str =
-            std::env::var("PROGRAM_ID").unwrap_or_else(|_| DEFAULT_PROGRAM_ID.to_string());
-        let program_id = Pubkey::from_str(&program_id_str).with_context(|| {
-            format!("PROGRAM_ID is not a valid base58 pubkey: {program_id_str}")
-        })?;
-
-        let backfill_start_slot = match std::env::var("BACKFILL_START_SLOT") {
-            Ok(s) => s
-                .parse::<u64>()
-                .with_context(|| format!("BACKFILL_START_SLOT is not a u64: {s}"))?,
-            Err(_) => DEFAULT_BACKFILL_START_SLOT,
+        let programs = match std::env::var("PROGRAMS") {
+            Ok(s) if !s.trim().is_empty() => {
+                let mut selected = Vec::new();
+                for name in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                    let spec = programs::by_name(name).ok_or_else(|| {
+                        anyhow!(
+                            "PROGRAMS names an unknown program: {name} (known: {})",
+                            programs::PROGRAMS
+                                .iter()
+                                .map(|p| p.name)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
+                    if !selected.iter().any(|p: &&ProgramSpec| p.name == spec.name) {
+                        selected.push(spec);
+                    }
+                }
+                if selected.is_empty() {
+                    return Err(anyhow!("PROGRAMS is set but selects no programs: {s:?}"));
+                }
+                selected
+            }
+            _ => programs::PROGRAMS.iter().collect(),
         };
 
         let metrics_addr_str =
@@ -111,8 +116,7 @@ impl Config {
                 .filter(|u| !u.is_empty()),
             rpc_fallback_url: std::env::var("RPC_FALLBACK_URL")
                 .unwrap_or_else(|_| DEFAULT_RPC_FALLBACK_URL.to_string()),
-            program_id,
-            backfill_start_slot,
+            programs,
             metrics_addr,
             reconcile_interval: Duration::from_secs(reconcile_interval_secs),
         })
@@ -174,8 +178,10 @@ impl fmt::Debug for Config {
             .field("grpc_url", &self.grpc_url)
             .field("rpc_url", &self.rpc_url.as_ref().map(|_| "<set>"))
             .field("rpc_fallback_url", &self.rpc_fallback_url)
-            .field("program_id", &self.program_id)
-            .field("backfill_start_slot", &self.backfill_start_slot)
+            .field(
+                "programs",
+                &self.programs.iter().map(|p| p.name).collect::<Vec<_>>(),
+            )
             .field("metrics_addr", &self.metrics_addr)
             .field("reconcile_interval", &self.reconcile_interval)
             .finish()

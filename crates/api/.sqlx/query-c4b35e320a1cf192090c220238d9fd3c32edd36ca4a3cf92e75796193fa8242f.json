@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, region_id, postcode, deposit\n        FROM regions_location\n        WHERE ($1::int IS NULL OR region_id = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $3 OFFSET $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "region_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "postcode",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "deposit",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c4b35e320a1cf192090c220238d9fd3c32edd36ca4a3cf92e75796193fa8242f"
+}

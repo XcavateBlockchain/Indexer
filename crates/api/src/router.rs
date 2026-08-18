@@ -79,6 +79,7 @@ async fn graphql_handler(
     let context = GraphQLContext {
         pool: state.pool.clone(),
         chain_tip: state.chain_tip.clone(),
+        program_filter: state.program_filter.clone(),
     };
     let response = request.execute(&state.schema, &context).await;
     metrics::observe_duration(start.elapsed());

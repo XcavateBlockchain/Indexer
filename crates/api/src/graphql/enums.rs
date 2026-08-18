@@ -135,3 +135,199 @@ pub fn unknown_enum_value(kind: &str, value: &str) -> juniper::FieldError {
         juniper::Value::null(),
     )
 }
+
+// --- sibling-program enums (migrations 0008..0010) ------------------------------------------
+// Same convention as above: juniper's default SCREAMING_SNAKE_CASE rename equals the TEXT
+// spelling the CHECK constraints store, so as_db_str/from_db_str are straight mirrors.
+
+/// `marketplace_listing.status` (`ListingStatus` on chain; borsh order load-bearing there).
+#[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListingStatus {
+    PendingAssets,
+    Listed,
+    SoldOut,
+    Legal,
+    Finalized,
+    Expired,
+    Cancelled,
+    Refunding,
+}
+
+impl ListingStatus {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            ListingStatus::PendingAssets => "PENDING_ASSETS",
+            ListingStatus::Listed => "LISTED",
+            ListingStatus::SoldOut => "SOLD_OUT",
+            ListingStatus::Legal => "LEGAL",
+            ListingStatus::Finalized => "FINALIZED",
+            ListingStatus::Expired => "EXPIRED",
+            ListingStatus::Cancelled => "CANCELLED",
+            ListingStatus::Refunding => "REFUNDING",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "PENDING_ASSETS" => ListingStatus::PendingAssets,
+            "LISTED" => ListingStatus::Listed,
+            "SOLD_OUT" => ListingStatus::SoldOut,
+            "LEGAL" => ListingStatus::Legal,
+            "FINALIZED" => ListingStatus::Finalized,
+            "EXPIRED" => ListingStatus::Expired,
+            "CANCELLED" => ListingStatus::Cancelled,
+            "REFUNDING" => ListingStatus::Refunding,
+            _ => return None,
+        })
+    }
+}
+
+/// `marketplace_listing.developer_lawyer_doc_status` / `spv_lawyer_doc_status`
+/// (`DocumentStatus` on chain).
+#[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl DocumentStatus {
+    /// Unused today (no doc-status filter arg yet) but kept so every enum carries both
+    /// directions of the DB mirror, like the whitelist enums above.
+    #[allow(dead_code)]
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            DocumentStatus::Pending => "PENDING",
+            DocumentStatus::Approved => "APPROVED",
+            DocumentStatus::Rejected => "REJECTED",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "PENDING" => DocumentStatus::Pending,
+            "APPROVED" => DocumentStatus::Approved,
+            "REJECTED" => DocumentStatus::Rejected,
+            _ => return None,
+        })
+    }
+}
+
+/// `regions_region_state.status` (`RegionStatus` on chain).
+#[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionStatus {
+    Proposing,
+    Passed,
+    Rejected,
+}
+
+impl RegionStatus {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            RegionStatus::Proposing => "PROPOSING",
+            RegionStatus::Passed => "PASSED",
+            RegionStatus::Rejected => "REJECTED",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "PROPOSING" => RegionStatus::Proposing,
+            "PASSED" => RegionStatus::Passed,
+            "REJECTED" => RegionStatus::Rejected,
+            _ => return None,
+        })
+    }
+}
+
+/// `regions_vote_record.vote` (`Vote` on chain). Named `RegionVote` to leave room for other
+/// programs' vote enums.
+#[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionVote {
+    Yes,
+    No,
+    Abstain,
+}
+
+impl RegionVote {
+    /// Unused today (no vote filter arg yet) but kept so every enum carries both directions
+    /// of the DB mirror, like the whitelist enums above.
+    #[allow(dead_code)]
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            RegionVote::Yes => "YES",
+            RegionVote::No => "NO",
+            RegionVote::Abstain => "ABSTAIN",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "YES" => RegionVote::Yes,
+            "NO" => RegionVote::No,
+            "ABSTAIN" => RegionVote::Abstain,
+            _ => return None,
+        })
+    }
+}
+
+/// The four indexed programs, for `programInstructions(program: ...)` filtering and
+/// attribution. `as_program_id_bytes` mirrors `addresses.json` / the indexer's registry.
+#[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramName {
+    XcavateWhitelist,
+    Regions,
+    Marketplace,
+    Property,
+}
+
+impl ProgramName {
+    /// The program's base58 address (same values as `addresses.json`).
+    pub const fn address(self) -> &'static str {
+        match self {
+            ProgramName::XcavateWhitelist => "2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn",
+            ProgramName::Regions => "FYysH5v23qtz4gK4H1yLDHneFwx6PSAT7oQwHcuRyRh",
+            ProgramName::Marketplace => "B6YRVAmjmhN28smZxNfCnuKc19CamBbAEMXsp5KTfWog",
+            ProgramName::Property => "8f4NHc1wGBM1BAufDFd9dNechLW8pxmStSfxfuJfDzob",
+        }
+    }
+
+    pub const ALL: &'static [ProgramName] = &[
+        ProgramName::XcavateWhitelist,
+        ProgramName::Regions,
+        ProgramName::Marketplace,
+        ProgramName::Property,
+    ];
+
+    /// The indexer registry's snake_case spelling (the `PROGRAMS` env var vocabulary).
+    pub const fn registry_name(self) -> &'static str {
+        match self {
+            ProgramName::XcavateWhitelist => "xcavate_whitelist",
+            ProgramName::Regions => "regions",
+            ProgramName::Marketplace => "marketplace",
+            ProgramName::Property => "property",
+        }
+    }
+
+    pub fn from_registry_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|p| p.registry_name() == name)
+    }
+
+    /// The 32 raw bytes `program_instructions.program_id` stores.
+    pub fn as_program_id_bytes(self) -> Vec<u8> {
+        bs58::decode(self.address())
+            .into_vec()
+            .expect("compiled-in program addresses are valid base58")
+    }
+
+    /// Attribution for rows read back out of the database.
+    pub fn from_program_id_bytes(bytes: &[u8]) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|p| p.as_program_id_bytes() == bytes)
+    }
+}

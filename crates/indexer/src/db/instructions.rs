@@ -17,10 +17,11 @@ where
     sqlx::query!(
         r#"
         INSERT INTO program_instructions
-            (signature, ix_index, inner_index, slot, block_time, ix_name, accounts, data)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            (program_id, signature, ix_index, inner_index, slot, block_time, ix_name, accounts, data)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (signature, ix_index, inner_index) DO NOTHING
         "#,
+        row.program_id,
         row.signature,
         row.ix_index,
         row.inner_index,

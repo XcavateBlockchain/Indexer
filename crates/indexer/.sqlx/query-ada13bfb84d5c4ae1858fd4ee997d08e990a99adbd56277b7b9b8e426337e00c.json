@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO backfill_cursor (program_id, signature, slot, updated_at)\n        VALUES ($1, $2, $3, now())\n        ON CONFLICT (program_id) DO UPDATE SET signature = EXCLUDED.signature,\n                                               slot = EXCLUDED.slot,\n                                               updated_at = now()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ada13bfb84d5c4ae1858fd4ee997d08e990a99adbd56277b7b9b8e426337e00c"
+}

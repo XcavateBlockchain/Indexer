@@ -18,17 +18,22 @@ groups:
   - name: indexer.rules
     rules:
       - alert: SlotLagHigh
-        expr: chain_tip_slot - last_contiguous_slot > 3000
+        # last_contiguous_slot is per-program (one series per indexed program); the
+        # unlabeled chain_tip_slot is matched onto every program series with
+        # ignoring(program) group_right, so this fires (and names) each lagging program
+        # individually.
+        expr: chain_tip_slot - ignoring(program) group_right last_contiguous_slot > 3000
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Indexer slot lag is above 3000 slots (~20 min of devnet blocks)"
+          summary: "Indexer slot lag is above 3000 slots (~20 min of devnet blocks) for {{ $labels.program }}"
           description: >-
-            chain_tip_slot - last_contiguous_slot has stayed above 3000 for 5 minutes.
-            This is the ground-truth freshness measure -- a proven-contiguous lag, not a
-            "last row written" lag. Sustained high lag means the live stream, the
-            startup backfill, or the reconciliation supervisor is not keeping up.
+            chain_tip_slot - last_contiguous_slot has stayed above 3000 for 5 minutes
+            for program {{ $labels.program }}. This is the ground-truth freshness
+            measure -- a proven-contiguous lag, not a "last row written" lag. Sustained
+            high lag means the live stream, that program's startup backfill, or the
+            reconciliation supervisor is not keeping up.
 
       - alert: DecodeFailures
         expr: increase(updates_failed[10m]) > 0 or increase(decode_skipped_total[10m]) > 0
@@ -38,10 +43,10 @@ groups:
           summary: "Instruction decode/mapping failures in the last 10 minutes"
           description: >-
             updates_failed (carbon-core: the processor returned Err) or
-            decode_skipped_total (an instruction decoded but could not be mapped to a
-            whitelist_actions row; see the reason label) increased in the last 10
-            minutes. Per Task 3, a mapping failure is only reachable if the deployed
-            program's account order diverges from the checked-in IDL -- treat this as a
+            decode_skipped_total (an instruction decoded but could not be mapped to its
+            program's rows; see the program and reason labels) increased in the last 10
+            minutes. Per Task 3, a mapping failure is only reachable if a deployed
+            program's account order diverges from its checked-in IDL -- treat this as a
             data-integrity signal, not noise.
 
       - alert: IndexerDown
@@ -110,15 +115,19 @@ groups:
       # without adding a new metric, which is out of this task's scope (monitoring/**
       # only, no Rust).
       - alert: BackfillStalled
-        expr: (chain_tip_slot - last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0
+        # Both gauges are per-program now; the lag side is matched per program like
+        # SlotLagHigh, and the `and` then matches the two sides on their shared
+        # (program, instance, job) labels, so each program's stall is judged against
+        # its own walk.
+        expr: (chain_tip_slot - ignoring(program) group_right last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "No backfill progress in 15 minutes while the indexer is behind"
+          summary: "No backfill progress in 15 minutes while {{ $labels.program }} is behind"
           description: >-
-            backfill_last_processed_slot has not changed in 15 minutes while
-            chain_tip_slot - last_contiguous_slot exceeds 3000. Most likely a stuck
+            backfill_last_processed_slot for {{ $labels.program }} has not changed in 15
+            minutes while its chain_tip_slot - last_contiguous_slot exceeds 3000. Most likely a stuck
             history walk (a poison signature, or every configured RPC endpoint
             failing -- see task-4-report.md concern #2/#3). Also fires if the
             reconciliation supervisor stalls well after a completed backfill, since

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM marketplace_property_asset\n        WHERE ($1::bigint IS NULL OR asset_id = $1)\n          AND ($2::int IS NULL OR region_id = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dbcf2b39ffb4984622306ba99a848bcff4840fde5bb0c7fb84036297b9c4275a"
+}

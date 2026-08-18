@@ -17,8 +17,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use solana_instruction::AccountMeta;
 use solana_pubkey::Pubkey;
 
+use super::whitelist::{map_instruction, permission_from_chain, role_from_chain};
 use super::*;
-use crate::db::models::{AccessPermission, ActionType, Role};
+use crate::db::close::StateTable;
+use crate::db::models::{AccessPermission, ActionType, NewAction, Role};
 use crate::test_fixtures::{decoded, pk, sig, SLOT};
 
 fn block_time() -> DateTime<Utc> {
@@ -42,6 +44,13 @@ fn map_top_level(data: XcavateWhitelistInstruction, accounts: &[Pubkey]) -> Mapp
         .expect("this variant must produce rows")
 }
 
+/// Every whitelist instruction produces an action row (ruling R7); unwrap it for assertions.
+fn act(m: &MappedInstruction) -> &NewAction {
+    m.action
+        .as_ref()
+        .expect("whitelist instructions always produce an action row")
+}
+
 // --- one test per instruction variant ------------------------------------------------------
 
 #[test]
@@ -52,16 +61,13 @@ fn initialize_config_actor_and_subject_are_the_authority() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::ConfigInitialized);
-    assert_eq!(m.action.actor, pk(1).to_string());
-    assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(1).to_string().as_str())
-    );
-    assert_eq!(m.action.role, None);
-    assert_eq!(m.action.permission, None);
+    assert_eq!(act(&m).action_type, ActionType::ConfigInitialized);
+    assert_eq!(act(&m).actor, pk(1).to_string());
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(1).to_string().as_str()));
+    assert_eq!(act(&m).role, None);
+    assert_eq!(act(&m).permission, None);
     assert_eq!(m.instruction.ix_name, "initialize_config");
-    assert!(m.close.is_none());
+    assert!(m.closes.is_empty());
 }
 
 #[test]
@@ -77,14 +83,14 @@ fn update_authority_subject_is_the_argument_not_an_account() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::AuthorityUpdateProposed);
-    assert_eq!(m.action.actor, pk(1).to_string());
+    assert_eq!(act(&m).action_type, ActionType::AuthorityUpdateProposed);
+    assert_eq!(act(&m).actor, pk(1).to_string());
     assert_eq!(
-        m.action.subject.as_deref(),
+        act(&m).subject.as_deref(),
         Some(proposed.to_string().as_str())
     );
     assert_eq!(m.instruction.ix_name, "update_authority");
-    assert!(m.close.is_none());
+    assert!(m.closes.is_empty());
 }
 
 #[test]
@@ -95,12 +101,9 @@ fn accept_authority_actor_and_subject_are_the_new_authority() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::AuthorityUpdated);
-    assert_eq!(m.action.actor, pk(4).to_string());
-    assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(4).to_string().as_str())
-    );
+    assert_eq!(act(&m).action_type, ActionType::AuthorityUpdated);
+    assert_eq!(act(&m).actor, pk(4).to_string());
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(4).to_string().as_str()));
     assert_eq!(m.instruction.ix_name, "accept_authority");
 }
 
@@ -112,14 +115,11 @@ fn add_admin_subject_is_account_index_2() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::AdminAdded);
-    assert_eq!(m.action.actor, pk(1).to_string());
-    assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(3).to_string().as_str())
-    );
+    assert_eq!(act(&m).action_type, ActionType::AdminAdded);
+    assert_eq!(act(&m).actor, pk(1).to_string());
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(3).to_string().as_str()));
     assert_eq!(m.instruction.ix_name, "add_admin");
-    assert!(m.close.is_none());
+    assert!(m.closes.is_empty());
 }
 
 #[test]
@@ -133,18 +133,19 @@ fn remove_admin_subject_is_the_argument_and_it_closes_the_admin_pda() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::AdminRemoved);
-    assert_eq!(m.action.actor, pk(1).to_string());
+    assert_eq!(act(&m).action_type, ActionType::AdminRemoved);
+    assert_eq!(act(&m).actor, pk(1).to_string());
     assert_eq!(
-        m.action.subject.as_deref(),
+        act(&m).subject.as_deref(),
         Some(removed.to_string().as_str())
     );
     assert_eq!(
-        m.close,
-        Some(PendingClose::Admin {
+        m.closes,
+        vec![PendingClose::Account {
+            table: StateTable::Admin,
             pubkey: pk(3).to_bytes().to_vec(),
             slot: SLOT as i64,
-        })
+        }]
     );
 }
 
@@ -158,17 +159,14 @@ fn assign_role_carries_the_role_argument_and_subject_index_2() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::RoleAssigned);
-    assert_eq!(m.action.actor, pk(1).to_string());
-    assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(3).to_string().as_str())
-    );
-    assert_eq!(m.action.role, Some(Role::Lawyer));
+    assert_eq!(act(&m).action_type, ActionType::RoleAssigned);
+    assert_eq!(act(&m).actor, pk(1).to_string());
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(3).to_string().as_str()));
+    assert_eq!(act(&m).role, Some(Role::Lawyer));
     // The old handler defaulted the *entity* to COMPLIANT but never set `permission` on the
     // action row itself; the derived view supplies the default instead.
-    assert_eq!(m.action.permission, None);
-    assert!(m.close.is_none());
+    assert_eq!(act(&m).permission, None);
+    assert!(m.closes.is_empty());
 }
 
 #[test]
@@ -182,19 +180,17 @@ fn remove_role_closes_the_role_account_at_index_4() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::RoleRemoved);
-    assert_eq!(m.action.actor, pk(1).to_string());
+    assert_eq!(act(&m).action_type, ActionType::RoleRemoved);
+    assert_eq!(act(&m).actor, pk(1).to_string());
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(3).to_string().as_str()));
+    assert_eq!(act(&m).role, Some(Role::LettingAgent));
     assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(3).to_string().as_str())
-    );
-    assert_eq!(m.action.role, Some(Role::LettingAgent));
-    assert_eq!(
-        m.close,
-        Some(PendingClose::RoleAccount {
+        m.closes,
+        vec![PendingClose::Account {
+            table: StateTable::RoleAccount,
             pubkey: pk(5).to_bytes().to_vec(),
             slot: SLOT as i64,
-        })
+        }]
     );
 }
 
@@ -209,19 +205,17 @@ fn renounce_role_is_self_acted_and_closes_the_role_account_at_index_2() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::RoleRenounced);
-    assert_eq!(m.action.actor, pk(1).to_string());
+    assert_eq!(act(&m).action_type, ActionType::RoleRenounced);
+    assert_eq!(act(&m).actor, pk(1).to_string());
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(1).to_string().as_str()));
+    assert_eq!(act(&m).role, Some(Role::SpvConfirmation));
     assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(1).to_string().as_str())
-    );
-    assert_eq!(m.action.role, Some(Role::SpvConfirmation));
-    assert_eq!(
-        m.close,
-        Some(PendingClose::RoleAccount {
+        m.closes,
+        vec![PendingClose::Account {
+            table: StateTable::RoleAccount,
             pubkey: pk(3).to_bytes().to_vec(),
             slot: SLOT as i64,
-        })
+        }]
     );
 }
 
@@ -236,15 +230,12 @@ fn set_permission_carries_both_role_and_permission() {
         &accounts,
     );
 
-    assert_eq!(m.action.action_type, ActionType::PermissionUpdated);
-    assert_eq!(m.action.actor, pk(1).to_string());
-    assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(3).to_string().as_str())
-    );
-    assert_eq!(m.action.role, Some(Role::RealEstateInvestor));
-    assert_eq!(m.action.permission, Some(AccessPermission::Revoked));
-    assert!(m.close.is_none());
+    assert_eq!(act(&m).action_type, ActionType::PermissionUpdated);
+    assert_eq!(act(&m).actor, pk(1).to_string());
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(3).to_string().as_str()));
+    assert_eq!(act(&m).role, Some(Role::RealEstateInvestor));
+    assert_eq!(act(&m).permission, Some(AccessPermission::Revoked));
+    assert!(m.closes.is_empty());
 }
 
 #[test]
@@ -278,11 +269,11 @@ fn common_columns_match_the_contract() {
     );
 
     // whitelist_actions
-    assert_eq!(m.action.id, format!("{}-0", sig()));
-    assert_eq!(m.action.tx_signature, sig().to_string());
-    assert_eq!(m.action.instruction_index, "0");
-    assert_eq!(m.action.slot, SLOT as i64);
-    assert_eq!(m.action.block_time, block_time());
+    assert_eq!(act(&m).id, format!("{}-0", sig()));
+    assert_eq!(act(&m).tx_signature, sig().to_string());
+    assert_eq!(act(&m).instruction_index, "0");
+    assert_eq!(act(&m).slot, SLOT as i64);
+    assert_eq!(act(&m).block_time, block_time());
 
     // program_instructions
     assert_eq!(m.instruction.signature, sig().as_ref().to_vec());
@@ -325,8 +316,8 @@ fn nested_instructions_keep_the_full_path_in_the_action_and_collapse_to_two_leve
     .unwrap()
     .unwrap();
 
-    assert_eq!(m.action.instruction_index, "3.1");
-    assert_eq!(m.action.id, format!("{}-3.1", sig()));
+    assert_eq!(act(&m).instruction_index, "3.1");
+    assert_eq!(act(&m).id, format!("{}-3.1", sig()));
     assert_eq!(m.instruction.ix_index, 3);
     assert_eq!(m.instruction.inner_index, 1);
 
@@ -344,7 +335,7 @@ fn nested_instructions_keep_the_full_path_in_the_action_and_collapse_to_two_leve
     )
     .unwrap()
     .unwrap();
-    assert_eq!(deep.action.instruction_index, "3.1.2");
+    assert_eq!(act(&deep).instruction_index, "3.1.2");
     assert_eq!(deep.instruction.ix_index, 3);
     assert_eq!(deep.instruction.inner_index, 1);
 }
@@ -464,10 +455,7 @@ fn a_real_borsh_encoded_instruction_decodes_and_maps() {
         .unwrap();
 
     assert_eq!(m.instruction.ix_name, "assign_role");
-    assert_eq!(m.action.action_type, ActionType::RoleAssigned);
-    assert_eq!(m.action.role, Some(Role::Lawyer));
-    assert_eq!(
-        m.action.subject.as_deref(),
-        Some(pk(3).to_string().as_str())
-    );
+    assert_eq!(act(&m).action_type, ActionType::RoleAssigned);
+    assert_eq!(act(&m).role, Some(Role::Lawyer));
+    assert_eq!(act(&m).subject.as_deref(), Some(pk(3).to_string().as_str()));
 }

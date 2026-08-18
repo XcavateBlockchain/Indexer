@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sync_state SET backfill_complete = $2, updated_at = now() WHERE program_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ab9143701ea041ea67ef4b143d3ca34848e713dbc7c6a9ab14b63a2d77f4bea0"
+}

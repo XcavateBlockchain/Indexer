@@ -39,6 +39,13 @@ pub struct Config {
     /// `CORS_ALLOWED_ORIGINS`: `None` = allow every origin (the default), `Some(list)` = only
     /// these origins may call the API from a browser. See [`parse_cors_origins`].
     pub cors_allowed_origins: Option<Vec<HeaderValue>>,
+    /// `PROGRAMS`: `None` = report every program's sync row (the default), `Some(list)` =
+    /// scope the `/health` and `syncStatus` fleet aggregates (and the per-program list) to
+    /// this subset. Set it to the SAME value as the indexer's `PROGRAMS` whenever that is
+    /// narrowed on a database that has other programs' rows -- otherwise the excluded
+    /// programs' frozen rows drag the aggregates (their `last_contiguous_slot` never
+    /// advances) and both health surfaces read permanently behind.
+    pub programs: Option<Vec<crate::graphql::enums::ProgramName>>,
 }
 
 impl Config {
@@ -77,6 +84,24 @@ impl Config {
 
         let cors_allowed_origins = parse_cors_origins(std::env::var("CORS_ALLOWED_ORIGINS").ok())?;
 
+        let programs = match std::env::var("PROGRAMS") {
+            Ok(s) if !s.trim().is_empty() => {
+                let mut selected = Vec::new();
+                for name in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                    let program = crate::graphql::enums::ProgramName::from_registry_name(name)
+                        .ok_or_else(|| anyhow!("PROGRAMS names an unknown program: {name}"))?;
+                    if !selected.contains(&program) {
+                        selected.push(program);
+                    }
+                }
+                if selected.is_empty() {
+                    return Err(anyhow!("PROGRAMS is set but selects no programs: {s:?}"));
+                }
+                Some(selected)
+            }
+            _ => None,
+        };
+
         Ok(Self {
             database_url,
             alchemy_api_key,
@@ -85,6 +110,7 @@ impl Config {
             graphql_addr,
             metrics_addr,
             cors_allowed_origins,
+            programs,
         })
     }
 

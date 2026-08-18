@@ -28,8 +28,10 @@ tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 graphql-parser = "0.4"
 
 # Pinned to match the indexer crate (ruling R9); only the read-side features this crate needs.
+# `json` is for the JSONB columns the sibling-program surfaces read (locations, collected,
+# accepted_payment_mints, program_instructions.data).
 sqlx = { version = "=0.8.6", default-features = false, features = [
-    "runtime-tokio-rustls", "postgres", "chrono", "macros",
+    "runtime-tokio-rustls", "postgres", "chrono", "macros", "json",
 ] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
 

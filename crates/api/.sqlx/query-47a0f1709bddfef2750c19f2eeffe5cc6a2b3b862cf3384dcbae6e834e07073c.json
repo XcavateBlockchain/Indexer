@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM marketplace_reservation\n        WHERE ($1::bytea IS NULL OR token_account = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "47a0f1709bddfef2750c19f2eeffe5cc6a2b3b862cf3384dcbae6e834e07073c"
+}

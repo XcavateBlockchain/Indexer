@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT program_id, signature, ix_index, inner_index, slot, block_time, ix_name,\n                   accounts, data\n            FROM program_instructions\n            WHERE ($1::bytea IS NULL OR program_id = $1)\n              AND ($2::text IS NULL OR ix_name = $2)\n              AND ($3::bytea IS NULL OR signature = $3)\n            ORDER BY slot DESC, signature ASC, ix_index ASC, inner_index ASC\n            LIMIT $4 OFFSET $5\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "program_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "signature",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "ix_index",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "inner_index",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "block_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "ix_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "accounts",
+        "type_info": "ByteaArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "data",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "877ff79de285b1a216e3aaa4d371ad9a4ccc06c24c00fbab4e0ec707c56f7fda"
+}

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO regions_config (pubkey, slot, lamports, closed_at_slot, authority,\n            pending_authority, xcav_mint, minimum_voting_amount, voting_period,\n            owner_change_period, threshold_bps, quorum, notice_period, min_vote_hold,\n            max_listing_duration, max_tax_bps, location_deposit, proposal_counter, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot                  = EXCLUDED.slot,\n            lamports              = EXCLUDED.lamports,\n            closed_at_slot        = EXCLUDED.closed_at_slot,\n            authority             = EXCLUDED.authority,\n            pending_authority     = EXCLUDED.pending_authority,\n            xcav_mint             = EXCLUDED.xcav_mint,\n            minimum_voting_amount = EXCLUDED.minimum_voting_amount,\n            voting_period         = EXCLUDED.voting_period,\n            owner_change_period   = EXCLUDED.owner_change_period,\n            threshold_bps         = EXCLUDED.threshold_bps,\n            quorum                = EXCLUDED.quorum,\n            notice_period         = EXCLUDED.notice_period,\n            min_vote_hold         = EXCLUDED.min_vote_hold,\n            max_listing_duration  = EXCLUDED.max_listing_duration,\n            max_tax_bps           = EXCLUDED.max_tax_bps,\n            location_deposit      = EXCLUDED.location_deposit,\n            proposal_counter      = EXCLUDED.proposal_counter,\n            bump                  = EXCLUDED.bump\n        WHERE regions_config.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8c53d461d8e478f04588f67a199b8d3b2f46e7889435b6130cc615aec1db90e4"
+}

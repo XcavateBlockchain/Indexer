@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO regions_region_state (pubkey, slot, lamports, closed_at_slot, region_id,\n            status, proposal_id, proposer, deposit, claim_deadline, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot           = EXCLUDED.slot,\n            lamports       = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            region_id      = EXCLUDED.region_id,\n            status         = EXCLUDED.status,\n            proposal_id    = EXCLUDED.proposal_id,\n            proposer       = EXCLUDED.proposer,\n            deposit        = EXCLUDED.deposit,\n            claim_deadline = EXCLUDED.claim_deadline,\n            bump           = EXCLUDED.bump\n        WHERE regions_region_state.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Text",
+        "Int8",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "18a5973020467708f0126f59063f106bdc760ccc571de43b054d478ef54f3af4"
+}

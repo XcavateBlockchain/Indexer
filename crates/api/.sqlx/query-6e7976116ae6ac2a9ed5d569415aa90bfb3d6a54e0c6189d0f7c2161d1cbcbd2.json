@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, lawyer, region_id, deposit, active_cases\n        FROM marketplace_lawyer\n        WHERE ($1::bytea IS NULL OR lawyer = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $3 OFFSET $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "region_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "active_cases",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6e7976116ae6ac2a9ed5d569415aa90bfb3d6a54e0c6189d0f7c2161d1cbcbd2"
+}

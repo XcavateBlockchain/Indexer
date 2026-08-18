@@ -7,10 +7,15 @@ use carbon_core::graphql::primitives::I64;
 use juniper::{graphql_object, FieldError, FieldResult, Value, ID};
 
 use super::context::GraphQLContext;
-use super::enums::{unknown_enum_value, ActionType, Permission, RemovalKind, Role};
+use super::enums::{
+    unknown_enum_value, ActionType, ListingStatus, Permission, ProgramName, RegionStatus,
+    RemovalKind, Role,
+};
+use super::programs;
 use super::types::{
-    AccessCheck, Admin, AdminConnection, Config, RoleAssignment, RoleAssignmentConnection,
-    SyncStatus, WhitelistAction, WhitelistActionConnection,
+    AccessCheck, Admin, AdminConnection, Config, ProgramInstruction, ProgramInstructionConnection,
+    ProgramSyncStatus, RoleAssignment, RoleAssignmentConnection, SyncStatus, WhitelistAction,
+    WhitelistActionConnection,
 };
 use crate::guards::{clamp_first, clamp_offset};
 
@@ -343,24 +348,443 @@ impl QueryRoot {
         })
     }
 
+    /// Fleet aggregates plus per-program rows -- see [`SyncStatus`]'s doc for the aggregate
+    /// semantics (min / AND across programs: the stack is only as caught-up as its laggiest
+    /// program). Scoped by the api's optional `PROGRAMS` env so subset operation (which
+    /// freezes excluded programs' rows) does not drag the aggregates.
     async fn sync_status(context: &GraphQLContext) -> FieldResult<SyncStatus> {
-        let state = sqlx::query!(
-            r#"SELECT last_contiguous_slot, backfill_complete, snapshot_slot FROM sync_state WHERE id = 1"#
+        let rows = sqlx::query!(
+            r#"
+            SELECT program_id, last_contiguous_slot, backfill_complete, backfill_floor_slot,
+                   snapshot_slot
+            FROM sync_state
+            WHERE ($1::bytea[] IS NULL OR program_id = ANY($1))
+            "#,
+            context.program_filter.as_deref(),
         )
-        .fetch_optional(&context.pool)
-        .await?
-        .ok_or_else(|| FieldError::new("sync_state has not been initialised yet", Value::null()))?;
+        .fetch_all(&context.pool)
+        .await?;
+        if rows.is_empty() {
+            return Err(FieldError::new(
+                "sync_state has not been initialised yet",
+                Value::null(),
+            ));
+        }
+
+        let last_contiguous_slot = rows
+            .iter()
+            .map(|r| r.last_contiguous_slot)
+            .min()
+            .unwrap_or(0);
+        let backfill_complete = rows.iter().all(|r| r.backfill_complete);
+        // The oldest snapshot; None if any program has never been snapshotted.
+        let snapshot_slot = rows
+            .iter()
+            .map(|r| r.snapshot_slot)
+            .collect::<Option<Vec<i64>>>()
+            .and_then(|slots| slots.into_iter().min());
+
+        let mut programs = Vec::with_capacity(rows.len());
+        for r in &rows {
+            // A row for an address outside the compiled-in set would mean the DB and this
+            // binary disagree about the program roster -- surface it rather than hiding it.
+            let program = ProgramName::from_program_id_bytes(&r.program_id).ok_or_else(|| {
+                FieldError::new(
+                    format!(
+                        "sync_state has a row for an unknown program id: {}",
+                        bs58::encode(&r.program_id).into_string()
+                    ),
+                    Value::null(),
+                )
+            })?;
+            programs.push(ProgramSyncStatus {
+                program,
+                last_contiguous_slot: I64(r.last_contiguous_slot),
+                backfill_complete: r.backfill_complete,
+                backfill_floor_slot: I64(r.backfill_floor_slot),
+                snapshot_slot: r.snapshot_slot.map(I64),
+            });
+        }
 
         let tip = context.chain_tip.get().await?;
-        let lag = tip.saturating_sub(state.last_contiguous_slot.max(0) as u64);
+        let lag = tip.saturating_sub(last_contiguous_slot.max(0) as u64);
 
         Ok(SyncStatus {
-            last_contiguous_slot: I64(state.last_contiguous_slot),
-            backfill_complete: state.backfill_complete,
-            snapshot_slot: state.snapshot_slot.map(I64),
+            last_contiguous_slot: I64(last_contiguous_slot),
+            backfill_complete,
+            snapshot_slot: snapshot_slot.map(I64),
             chain_tip_slot: I64(tip as i64),
             slot_lag: I64(lag as i64),
+            programs,
         })
+    }
+
+    /// The shared instruction history: every successfully indexed instruction of every
+    /// indexed program, newest first, with its decoded args as JSON. `txSignature` filters to
+    /// one transaction (base58).
+    async fn program_instructions(
+        context: &GraphQLContext,
+        program: Option<ProgramName>,
+        ix_name: Option<String>,
+        tx_signature: Option<String>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<ProgramInstructionConnection> {
+        let limit = clamp_first(first);
+        let skip = clamp_offset(offset);
+        let program_id = program.map(|p| p.as_program_id_bytes());
+        let signature = tx_signature
+            .as_deref()
+            .map(|s| {
+                let bytes = bs58::decode(s).into_vec().map_err(|e| {
+                    FieldError::new(format!("txSignature: invalid base58: {e}"), Value::null())
+                })?;
+                if bytes.len() != 64 {
+                    return Err(FieldError::new(
+                        format!(
+                            "txSignature: expected a 64-byte signature, got {} bytes",
+                            bytes.len()
+                        ),
+                        Value::null(),
+                    ));
+                }
+                Ok(bytes)
+            })
+            .transpose()?;
+
+        let rows = sqlx::query!(
+            r#"
+            SELECT program_id, signature, ix_index, inner_index, slot, block_time, ix_name,
+                   accounts, data
+            FROM program_instructions
+            WHERE ($1::bytea IS NULL OR program_id = $1)
+              AND ($2::text IS NULL OR ix_name = $2)
+              AND ($3::bytea IS NULL OR signature = $3)
+            ORDER BY slot DESC, signature ASC, ix_index ASC, inner_index ASC
+            LIMIT $4 OFFSET $5
+            "#,
+            program_id.as_deref(),
+            ix_name.as_deref(),
+            signature.as_deref(),
+            limit,
+            skip,
+        )
+        .fetch_all(&context.pool)
+        .await?;
+
+        let total = sqlx::query_scalar!(
+            r#"
+            SELECT count(*) FROM program_instructions
+            WHERE ($1::bytea IS NULL OR program_id = $1)
+              AND ($2::text IS NULL OR ix_name = $2)
+              AND ($3::bytea IS NULL OR signature = $3)
+            "#,
+            program_id.as_deref(),
+            ix_name.as_deref(),
+            signature.as_deref(),
+        )
+        .fetch_one(&context.pool)
+        .await?
+        .unwrap_or(0);
+
+        let mut nodes = Vec::with_capacity(rows.len());
+        for r in rows {
+            let program = ProgramName::from_program_id_bytes(&r.program_id).ok_or_else(|| {
+                FieldError::new(
+                    format!(
+                        "program_instructions has a row for an unknown program id: {}",
+                        bs58::encode(&r.program_id).into_string()
+                    ),
+                    Value::null(),
+                )
+            })?;
+            let sig = b58(&r.signature);
+            let id = if r.inner_index < 0 {
+                format!("{sig}-{}", r.ix_index)
+            } else {
+                format!("{sig}-{}.{}", r.ix_index, r.inner_index)
+            };
+            nodes.push(ProgramInstruction {
+                id: ID::new(id),
+                program,
+                tx_signature: sig,
+                ix_index: r.ix_index as i32,
+                inner_index: r.inner_index as i32,
+                slot: I64(r.slot),
+                block_time: r.block_time,
+                ix_name: r.ix_name,
+                accounts: r.accounts.iter().map(|a| b58(a)).collect(),
+                data: r.data.to_string(),
+            });
+        }
+
+        Ok(ProgramInstructionConnection {
+            nodes,
+            total_count: total_count_i32(total),
+        })
+    }
+
+    // --- marketplace ------------------------------------------------------------------------
+
+    /// The marketplace program's singleton config PDA.
+    async fn marketplace_config(
+        context: &GraphQLContext,
+    ) -> FieldResult<Option<programs::marketplace::MarketplaceConfig>> {
+        programs::marketplace::marketplace_config(context).await
+    }
+
+    /// Property listings on the marketplace.
+    async fn listings(
+        context: &GraphQLContext,
+        listing_id: Option<I64>,
+        developer: Option<String>,
+        status: Option<ListingStatus>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::ListingConnection> {
+        programs::marketplace::listings(
+            context, listing_id, developer, status, active, first, offset,
+        )
+        .await
+    }
+
+    /// Investors' per-listing positions.
+    async fn investor_positions(
+        context: &GraphQLContext,
+        listing_id: Option<I64>,
+        investor: Option<String>,
+        cancelled: Option<bool>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::InvestorPositionConnection> {
+        programs::marketplace::investor_positions(
+            context, listing_id, investor, cancelled, active, first, offset,
+        )
+        .await
+    }
+
+    /// The marketplace's lawyer registry.
+    async fn lawyers(
+        context: &GraphQLContext,
+        lawyer: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::LawyerConnection> {
+        programs::marketplace::lawyers(context, lawyer, active, first, offset).await
+    }
+
+    /// SPV-lawyer election candidacies.
+    async fn lawyer_candidacies(
+        context: &GraphQLContext,
+        listing_id: Option<I64>,
+        lawyer: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::LawyerCandidacyConnection> {
+        programs::marketplace::lawyer_candidacies(
+            context, listing_id, lawyer, active, first, offset,
+        )
+        .await
+    }
+
+    /// SPV-lawyer election votes.
+    async fn lawyer_votes(
+        context: &GraphQLContext,
+        listing_id: Option<I64>,
+        voter: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::LawyerVoteConnection> {
+        programs::marketplace::lawyer_votes(context, listing_id, voter, active, first, offset).await
+    }
+
+    /// Tokenised property assets backing listings.
+    async fn property_assets(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        region_id: Option<i32>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::PropertyAssetConnection> {
+        programs::marketplace::property_assets(context, asset_id, region_id, active, first, offset)
+            .await
+    }
+
+    /// Per-token-account reservation totals.
+    async fn reservations(
+        context: &GraphQLContext,
+        token_account: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::ReservationConnection> {
+        programs::marketplace::reservations(context, token_account, active, first, offset).await
+    }
+
+    /// Investors' share holdings per asset.
+    async fn share_holdings(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        owner: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::ShareHoldingConnection> {
+        programs::marketplace::share_holdings(context, asset_id, owner, active, first, offset).await
+    }
+
+    // --- property ---------------------------------------------------------------------------
+
+    /// The property program's singleton config PDA.
+    async fn property_config(
+        context: &GraphQLContext,
+    ) -> FieldResult<Option<programs::property::PropertyConfig>> {
+        programs::property::property_config(context).await
+    }
+
+    /// Letting-agent election candidacies.
+    async fn agent_candidacies(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        agent: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::AgentCandidacyConnection> {
+        programs::property::agent_candidacies(context, asset_id, agent, active, first, offset).await
+    }
+
+    /// Letting-agent election votes.
+    async fn agent_votes(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        voter: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::AgentVoteConnection> {
+        programs::property::agent_votes(context, asset_id, voter, active, first, offset).await
+    }
+
+    /// Registered letting agents.
+    async fn letting_agents(
+        context: &GraphQLContext,
+        wallet: Option<String>,
+        region_id: Option<i32>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::LettingAgentConnection> {
+        programs::property::letting_agents(context, wallet, region_id, active, first, offset).await
+    }
+
+    /// Per-property letting seats and elections.
+    async fn property_lettings(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        agent: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::PropertyLettingConnection> {
+        programs::property::property_lettings(context, asset_id, agent, active, first, offset).await
+    }
+
+    /// Letting agents' resignation notices.
+    async fn resignation_notices(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        agent: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::ResignationNoticeConnection> {
+        programs::property::resignation_notices(context, asset_id, agent, active, first, offset)
+            .await
+    }
+
+    // --- regions ----------------------------------------------------------------------------
+
+    /// The regions program's singleton config PDA.
+    async fn regions_config(
+        context: &GraphQLContext,
+    ) -> FieldResult<Option<programs::regions::RegionsConfig>> {
+        programs::regions::regions_config(context).await
+    }
+
+    /// Governed regions.
+    async fn regions(
+        context: &GraphQLContext,
+        region_id: Option<i32>,
+        owner: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::regions::RegionConnection> {
+        programs::regions::regions(context, region_id, owner, active, first, offset).await
+    }
+
+    /// Registered locations (postcodes) within regions.
+    async fn locations(
+        context: &GraphQLContext,
+        region_id: Option<i32>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::regions::LocationConnection> {
+        programs::regions::locations(context, region_id, active, first, offset).await
+    }
+
+    /// Region-creation proposals.
+    async fn region_proposals(
+        context: &GraphQLContext,
+        region_id: Option<i32>,
+        proposal_id: Option<I64>,
+        proposer: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::regions::RegionProposalConnection> {
+        programs::regions::region_proposals(
+            context,
+            region_id,
+            proposal_id,
+            proposer,
+            active,
+            first,
+            offset,
+        )
+        .await
+    }
+
+    /// Per-region proposal-cycle state machines.
+    async fn region_states(
+        context: &GraphQLContext,
+        region_id: Option<i32>,
+        status: Option<RegionStatus>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::regions::RegionStateConnection> {
+        programs::regions::region_states(context, region_id, status, active, first, offset).await
+    }
+
+    /// Votes on region proposals.
+    async fn vote_records(
+        context: &GraphQLContext,
+        proposal_id: Option<I64>,
+        voter: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::regions::VoteRecordConnection> {
+        programs::regions::vote_records(context, proposal_id, voter, active, first, offset).await
     }
 }
 

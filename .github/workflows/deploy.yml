@@ -210,6 +210,18 @@ jobs:
             ssh deploy-target "echo '$GHCR_PULL_TOKEN' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
           fi
           ssh deploy-target "cd $DEPLOY_DIR && docker compose pull && docker compose up -d --remove-orphans"
+          # Prometheus only reads its config/rule files at startup or on an explicit reload,
+          # and `up -d` leaves the running container untouched when only the mounted files
+          # changed (its service definition and pinned image are unchanged) -- so an updated
+          # monitoring/ tree would otherwise sit unread, silently running the OLD alert
+          # rules. Worse, prometheus.yml/alerts.yml are single-FILE bind mounts, and the
+          # rm -rf+scp above replaced them with new inodes while the running container's
+          # mounts stay pinned to the deleted old ones -- so even a SIGHUP reload would
+          # re-read stale content. Recreating the container re-resolves the bind-mount paths
+          # and is the only reliable pickup; the TSDB lives in the promdata volume and
+          # survives, and grafana's provisioning is a directory mount that its own restart
+          # (via depends_on ordering on recreate) re-reads.
+          ssh deploy-target "cd $DEPLOY_DIR && docker compose up -d --force-recreate prometheus grafana"
 
       - name: Verify deployment
         run: |

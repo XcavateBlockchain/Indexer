@@ -145,9 +145,11 @@ pub struct RoleAccountRow {
 }
 
 /// One row to insert into `program_instructions`. `inner_index` is `-1` for a top-level
-/// instruction, or the CPI position within its transaction otherwise.
+/// instruction, or the CPI position within its transaction otherwise. `program_id` is the
+/// owning program's 32-byte address (`migrations/0007_multi_program_sync.sql`).
 #[derive(Debug, Clone)]
 pub struct NewInstruction {
+    pub program_id: Vec<u8>,
     pub signature: Vec<u8>,
     pub ix_index: i16,
     pub inner_index: i16,

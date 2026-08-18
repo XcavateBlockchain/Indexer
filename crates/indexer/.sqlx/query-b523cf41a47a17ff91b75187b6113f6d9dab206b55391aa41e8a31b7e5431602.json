@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sync_state\n        SET last_contiguous_slot = $2, updated_at = now()\n        WHERE program_id = $1 AND last_contiguous_slot < $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b523cf41a47a17ff91b75187b6113f6d9dab206b55391aa41e8a31b7e5431602"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO property_resignation_notice (pubkey, slot, lamports, closed_at_slot,\n            asset_id, agent, due_ts, rent_payer, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot           = EXCLUDED.slot,\n            lamports       = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            asset_id       = EXCLUDED.asset_id,\n            agent          = EXCLUDED.agent,\n            due_ts         = EXCLUDED.due_ts,\n            rent_payer     = EXCLUDED.rent_payer,\n            bump           = EXCLUDED.bump\n        WHERE property_resignation_notice.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9091ab7739aac331b9ae77eac2c87366797b2d735903ef743ad639d698223d7a"
+}

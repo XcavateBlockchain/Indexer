@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO marketplace_lawyer_vote (pubkey, slot, lamports, closed_at_slot,\n            listing_id, round, voter, choice, power, rent_payer, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot           = EXCLUDED.slot,\n            lamports       = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            listing_id     = EXCLUDED.listing_id,\n            round          = EXCLUDED.round,\n            voter          = EXCLUDED.voter,\n            choice         = EXCLUDED.choice,\n            power          = EXCLUDED.power,\n            rent_payer     = EXCLUDED.rent_payer,\n            bump           = EXCLUDED.bump\n        WHERE marketplace_lawyer_vote.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "88da927fc7cda551d7c77099f7b7b0b0df18d40c16587604fce34362ef415317"
+}

@@ -25,16 +25,30 @@ pub struct HealthResponse {
 }
 
 pub async fn health(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+    // Fleet aggregates across the per-program sync rows: the stack is only as caught-up as
+    // its laggiest program, so `last_contiguous_slot` is the minimum and `backfill_complete`
+    // is true only when every program's backfill is complete. Scoped by the optional
+    // `PROGRAMS` filter so subset operation (which freezes the excluded programs' rows) does
+    // not drag the aggregates -- see `Config::programs`.
     let sync_state = sqlx::query!(
-        r#"SELECT last_contiguous_slot, backfill_complete FROM sync_state WHERE id = 1"#
+        r#"
+        SELECT min(last_contiguous_slot) AS "last_contiguous_slot",
+               bool_and(backfill_complete) AS "backfill_complete"
+        FROM sync_state
+        WHERE ($1::bytea[] IS NULL OR program_id = ANY($1))
+        "#,
+        state.program_filter.as_deref(),
     )
-    .fetch_optional(&state.pool)
+    .fetch_one(&state.pool)
     .await;
 
     let (last_contiguous_slot, backfill_complete, db_reachable) = match sync_state {
-        Ok(Some(row)) => (Some(row.last_contiguous_slot), row.backfill_complete, true),
-        // The DB answered, just with no rows yet (fresh, pre-init database) -- still reachable.
-        Ok(None) => (None, false, true),
+        // The aggregates are NULL on a fresh, pre-init database (no rows) -- still reachable.
+        Ok(row) => (
+            row.last_contiguous_slot,
+            row.backfill_complete.unwrap_or(false),
+            true,
+        ),
         Err(e) => {
             log::warn!("health: DB query failed: {e:#}");
             (None, false, false)

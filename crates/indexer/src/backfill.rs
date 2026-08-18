@@ -1,11 +1,11 @@
-//! The resumable history backfill (spec §7, step 4).
+//! The resumable history backfill (spec §7, step 4), one walk per program.
 //!
-//! Walks `getSignaturesForAddress(PROGRAM_ID)` newest -> oldest, from the chain tip (or from a
-//! saved cursor) down to `backfill_floor_slot` -- the slot the program was deployed at, below
-//! which there is nothing to index -- feeding every transaction through the same instruction
-//! pipe and the same batcher as the live stream. On reaching the floor it sets
-//! `sync_state.backfill_complete` and closes the sync frontier's gap, which is what allows
-//! `last_contiguous_slot` to start advancing at all.
+//! Walks `getSignaturesForAddress(<program>)` newest -> oldest, from the chain tip (or from
+//! that program's saved cursor) down to its `backfill_floor_slot` -- the slot the program was
+//! deployed at, below which there is nothing to index -- feeding every transaction through
+//! the same instruction pipes and the same batcher as the live stream. On reaching the floor
+//! it sets that program's `sync_state.backfill_complete` and closes its sync frontier's gap,
+//! which is what allows its `last_contiguous_slot` to start advancing at all.
 //!
 //! ## Resumability
 //!
@@ -14,9 +14,9 @@
 //!
 //! * **Every write is idempotent and slot-guarded** (Task 2), so re-processing a transaction
 //!   changes zero rows. Correctness never depends on where the previous run stopped.
-//! * **The cursor** (`backfill_cursor`, one row) records the oldest signature whose whole page
-//!   has been committed, and a resumed run passes it as `before`. That is purely an RPC-budget
-//!   optimisation on top of the first point.
+//! * **The cursor** (`backfill_cursor`, one row per program) records the oldest signature
+//!   whose whole page has been committed, and a resumed run passes it as `before`. That is
+//!   purely an RPC-budget optimisation on top of the first point.
 //!
 //! The cursor is written *through the batcher*, sorted after the rows of its page, so it can
 //! never claim a page whose rows did not commit. It is deleted when the walk reaches its stop
@@ -40,6 +40,7 @@ use crate::crawl::{self, CrawlDeps, CrawlRequest, CrawlSummary, StopReason};
 use crate::db;
 use crate::metrics::PrometheusMetrics;
 use crate::processors::TrackedAccounts;
+use crate::programs::ProgramSpec;
 use crate::sync_frontier::SyncFrontier;
 
 /// Default `getSignaturesForAddress` page size. 100 is the crawler's own default and well
@@ -68,10 +69,12 @@ impl Default for BackfillOptions {
     }
 }
 
-/// Run the history walk to completion. Safe to call repeatedly and concurrently with the live
-/// pipeline.
+/// Run one program's history walk to completion. Safe to call repeatedly and concurrently
+/// with the live pipeline; `frontier` must be that program's frontier.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     cfg: &Config,
+    program: &'static ProgramSpec,
     pool: &PgPool,
     frontier: &Arc<SyncFrontier>,
     block_time: &Arc<BlockTimeResolver>,
@@ -79,22 +82,29 @@ pub async fn run(
     opts: BackfillOptions,
     shutdown: CancellationToken,
 ) -> Result<CrawlSummary> {
-    let state = db::sync_state::get_sync_state(pool)
+    let program_id = program.id.to_bytes().to_vec();
+    let state = db::sync_state::get_sync_state(pool, &program_id)
         .await
         .context("backfill: reading sync_state")?
-        .context("backfill: sync_state row missing (run migrations first)")?;
+        .with_context(|| {
+            format!(
+                "backfill: sync_state row missing for {} (run migrations first)",
+                program.name
+            )
+        })?;
     let floor = opts.floor.unwrap_or(state.backfill_floor_slot as u64);
 
     // The cursor is only a resume point for an *unfinished* walk. A backfill that already
     // completed has no cursor (it is deleted on completion), so an explicit re-run starts at the
     // tip and re-verifies the whole range instead of no-op'ing.
-    let cursor = db::backfill_cursor::get_cursor(pool)
+    let cursor = db::backfill_cursor::get_cursor(pool, &program_id)
         .await
         .context("backfill: reading backfill_cursor")?;
     let start_before = match &cursor {
         Some(c) => {
             log::info!(
-                "backfill: resuming below signature {} (slot {})",
+                "backfill[{}]: resuming below signature {} (slot {})",
+                program.name,
                 c.signature,
                 c.slot
             );
@@ -106,15 +116,16 @@ pub async fn run(
             })?)
         }
         None => {
-            log::info!("backfill: starting from the chain tip");
+            log::info!("backfill[{}]: starting from the chain tip", program.name);
             None
         }
     };
 
     let rpc_urls = cfg.rpc_endpoints();
     log::info!(
-        "backfill: walking {} down to floor slot {floor} via {} (page size {})",
-        cfg.program_id,
+        "backfill[{}]: walking {} down to floor slot {floor} via {} (page size {})",
+        program.name,
+        program.id,
         // Never log the URLs themselves: the Alchemy JSON-RPC endpoint carries the key in its
         // path.
         if rpc_urls.len() > 1 {
@@ -130,8 +141,9 @@ pub async fn run(
     let (bat, flusher) = batcher::spawn(pool.clone(), shutdown.clone());
 
     let outcome = crawl::crawl(
-        cfg,
         CrawlRequest {
+            program,
+            min_page_view_slot: None,
             rpc_urls: &rpc_urls,
             stop_below: floor,
             start_before,
@@ -146,6 +158,7 @@ pub async fn run(
             block_time,
             tracked,
             metrics: Arc::new(PrometheusMetrics),
+            programs: &cfg.programs,
         },
         shutdown.clone(),
     )
@@ -159,8 +172,9 @@ pub async fn run(
 
     let summary = outcome?;
     log::info!(
-        "backfill: walk finished ({:?}) -- {} window(s), {} signature(s) enumerated, {} indexed, \
+        "backfill[{}]: walk finished ({:?}) -- {} window(s), {} signature(s) enumerated, {} indexed, \
          {} failed-on-chain and skipped, slots {:?}..={:?}",
+        program.name,
         summary.stop,
         summary.windows,
         summary.signatures_enumerated,
@@ -180,6 +194,7 @@ pub async fn run(
 
     finish(
         pool,
+        &program_id,
         frontier,
         flush_outcome,
         floor,
@@ -215,6 +230,7 @@ pub async fn run(
 /// instead of resuming below the operator's floor.
 async fn finish(
     pool: &PgPool,
+    program_id: &[u8],
     frontier: &SyncFrontier,
     flush_outcome: batcher::FlushOutcome,
     effective_floor: u64,
@@ -245,10 +261,10 @@ async fn finish(
         return Ok(false);
     }
 
-    db::sync_state::set_backfill_complete(pool, true)
+    db::sync_state::set_backfill_complete(pool, program_id, true)
         .await
         .context("backfill: setting sync_state.backfill_complete")?;
-    db::backfill_cursor::clear_cursor(pool)
+    db::backfill_cursor::clear_cursor(pool, program_id)
         .await
         .context("backfill: clearing backfill_cursor")?;
     frontier.set_backfill_complete(true);
@@ -267,8 +283,10 @@ mod tests {
     use super::*;
     use crate::batcher::FlushOutcome;
 
+    const PID: &[u8] = &[7u8; 32];
+
     async fn seeded(pool: &PgPool, backfill_floor_slot: i64) {
-        db::sync_state::init_sync_state(pool, backfill_floor_slot)
+        db::sync_state::init_sync_state(pool, PID, backfill_floor_slot)
             .await
             .expect("seed sync_state");
     }
@@ -282,6 +300,7 @@ mod tests {
 
         let claimed = finish(
             &pool,
+            PID,
             &frontier,
             FlushOutcome::AllCommitted,
             500_000,
@@ -295,7 +314,7 @@ mod tests {
             "an operator floor above the real floor must not claim completeness"
         );
 
-        let state = db::sync_state::get_sync_state(&pool)
+        let state = db::sync_state::get_sync_state(&pool, PID)
             .await
             .unwrap()
             .unwrap();
@@ -309,13 +328,14 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_partial_floor_walk_leaves_an_existing_cursor_untouched(pool: PgPool) {
         seeded(&pool, 100_000).await;
-        db::backfill_cursor::set_cursor(&pool, "resume-from-here", 250_000)
+        db::backfill_cursor::set_cursor(&pool, PID, "resume-from-here", 250_000)
             .await
             .expect("seed cursor");
         let frontier = SyncFrontier::new(false);
 
         finish(
             &pool,
+            PID,
             &frontier,
             FlushOutcome::AllCommitted,
             500_000,
@@ -324,7 +344,7 @@ mod tests {
         .await
         .unwrap();
 
-        let cursor = db::backfill_cursor::get_cursor(&pool)
+        let cursor = db::backfill_cursor::get_cursor(&pool, PID)
             .await
             .unwrap()
             .expect("the cursor must survive a partial-floor walk, not be cleared");
@@ -335,13 +355,14 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn a_floor_at_or_below_the_sync_state_floor_claims_completeness(pool: PgPool) {
         seeded(&pool, 100_000).await;
-        db::backfill_cursor::set_cursor(&pool, "sig", 100_000)
+        db::backfill_cursor::set_cursor(&pool, PID, "sig", 100_000)
             .await
             .expect("seed cursor");
         let frontier = SyncFrontier::new(false);
 
         let claimed = finish(
             &pool,
+            PID,
             &frontier,
             FlushOutcome::AllCommitted,
             100_000,
@@ -351,14 +372,14 @@ mod tests {
         .unwrap();
         assert!(claimed);
 
-        let state = db::sync_state::get_sync_state(&pool)
+        let state = db::sync_state::get_sync_state(&pool, PID)
             .await
             .unwrap()
             .unwrap();
         assert!(state.backfill_complete);
         assert!(frontier.may_advance());
         assert!(
-            db::backfill_cursor::get_cursor(&pool)
+            db::backfill_cursor::get_cursor(&pool, PID)
                 .await
                 .unwrap()
                 .is_none(),
@@ -373,12 +394,19 @@ mod tests {
         seeded(&pool, 100_000).await;
         let frontier = SyncFrontier::new(false);
 
-        let err = finish(&pool, &frontier, FlushOutcome::OpsDropped, 100_000, 100_000)
-            .await
-            .expect_err("a double-fault flush must be a hard error");
+        let err = finish(
+            &pool,
+            PID,
+            &frontier,
+            FlushOutcome::OpsDropped,
+            100_000,
+            100_000,
+        )
+        .await
+        .expect_err("a double-fault flush must be a hard error");
         assert!(err.to_string().to_lowercase().contains("dropped"));
 
-        let state = db::sync_state::get_sync_state(&pool)
+        let state = db::sync_state::get_sync_state(&pool, PID)
             .await
             .unwrap()
             .unwrap();

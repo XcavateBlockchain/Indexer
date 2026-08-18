@@ -1,0 +1,146 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, authority, pending_authority, xcav_mint,\n               treasury, rent_collector, accepted_payment_mints, listing_deposit, lawyer_deposit,\n               min_property_shares, max_property_shares, marketplace_fee_bps, investor_fee_bps,\n               max_ownership_bps, claiming_time, legal_process_time, lawyer_voting_time,\n               min_voting_quorum_bps, next_listing_id\n        FROM marketplace_config\n        ORDER BY slot DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "authority",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "pending_authority",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "xcav_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "treasury",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "rent_collector",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 9,
+        "name": "accepted_payment_mints",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "listing_deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "lawyer_deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "min_property_shares",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "max_property_shares",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "marketplace_fee_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "investor_fee_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "max_ownership_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "claiming_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 18,
+        "name": "legal_process_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 19,
+        "name": "lawyer_voting_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 20,
+        "name": "min_voting_quorum_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 21,
+        "name": "next_listing_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4eece7d59d555a76146c2107dc1576786db6f4f78fba97616db257fd91aa2579"
+}

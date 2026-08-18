@@ -157,7 +157,8 @@ async fn apply_account_tracked(
     };
 
     with_batcher(pool, |batcher| async move {
-        let mut processor = AccountProcessor::new(batcher, tracked.clone());
+        let mut processor =
+            AccountProcessor::<crate::mapping::whitelist::Whitelist>::new(batcher, tracked.clone());
         processor
             .process((meta, decoded, raw), metrics())
             .await
@@ -312,7 +313,10 @@ async fn apply_assign_role(pool: &PgPool, signature_byte: u8) {
     );
 
     with_batcher(pool, |batcher| async move {
-        let mut processor = InstructionProcessor::new(batcher, offline_block_time());
+        let mut processor = InstructionProcessor::<crate::mapping::whitelist::Whitelist>::new(
+            batcher,
+            offline_block_time(),
+        );
         processor
             .process((meta, decoded_ix, Default::default(), raw), metrics())
             .await
@@ -404,7 +408,10 @@ async fn remove_role_soft_closes_the_role_account_state_row(pool: PgPool) {
     };
 
     with_batcher(&pool, |batcher| async move {
-        let mut processor = InstructionProcessor::new(batcher, offline_block_time());
+        let mut processor = InstructionProcessor::<crate::mapping::whitelist::Whitelist>::new(
+            batcher,
+            offline_block_time(),
+        );
         processor
             .process((meta, decoded_ix, Default::default(), raw), metrics())
             .await
@@ -451,7 +458,10 @@ async fn a_close_and_the_upsert_it_closes_may_arrive_in_one_batch(pool: PgPool) 
             .await
             .expect("deletion processing must succeed");
 
-        let mut accounts = AccountProcessor::new(batcher, pipeline::new_tracked_accounts());
+        let mut accounts = AccountProcessor::<crate::mapping::whitelist::Whitelist>::new(
+            batcher,
+            pipeline::new_tracked_accounts(),
+        );
         accounts
             .process((meta, decoded_acct, raw), metrics())
             .await
@@ -583,6 +593,7 @@ fn every_fixture_decodes_to_the_variant_it_claims() {
 #[sqlx::test(migrations = "../../migrations")]
 async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool: PgPool) {
     let ix = crate::db::models::NewInstruction {
+        program_id: PROGRAM_ID.to_bytes().to_vec(),
         signature: sig_from(77).as_ref().to_vec(),
         ix_index: 0,
         inner_index: -1,
@@ -598,6 +609,7 @@ async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool:
         // phase ordering, not the caller's discipline, is what guarantees the invariant.
         batcher
             .push(batcher::WriteOp::SetBackfillCursor {
+                program_id: PROGRAM_ID.to_bytes().to_vec(),
                 signature: "SigOfTheOldestSignatureInThePage".into(),
                 slot: 483_386_945,
             })
@@ -610,7 +622,7 @@ async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool:
     })
     .await;
 
-    let cursor = crate::db::backfill_cursor::get_cursor(&pool)
+    let cursor = crate::db::backfill_cursor::get_cursor(&pool, &PROGRAM_ID.to_bytes())
         .await
         .expect("cursor read")
         .expect("cursor row written");
@@ -644,7 +656,7 @@ async fn a_snapshot_row_is_identical_to_the_row_the_account_stream_would_write(p
     let decoded =
         carbon_core::account::AccountDecoder::decode_account(&XcavateWhitelistDecoder, &raw)
             .expect("real devnet account data must decode");
-    let op = crate::processors::account_write_op(
+    let op = crate::mapping::whitelist::account_write_op(
         key(ROLE_PUBKEY),
         SLOT as i64,
         raw.lamports as i64,

@@ -1,0 +1,122 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, authority, pending_authority, xcav_mint,\n               minimum_voting_amount, voting_period, owner_change_period, threshold_bps, quorum,\n               notice_period, min_vote_hold, max_listing_duration, max_tax_bps, location_deposit,\n               proposal_counter\n        FROM regions_config\n        ORDER BY slot DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "authority",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "pending_authority",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "xcav_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "minimum_voting_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "voting_period",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "owner_change_period",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "threshold_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "quorum",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "notice_period",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "min_vote_hold",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "max_listing_duration",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "max_tax_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "location_deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 17,
+        "name": "proposal_counter",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2123a6ccca6354928a27b0a59fba7d431e42e6d91279816752a63f4f981e1849"
+}

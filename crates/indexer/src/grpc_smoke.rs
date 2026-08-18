@@ -1,5 +1,5 @@
 //! `smoke-grpc`: prove the Yellowstone endpoint, credentials and filter shapes actually work,
-//! without waiting for the (very idle) whitelist program to be used.
+//! without waiting for the (very idle) programs to be used.
 //!
 //! ## Why this drives the raw client instead of the carbon datasource
 //!
@@ -66,9 +66,13 @@ pub async fn run(cfg: &Config, timeout: Duration) -> Result<SmokeResult> {
     let api_key = cfg.require_api_key()?;
 
     log::info!(
-        "smoke-grpc: connecting to {} (commitment=confirmed, program={})",
+        "smoke-grpc: connecting to {} (commitment=confirmed, programs={})",
         cfg.grpc_url,
-        cfg.program_id
+        cfg.programs
+            .iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>()
+            .join(",")
     );
 
     let builder = GeyserGrpcClient::build_from_shared(cfg.grpc_url.clone())
@@ -95,8 +99,8 @@ pub async fn run(cfg: &Config, timeout: Duration) -> Result<SmokeResult> {
             },
         )]),
         // The real filters, so a server that rejects them fails the smoke check.
-        accounts: account_filters(&cfg.program_id),
-        transactions: transaction_filters(&cfg.program_id),
+        accounts: account_filters(&cfg.programs),
+        transactions: transaction_filters(&cfg.programs),
         transactions_status: HashMap::new(),
         entry: HashMap::new(),
         blocks: HashMap::new(),
