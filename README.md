@@ -21,6 +21,18 @@ complete history. The whitelist was migrated first (whitelist-only scope, ADR-19
 siblings were added by executing that ADR's pre-planned recipe — see
 [DECISIONS.md ADR-22](DECISIONS.md#adr-22-all-four-programs-indexed-supersedes-adr-19).
 
+## Agentic maintenance
+
+This indexer is kept in lockstep with the upstream programs by an always-on AI maintenance
+agent: it watches the upstream repo, rebuilds and diffs IDLs, prepares versioned decoders
+and additive migrations, verifies against live devnet, and opens PRs — humans review every
+PR, and the deployment contract is that the upgrade multisig executes an on-chain program
+upgrade only after the updated indexer is deployed and healthy. On-chain upgrades are
+detected in-pipeline (the `program_upgrades` version timeline, the `programUpgrades`
+GraphQL query, and the `ProgramUpgradeDetected` alert). Design:
+[docs/agentic-maintenance.md](docs/agentic-maintenance.md); agent ground rules and task
+index: [AGENTS.md](AGENTS.md); ADRs 23–25 in [DECISIONS.md](DECISIONS.md).
+
 ## Quickstart (Docker)
 
 ```bash
@@ -152,10 +164,12 @@ The four decoder crates (`crates/whitelist-decoder`, `crates/marketplace-decoder
 them** (`cargo fmt` must not touch them either; they are excluded from the workspace, so
 plain `cargo fmt` skips them — never run `cargo fmt --all`). If an IDL under `idls/` changes
 (a program upgrade, a new instruction), regenerate that program's crate with the exact
-command Task 1 verified — substitute the IDL and output directory:
+command Task 1 verified — pinned to the CLI version that generates against
+`carbon-core = "0.12.0"` (ADR-12); substitute the IDL and output directory
+(`scripts/agent/verify-decoder-purity.sh` runs exactly this and diffs the result):
 
 ```bash
-npx @sevenlabs-hq/carbon-cli@latest parse \
+npx @sevenlabs-hq/carbon-cli@0.12.0 parse \
   -i ./idls/xcavate_whitelist.json \
   -o ./crates/whitelist-decoder \
   -s anchor \
@@ -202,8 +216,10 @@ crates/property-decoder/
 crates/regions-decoder/
 crates/indexer/             the pipeline binary: run / backfill / snapshot / smoke-grpc
 crates/api/                 the GraphQL API binary (Axum + Juniper), :3010
-migrations/                 sqlx migrations (0001..0010), applied in filename order
-idls/                       the four programs' Anchor IDLs (all indexed)
+migrations/                 sqlx migrations, applied in filename order (additive-only, see scripts/lint-migrations.sh)
+idls/                       the four programs' Anchor IDLs as DEPLOYED on devnet (see idls/README.md)
+agent/skills/               the maintenance agent's procedures (entry point: AGENTS.md)
+scripts/                    lint-migrations.sh + scripts/agent/ maintenance tooling
 monitoring/                 Prometheus scrape config + alert rules + Grafana provisioning
 docker/                     rust.Dockerfile (indexer+api), pg-Dockerfile, node.Dockerfile (rollback)
 docker-compose.yml          the active stack: postgres, indexer, api, prometheus, grafana
@@ -217,7 +233,7 @@ ARCHITECTURE.md, DECISIONS.md, RUNBOOK.md, MIGRATION_LOG.md   this migration's d
 ## Monitoring
 
 Prometheus scrapes `indexer:9464` and `api:9465` every 10s; Grafana's **Indexer health**
-dashboard (provisioned from [`monitoring/`](monitoring/) on every start) and six alerting
+dashboard (provisioned from [`monitoring/`](monitoring/) on every start) and seven alerting
 rules ([`monitoring/alerts.yml`](monitoring/alerts.yml), rules only — no Alertmanager, see
 [DECISIONS.md ADR-20](DECISIONS.md#adr-20-alerts-as-prometheus-rules-only-no-alertmanager))
 read it. See [RUNBOOK.md](RUNBOOK.md) for what each alert means and how to read the

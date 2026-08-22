@@ -40,6 +40,35 @@ jobs:
   #     - run: npm ci
   #     - run: npm run build
 
+  # ADR-25's additive-only migration policy, mechanically enforced: applied migrations are
+  # immutable (sqlx checksums them -- editing one bricks every existing database at its next
+  # startup), new ones must be strictly-increasing NNNN files and contain no destructive
+  # statements without an explicit in-file `-- lint: allow` marker carrying a correctness
+  # argument. The gate the agentic-maintenance PRs (docs/agentic-maintenance.md) are
+  # designed against; scripts/lint-migrations.sh is the single implementation, shared with
+  # the agent's local pre-PR run.
+  migration-lint:
+    name: Migration policy lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The lint diffs against the merge base; the repo is small, full history is cheap.
+          fetch-depth: 0
+      - name: lint migrations (immutable history, additive-only)
+        run: |
+          # ^{commit} forces a real object lookup: a bare rev-parse --verify accepts any
+          # syntactically-valid 40-hex sha (e.g. the all-zeros `before` of a force-push)
+          # without checking it exists, which would make the lint silently pass.
+          if [ -n "${{ github.base_ref }}" ]; then
+            base="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify --quiet "${{ github.event.before }}^{commit}" >/dev/null 2>&1; then
+            base="${{ github.event.before }}"
+          else
+            base="$(git rev-parse --verify --quiet 'HEAD~1^{commit}' || git rev-parse HEAD)"
+          fi
+          bash scripts/lint-migrations.sh "$base"
+
   rust:
     name: Rust (indexer + api)
     runs-on: ubuntu-latest

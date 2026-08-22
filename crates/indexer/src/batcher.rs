@@ -90,6 +90,35 @@ pub enum WriteOp {
         signature: String,
         slot: i64,
     },
+    /// One observed BPFLoaderUpgradeable `Upgrade` of a registry program (ADR-24), from the
+    /// recorder pipe in [`crate::upgrades`]. Idempotent like every append -- crawl re-walks
+    /// re-deliver historical upgrade transactions -- and only the first commit of a given
+    /// (program, slot) counts as a *detection*: the flusher bumps the detection metric and
+    /// warn-logs only for rows that were actually new, and only after their transaction
+    /// committed (a metric bumped inside `commit_batch` would double-count on a retried
+    /// commit and could count a rolled-back row). This makes the side effects AT MOST
+    /// once, not exactly once: a commit that succeeded on the server but errored on the
+    /// wire is retried, the retry's insert is an `ON CONFLICT` no-op, and the metric/log
+    /// are skipped for a row that did land. Acceptable by design -- the durable record is
+    /// the `program_upgrades` row itself (which always lands), the alert window is wide,
+    /// and `scripts/agent/check-program-upgrades.py` probes the chain independently.
+    RecordProgramUpgrade {
+        /// Registry name, for the detection metric's `program` label.
+        program: &'static str,
+        program_id: Vec<u8>,
+        upgrade_slot: i64,
+        signature: String,
+    },
+}
+
+/// A `RecordProgramUpgrade` row that `commit_batch` actually inserted (as opposed to one
+/// deduplicated by `ON CONFLICT DO NOTHING`), reported back to `flush` so the detection
+/// side effects fire at most once per boundary, after the commit (see the variant's doc
+/// for why "at most" and why that is fine).
+struct NewUpgrade {
+    program: &'static str,
+    upgrade_slot: i64,
+    signature: String,
 }
 
 impl WriteOp {
@@ -109,6 +138,7 @@ impl WriteOp {
             | WriteOp::CloseLettingAgentIfLast { slot, .. }
             | WriteOp::CloseUnknownAccount { slot, .. }
             | WriteOp::SetBackfillCursor { slot, .. } => *slot,
+            WriteOp::RecordProgramUpgrade { upgrade_slot, .. } => *upgrade_slot,
         }
     }
 
@@ -120,7 +150,9 @@ impl WriteOp {
             | WriteOp::UpsertRoleAccount(_)
             | WriteOp::UpsertRegionsAccount(_)
             | WriteOp::UpsertMarketplaceAccount(_)
-            | WriteOp::UpsertPropertyAccount(_) => 0,
+            | WriteOp::UpsertPropertyAccount(_)
+            // Orders against nothing: program_upgrades shares no rows with any other op kind.
+            | WriteOp::RecordProgramUpgrade { .. } => 0,
             WriteOp::InsertInstruction(_) => 1,
             WriteOp::InsertAction(_) => 2,
             WriteOp::CloseAccount { .. }
@@ -273,9 +305,25 @@ async fn flush(pool: &PgPool, buf: &mut Vec<WriteOp>, cancellation: &Cancellatio
     loop {
         let started = Instant::now();
         match commit_batch(pool, buf).await {
-            Ok(()) => {
+            Ok(new_upgrades) => {
                 let elapsed = started.elapsed();
                 crate::metrics::record_flush(elapsed, buf.len());
+                // Detection side effects for newly-recorded upgrade boundaries, strictly after
+                // the commit (see `WriteOp::RecordProgramUpgrade`). warn! because this is the
+                // one write that means "the deployed program and the checked-in IDL may have
+                // diverged" -- the ProgramUpgradeDetected alert fires off the same counter,
+                // and RUNBOOK.md "After a program upgrade" is the follow-up.
+                for up in &new_upgrades {
+                    crate::metrics::inc_program_upgrade_detected(up.program);
+                    log::warn!(
+                        "NEW program upgrade recorded: {} upgraded at slot {} (tx {}) -- the \
+                         running decoder was generated from the pre-upgrade IDL; see \
+                         RUNBOOK.md 'After a program upgrade'",
+                        up.program,
+                        up.upgrade_slot,
+                        up.signature,
+                    );
+                }
                 log::debug!(
                     "flushed {} write ops in {:?} (max slot {max_slot})",
                     buf.len(),
@@ -324,8 +372,13 @@ async fn flush(pool: &PgPool, buf: &mut Vec<WriteOp>, cancellation: &Cancellatio
 ///
 /// `ops` is borrowed (and each row cloned into the query) rather than consumed, because the
 /// caller has to be able to retry the identical batch after a failed commit.
-async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<(), sqlx::Error> {
+///
+/// Returns the upgrade boundaries this batch actually inserted (not the ones deduplicated by
+/// `ON CONFLICT DO NOTHING`), valid only once the commit inside has succeeded -- which it has,
+/// whenever this returns `Ok`.
+async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<Vec<NewUpgrade>, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    let mut new_upgrades = Vec::new();
 
     for op in ops {
         match op {
@@ -381,10 +434,28 @@ async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<(), sqlx::Error>
             } => {
                 db::backfill_cursor::set_cursor(&mut *tx, program_id, signature, *slot).await?;
             }
+            WriteOp::RecordProgramUpgrade {
+                program,
+                program_id,
+                upgrade_slot,
+                signature,
+            } => {
+                let inserted =
+                    db::upgrades::record_upgrade(&mut *tx, program_id, *upgrade_slot, signature)
+                        .await?;
+                if inserted {
+                    new_upgrades.push(NewUpgrade {
+                        program,
+                        upgrade_slot: *upgrade_slot,
+                        signature: signature.clone(),
+                    });
+                }
+            }
         }
     }
 
-    tx.commit().await
+    tx.commit().await?;
+    Ok(new_upgrades)
 }
 
 #[cfg(test)]
@@ -445,10 +516,16 @@ mod tests {
                 accounts: vec![],
                 data: serde_json::json!({}),
             }),
+            WriteOp::RecordProgramUpgrade {
+                program: "marketplace",
+                program_id: vec![9],
+                upgrade_slot: 1,
+                signature: "sig".into(),
+            },
         ];
         ops.sort_by_key(WriteOp::phase);
         let phases: Vec<u8> = ops.iter().map(WriteOp::phase).collect();
-        assert_eq!(phases, vec![0, 1, 2, 3, 4]);
+        assert_eq!(phases, vec![0, 0, 1, 2, 3, 4]);
     }
 
     #[test]

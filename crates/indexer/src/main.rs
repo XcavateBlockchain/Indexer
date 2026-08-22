@@ -188,6 +188,46 @@ async fn start() -> Result<Started> {
         db::sync_state::init_sync_state(&pool, &pid, program.deploy_slot as i64)
             .await
             .with_context(|| format!("seeding sync_state for {}", program.name))?;
+        // Seed the version-boundary table (ADR-24) the same way: the compiled-in deploy slot
+        // is where this program's version-1 bytecode became live. Then check whether the
+        // chain has moved past what this binary was built for: a recorded 'chain' boundary
+        // ABOVE the registry's `decoder_covers_boundary` means the deployed program was
+        // upgraded and this binary's decoder was generated from a pre-upgrade IDL. Boundaries
+        // at or below the stamp are remediated history (the decoder was regenerated for
+        // them; the maintenance skills bump the stamp when they do that) and only worth an
+        // info line. Loud but non-fatal either way -- pre-upgrade history still decodes,
+        // and the recovery is the RUNBOOK's "After a program upgrade" procedure, not a
+        // crash loop.
+        db::upgrades::seed_deploy_slot(&pool, &pid, program.deploy_slot as i64)
+            .await
+            .with_context(|| format!("seeding program_upgrades for {}", program.name))?;
+        let boundaries = db::upgrades::upgrades_for(&pool, &pid)
+            .await
+            .with_context(|| format!("reading program_upgrades for {}", program.name))?;
+        let uncovered = |u: &&db::upgrades::ProgramUpgrade| {
+            u.source == "chain" && u.upgrade_slot > program.decoder_covers_boundary as i64
+        };
+        if let Some(latest) = boundaries.iter().rfind(uncovered) {
+            log::warn!(
+                "{} has {} recorded on-chain upgrade(s) NEWER than what this binary's \
+                 decoder covers (decoder_covers_boundary = {}); the latest bytecode went \
+                 live at slot {} -- the decoder was generated from a pre-upgrade IDL, see \
+                 RUNBOOK.md 'After a program upgrade'",
+                program.name,
+                boundaries.iter().filter(uncovered).count(),
+                program.decoder_covers_boundary,
+                latest.upgrade_slot,
+            );
+        } else if let Some(latest) = boundaries.iter().rfind(|u| u.source == "chain") {
+            log::info!(
+                "{}: {} on-chain upgrade(s) recorded, all covered by this binary's decoder \
+                 (latest boundary {} <= decoder_covers_boundary {})",
+                program.name,
+                boundaries.iter().filter(|u| u.source == "chain").count(),
+                latest.upgrade_slot,
+                program.decoder_covers_boundary,
+            );
+        }
         let state = db::sync_state::get_sync_state(&pool, &pid)
             .await
             .with_context(|| format!("reading sync_state for {}", program.name))?

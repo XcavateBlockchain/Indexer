@@ -61,6 +61,7 @@ use crate::processors::{
     AccountDeletionProcessor, AccountProcessor, InstructionProcessor, TrackedAccounts,
 };
 use crate::programs::ProgramSpec;
+use crate::upgrades::{LoaderUpgradeDecoder, UpgradeRecorder};
 
 /// The narrowest transaction filters the programs allow: one keyed entry per program, each
 /// matching that program only, no votes, no failures. Yellowstone echoes the keys back on
@@ -200,6 +201,16 @@ fn common_pipes(deps: PipeDeps<'_>) -> carbon_core::pipeline::PipelineBuilder {
                 AccountProcessor::<Property>::new(deps.batcher.clone(), deps.tracked.clone()),
             );
     }
+    // The upgrade recorder (ADR-24) rides the same filters as everything else -- an Upgrade
+    // transaction references the program account, so every configured program's filter
+    // already delivers its own upgrades. Registered unconditionally: its decoder self-filters
+    // to BPFLoaderUpgradeable `Upgrade`s of registry programs, and it writes only
+    // `program_upgrades` facts, never `program_instructions` history, so the fragmentary-
+    // history caveat in the module docs does not apply to it.
+    builder = builder.instruction(
+        LoaderUpgradeDecoder,
+        UpgradeRecorder::new(deps.batcher.clone()),
+    );
     builder.account_deletions(AccountDeletionProcessor::new(deps.batcher.clone()))
 }
 

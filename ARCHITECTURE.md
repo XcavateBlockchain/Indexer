@@ -48,6 +48,8 @@ day-2 operations, see [RUNBOOK.md](RUNBOOK.md).
                     │  admins_view / role_          │  derived, folded (§3)
                     │  assignments_view / config_view│
                     │  sync_state / backfill_cursor │  bookkeeping, one row per program
+                    │  program_upgrades             │  version boundaries (ADR-24): seeded
+                    │                              │  deploy slots + observed upgrades
                     └───────────────┬───────────────┘
                                     │ read-only pool, 5s statement_timeout
                                     ▼
@@ -60,6 +62,12 @@ day-2 operations, see [RUNBOOK.md](RUNBOOK.md).
   Alongside the live stream (all in crates/indexer, all writing through the same batcher):
     getSignaturesForAddress crawl  -- backfill (once) + reconcile (every RECONCILE_INTERVAL)
     getProgramAccounts snapshot    -- one-shot, on a fresh/truncated database
+
+  One extra pipe rides both paths (upgrades.rs, ADR-24): a hand-written decoder for the
+  BPF upgradeable loader's Upgrade instruction -- upgrade transactions reference the
+  program account, so the existing per-program filters and crawls already deliver them --
+  recording every version boundary of the four programs into program_upgrades. Detection
+  only: reacting to an upgrade is the maintenance loop's job (docs/agentic-maintenance.md).
 ```
 
 Both Rust binaries (`indexer`, `api`) expose Prometheus metrics on their own `/metrics`

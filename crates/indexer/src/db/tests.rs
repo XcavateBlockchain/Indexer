@@ -1243,3 +1243,57 @@ async fn open_account_pubkeys_unions_every_programs_tables(pool: PgPool) -> sqlx
     assert_eq!(open, vec![pk(1), pk(2)]);
     Ok(())
 }
+
+// ============================================================================================
+// Program version boundaries (migrations/0011, ADR-24): append-only, idempotent, and the
+// "newly inserted" signal must be true exactly once per boundary -- it is what gates the
+// detection metric and the one-time operator warning.
+// ============================================================================================
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_program_upgrade_is_recorded_once_and_replays_are_no_ops(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    use super::upgrades::{record_upgrade, seed_deploy_slot, upgrades_for};
+
+    // Startup seeding is idempotent, like sync_state's.
+    seed_deploy_slot(&pool, PID, 100).await?;
+    seed_deploy_slot(&pool, PID, 100).await?;
+
+    // First observation of a boundary reports "new"; every re-observation (each backfill
+    // re-walk re-delivers the historical upgrade transaction) reports "seen".
+    assert!(record_upgrade(&pool, PID, 500, "sig-upgrade-1").await?);
+    assert!(!record_upgrade(&pool, PID, 500, "sig-upgrade-1").await?);
+
+    // A second, later upgrade is its own boundary.
+    assert!(record_upgrade(&pool, PID, 900, "sig-upgrade-2").await?);
+
+    let timeline = upgrades_for(&pool, PID).await?;
+    assert_eq!(
+        timeline
+            .iter()
+            .map(|u| (u.upgrade_slot, u.source.as_str(), u.signature.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (100, "deploy", None),
+            (500, "chain", Some("sig-upgrade-1")),
+            (900, "chain", Some("sig-upgrade-2")),
+        ],
+        "the timeline reads oldest boundary first, deploy seed included"
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn upgrade_timelines_are_per_program(pool: PgPool) -> sqlx::Result<()> {
+    use super::upgrades::{record_upgrade, upgrades_for};
+
+    let other: &[u8] = &[8u8; 32];
+    assert!(record_upgrade(&pool, PID, 500, "sig-a").await?);
+    // The same slot for a different program is a different boundary, not a conflict.
+    assert!(record_upgrade(&pool, other, 500, "sig-b").await?);
+
+    assert_eq!(upgrades_for(&pool, PID).await?.len(), 1);
+    assert_eq!(upgrades_for(&pool, other).await?.len(), 1);
+    Ok(())
+}

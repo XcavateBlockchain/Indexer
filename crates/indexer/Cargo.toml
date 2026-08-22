@@ -38,6 +38,9 @@ solana-account = "3.0.0"
 solana-instruction = { version = "3.0.0", default-features = false }
 solana-signature = "3.0.0"
 solana-commitment-config = "3.0.0"
+# The canonical native-program ids (the upgrade recorder needs BPFLoaderUpgradeable's, see
+# src/upgrades.rs). Already in the graph transitively via the solana stack.
+solana-sdk-ids = "3.0.0"
 # Used for the block_time fallback lookup (`getBlockTime`) and by the verification helpers.
 # Already in the graph via carbon-rpc-transaction-crawler-datasource.
 solana-client = "3.0.0"

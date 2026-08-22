@@ -50,6 +50,14 @@ pub const CHAIN_TIP_SLOT: &str = "chain_tip_slot";
 /// whether the indexer is keeping up. It is a *proven-contiguous* lag, not a "last row written"
 /// lag -- on this deliberately idle program the two are very different things.
 pub const LAST_CONTIGUOUS_SLOT: &str = "last_contiguous_slot";
+/// Counter: NEW program-upgrade boundaries committed to `program_upgrades` (ADR-24). Counts
+/// first observations only (at most once per boundary -- see `WriteOp::RecordProgramUpgrade`
+/// for the ambiguous-commit caveat): crawl re-walks re-deliver historical upgrade
+/// transactions, but the batcher bumps this only for rows `ON CONFLICT DO NOTHING` actually
+/// inserted. Any increase means a tracked program's bytecode changed under a decoder
+/// generated from the pre-upgrade IDL: the ProgramUpgradeDetected alert fires on it; the
+/// `program_upgrades` table is the durable record when the alert window is missed.
+pub const PROGRAM_UPGRADES_DETECTED_TOTAL: &str = "program_upgrades_detected_total";
 
 /// Installs the global recorder and starts the `GET /metrics` listener on `addr`.
 ///
@@ -114,6 +122,10 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         LAST_CONTIGUOUS_SLOT,
         "sync_state.last_contiguous_slot: no gaps exist below this slot"
     );
+    metrics::describe_counter!(
+        PROGRAM_UPGRADES_DETECTED_TOTAL,
+        "Newly-recorded BPFLoaderUpgradeable upgrades of tracked programs (first observations only)"
+    );
 
     // Register every counter (and every label value it can take) at zero. Without this the
     // series simply does not exist until the first occurrence, and a Prometheus rule like
@@ -126,6 +138,7 @@ pub fn install(addr: SocketAddr) -> Result<()> {
             metrics::counter!(DECODE_SKIPPED_TOTAL, "program" => program.name, "reason" => reason)
                 .increment(0);
         }
+        metrics::counter!(PROGRAM_UPGRADES_DETECTED_TOTAL, "program" => program.name).increment(0);
     }
     for source in ["stream", "cache", "rpc", "rpc_fallback"] {
         metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(0);
@@ -232,4 +245,10 @@ pub fn set_chain_tip_slot(slot: u64) {
 /// laggiest program.
 pub fn set_last_contiguous_slot(program: &'static str, slot: u64) {
     metrics::gauge!(LAST_CONTIGUOUS_SLOT, "program" => program).set(slot as f64);
+}
+
+/// One NEWLY-recorded upgrade boundary for `program` (see the constant's docs: first
+/// observations only, called by the batcher strictly after the row's commit).
+pub fn inc_program_upgrade_detected(program: &'static str) {
+    metrics::counter!(PROGRAM_UPGRADES_DETECTED_TOTAL, "program" => program).increment(1);
 }

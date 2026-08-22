@@ -6,6 +6,12 @@
     "marketplace": "B6YRVAmjmhN28smZxNfCnuKc19CamBbAEMXsp5KTfWog",
     "property": "8f4NHc1wGBM1BAufDFd9dNechLW8pxmStSfxfuJfDzob"
   },
+  "deploy_slots": {
+    "xcavate_whitelist": 483386556,
+    "regions": 483386626,
+    "marketplace": 483386726,
+    "property": 483386809
+  },
   "mints": {
     "xcav": "8dW943dozaNPdRRaW6xpV2vxFv1Kcpz3z63Nji3VLups",
     "tgbp": "71G3dc4B9p9QBosLx3XhWY3ULRPAxjopngsin66M9HUb",

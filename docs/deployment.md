@@ -231,7 +231,30 @@ expose `/metrics` as soon as they're up (`indexer:9464`, `api:9465`).
 - `curl http://localhost:3010/health` (or the `syncStatus` GraphQL field) exposes
   `last_contiguous_slot`, `chain_tip_slot`, `slot_lag`, `healthy` — poll it from any uptime
   monitor.
-- See [../RUNBOOK.md "Alert list"](../RUNBOOK.md#alert-list) for what each of the six
+- See [../RUNBOOK.md "Alert list"](../RUNBOOK.md#alert-list) for what each of the seven
   Prometheus alerting rules (`monitoring/alerts.yml`) means when it fires — rules only, no
   Alertmanager (`ADR-20`), so nothing pages anyone automatically; check Prometheus's
   `/alerts` page or Grafana's alerting view.
+
+### Post-upgrade backfill re-walk
+
+After an on-chain program upgrade (the `ProgramUpgradeDetected` alert / RUNBOOK "After a
+program upgrade"), once the updated images are deployed, heal the window between the
+upgrade slot and the new decoder going live with a full history re-walk on the server:
+
+```bash
+cd /opt/indexer && docker compose exec -T indexer indexer backfill
+```
+
+Safe at any time: every write is idempotent (`ON CONFLICT DO NOTHING` / slot-guarded), so
+the re-walk only adds what was missed. At current devnet volume it finishes in about a
+minute.
+
+### Mainnet (placeholder)
+
+Nothing is deployed on mainnet, and this whole document is the **devnet** production
+deployment. The intended mainnet shape (own database and deploy target, own
+`addresses.mainnet.json` — a placeholder exists at the repo root — promotion only after
+devnet verification) is sketched in
+[agentic-maintenance.md §8](agentic-maintenance.md#8-mainnet-placeholder); nothing below
+the placeholder exists yet, on purpose.

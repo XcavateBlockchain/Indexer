@@ -699,3 +699,75 @@ async fn fetch_role_row(
         row.get("bump"),
     )
 }
+
+// --- program-upgrade recording (ADR-24) ------------------------------------------------------
+
+/// Pushes one BPFLoaderUpgradeable `Upgrade` of the whitelist program through the real
+/// decoder + recorder pair, exactly as either datasource would deliver it.
+async fn apply_whitelist_upgrade(pool: &PgPool, slot: u64, signature_byte: u8) {
+    let filler = |n: u8| Pubkey::new_from_array([n; 32]);
+    // [programdata, program, buffer, spill, rent, clock, authority] -- the target at index 1.
+    let accounts = [
+        filler(41),
+        PROGRAM_ID,
+        filler(42),
+        filler(43),
+        filler(44),
+        filler(45),
+        filler(46),
+    ];
+    let raw = solana_instruction::Instruction {
+        program_id: crate::upgrades::BPF_LOADER_UPGRADEABLE_ID,
+        accounts: accounts
+            .iter()
+            .map(|p| solana_instruction::AccountMeta {
+                pubkey: *p,
+                is_signer: false,
+                is_writable: true,
+            })
+            .collect(),
+        // bincode: `Upgrade` is unit variant 3 of UpgradeableLoaderInstruction.
+        data: vec![3, 0, 0, 0],
+    };
+    let decoded_ix = crate::upgrades::LoaderUpgradeDecoder
+        .decode_instruction(&raw)
+        .expect("a loader upgrade of a registry program must decode");
+
+    let meta = instruction_metadata(tx_metadata(sig_from(signature_byte), slot, Some(1)), &[0]);
+
+    with_batcher(pool, |batcher| async move {
+        let mut recorder = crate::upgrades::UpgradeRecorder::new(batcher);
+        recorder
+            .process((meta, decoded_ix, Default::default(), raw), metrics())
+            .await
+            .expect("upgrade recording must succeed");
+    })
+    .await;
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_observed_upgrade_lands_in_program_upgrades_and_replays_are_no_ops(pool: PgPool) {
+    let slot: u64 = 483_600_000;
+    apply_whitelist_upgrade(&pool, slot, 21).await;
+    // A backfill re-walk re-delivers the same transaction; the row must not duplicate.
+    apply_whitelist_upgrade(&pool, slot, 21).await;
+
+    let rows = sqlx::query("SELECT * FROM program_upgrades WHERE program_id = $1")
+        .bind(PROGRAM_ID.to_bytes().to_vec())
+        .fetch_all(&pool)
+        .await
+        .expect("program_upgrades rows");
+    assert_eq!(
+        rows.len(),
+        1,
+        "one boundary, however often it is re-observed"
+    );
+    let row = &rows[0];
+    assert_eq!(row.get::<i64, _>("upgrade_slot"), slot as i64);
+    assert_eq!(row.get::<String, _>("source"), "chain");
+    assert_eq!(
+        row.get::<String, _>("signature"),
+        sig_from(21).to_string(),
+        "the recorded signature is the upgrade transaction's"
+    );
+}

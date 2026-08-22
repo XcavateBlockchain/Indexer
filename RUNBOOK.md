@@ -113,34 +113,42 @@ for the incident this guard closed).
 
 ## After a program upgrade
 
-1. **Regenerate the upgraded program's decoder** (README's
-   ["Regenerating a decoder"](README.md#regenerating-a-decoder-after-an-idl-change)
-   section has the exact command; substitute the program's IDL and crate directory):
-   ```bash
-   npx @sevenlabs-hq/carbon-cli@latest parse -i ./idls/<program>.json \
-     -o ./crates/<program>-decoder -s anchor -c \
-     --with-postgres true --with-graphql true --with-serde true
-   ```
-   (`xcavate_whitelist.json` -> `whitelist-decoder`; the other three match their names.)
-   If the upgrade added/removed account types or changed close semantics, the program's
-   migrations, `crates/indexer/src/mapping/<program>.rs` and `db/` module need matching
-   updates — re-read the on-chain source's `close =` constraints. Rebuild and redeploy both
-   binaries.
-2. **Check the decode-failure panel** ("Decode failures" on the Grafana dashboard —
-   `rate(updates_failed[5m])` + `decode_skipped_total` by `reason`) after the upgrade ships.
-   A nonzero rate here means the deployed program's account layout or instruction shape
-   diverged from what the regenerated decoder expects — every mapping failure is loud by
-   design (`decode_skipped_total` counter + an error log naming the signature and path +
-   carbon's own `updates_failed`), matching the old SubQuery handlers' stance: for a
-   compliance registry, integrity beats liveness (`ADR-10`, `ARCHITECTURE.md §6`).
-3. **Consider versioned decoders** if the upgrade changed the on-chain layout in a way that
-   makes old, already-indexed data ambiguous under the new decoder (e.g. a reused
-   discriminator with a different field layout). This indexer currently has no versioned
-   decoder mechanism — Phase 0 recon confirmed the program had never been upgraded past its
-   initial deploy slot as of this migration (`MIGRATION_LOG.md`, "Program upgrades"), so this
-   was never built. If it's ever needed, carbon 0.12.0's decoder trait can be keyed by slot
-   range same as the `versioned-decoders` example in `sevenlabs-hq/carbon`'s own examples
-   directory (referenced in `MIGRATION_LOG.md`'s Phase 0 recon).
+Upgrades are detected, not discovered: a BPFLoaderUpgradeable `Upgrade` of any tracked
+program is recorded in-pipeline into the `program_upgrades` version timeline (ADR-24 —
+the `warn!` log line `NEW program upgrade recorded`, the
+`program_upgrades_detected_total{program}` counter, the **ProgramUpgradeDetected** alert,
+the `programUpgrades` GraphQL query, and a startup warning whenever the running binary's
+decoders predate a recorded boundary). Under the maintenance contract (ADR-23) the indexer
+is normally updated and deployed **before** the multisig executes the upgrade, so this
+section is either the planned post-execution tail of that flow or the incident path when
+the ordering broke.
+
+1. **Establish what happened**: `python3 scripts/agent/check-program-upgrades.py --graphql
+   http://localhost:3010/graphql` — the chain's last-deploy slot per program vs
+   `addresses.json` and vs the indexer's recorded boundaries. If the chain moved and no
+   boundary is recorded after a reconcile interval, check `IndexerDown`/`SlotLagHigh`
+   first; a re-run of `indexer backfill` re-delivers the upgrade transaction and heals the
+   record.
+2. **Dispatch the update work** (or verify it already shipped): the procedures live in
+   `agent/skills/` — `upstream-sync/SKILL.md` classifies the change,
+   `regen-decoders/SKILL.md` handles additive IDL changes, `versioned-decoder/SKILL.md`
+   handles breaking ones (frozen v1 decoder + slot-routed mapper on the recorded boundary,
+   ADR-25). The decoder-regeneration command itself is in README's
+   ["Regenerating a decoder"](README.md#regenerating-a-decoder-after-an-idl-change);
+   close semantics still come from the on-chain source's `close =` constraints, never the
+   IDL.
+3. **Heal the in-between window**: once the updated binaries are deployed, run a full
+   backfill re-walk (`docker compose exec -T indexer indexer backfill` on the host) —
+   transactions that streamed between the upgrade slot and the new decoder going live were
+   dropped — loudly when the bytes still decoded but no longer mapped (`DecodeFailures`),
+   silently when they no longer matched any known discriminator at all — and the re-walk
+   re-inserts them (every write is idempotent `ON CONFLICT DO NOTHING` / slot-guarded).
+4. **Watch the decode-failure panel** ("Decode failures" on the Grafana dashboard —
+   `rate(updates_failed[5m])` + `decode_skipped_total` by `reason`) for the following hour.
+   A nonzero rate means the deployed program and the decoders still diverge — every mapping
+   failure is loud by design (`decode_skipped_total` + an error log naming the signature
+   and path + carbon's own `updates_failed`): for a compliance registry, integrity beats
+   liveness (`ADR-10`, `ARCHITECTURE.md §6`).
 
 ## Devnet ledger reset
 
@@ -207,6 +215,7 @@ nothing pages anyone on its own; check Prometheus's `/alerts` page or Grafana's 
 | `ApiDown` | `up{job="api"} == 0` for 2m | Prometheus can't scrape `api:9465` — the GraphQL API process/container is down. |
 | `ReconnectStorm` | `grpc_reconnects_total` increased by more than 5 in 15m | Repeated gRPC stream rebuilds — usually Alchemy throttling, a network problem, or an unhealthy upstream. Undercounts brief blips the datasource heals internally (same caveat as `IndexerDown`); treat as a lower bound. |
 | `BackfillStalled` | `(chain_tip_slot - last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0` for 5m | No backfill-walk progress while the indexer is behind — most likely a stuck history walk (a poison signature, or every RPC endpoint failing). Also fires for a stalled *reconciler* long after the initial backfill finished, since the underlying gauge never resumes post-completion — check `backfillComplete` via `/health`/`syncStatus` to tell the two apart (see "Frozen frontier" above). |
+| `ProgramUpgradeDetected` | `program_upgrades_detected_total` increased in 1h | A tracked program's bytecode was upgraded on-chain (`ADR-24`) — the running decoder was generated from the pre-upgrade IDL. First observations only (crawl re-walks can't re-fire it); the durable record is the `program_upgrades` table / `programUpgrades` GraphQL query. Follow "After a program upgrade" above. |
 
 ## Secrets / rotation
 

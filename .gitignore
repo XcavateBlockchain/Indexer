@@ -12,3 +12,4 @@ project.yaml
 
 # Rust workspace build output
 target/
+__pycache__/

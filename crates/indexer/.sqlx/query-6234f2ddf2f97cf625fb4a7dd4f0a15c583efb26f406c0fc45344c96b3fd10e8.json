@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO program_upgrades (program_id, upgrade_slot, signature, source)\n        VALUES ($1, $2, $3, 'chain')\n        ON CONFLICT (program_id, upgrade_slot) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6234f2ddf2f97cf625fb4a7dd4f0a15c583efb26f406c0fc45344c96b3fd10e8"
+}

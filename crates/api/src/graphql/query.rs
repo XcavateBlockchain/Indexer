@@ -14,8 +14,8 @@ use super::enums::{
 use super::programs;
 use super::types::{
     AccessCheck, Admin, AdminConnection, Config, ProgramInstruction, ProgramInstructionConnection,
-    ProgramSyncStatus, RoleAssignment, RoleAssignmentConnection, SyncStatus, WhitelistAction,
-    WhitelistActionConnection,
+    ProgramSyncStatus, ProgramUpgrade, RoleAssignment, RoleAssignmentConnection, SyncStatus,
+    WhitelistAction, WhitelistActionConnection,
 };
 use crate::guards::{clamp_first, clamp_offset};
 
@@ -417,6 +417,56 @@ impl QueryRoot {
             slot_lag: I64(lag as i64),
             programs,
         })
+    }
+
+    /// Each program's recorded version timeline (`program_upgrades`, ADR-24), oldest boundary
+    /// first: the seeded deploy slot plus every BPFLoaderUpgradeable upgrade the indexer has
+    /// observed on-chain. More than one entry for a program means its bytecode changed after
+    /// the checked-in IDL's snapshot -- the signal the maintenance loop acts on (RUNBOOK.md
+    /// "After a program upgrade"). Unpaginated on purpose: upgrades are rare, operator-driven
+    /// events (a handful of rows per program, ever). Scoped by the api's optional `PROGRAMS`
+    /// env like `syncStatus`.
+    async fn program_upgrades(
+        context: &GraphQLContext,
+        program: Option<ProgramName>,
+    ) -> FieldResult<Vec<ProgramUpgrade>> {
+        let program_id = program.map(|p| p.as_program_id_bytes());
+        let rows = sqlx::query!(
+            r#"
+            SELECT program_id, upgrade_slot, signature, source, detected_at
+            FROM program_upgrades
+            WHERE ($1::bytea IS NULL OR program_id = $1)
+              AND ($2::bytea[] IS NULL OR program_id = ANY($2))
+            ORDER BY upgrade_slot ASC
+            "#,
+            program_id.as_deref(),
+            context.program_filter.as_deref(),
+        )
+        .fetch_all(&context.pool)
+        .await?;
+
+        let mut upgrades = Vec::with_capacity(rows.len());
+        for r in rows {
+            // Same roster hard-fail as syncStatus: a row for an address outside the
+            // compiled-in set means the DB and this binary disagree about the programs.
+            let program = ProgramName::from_program_id_bytes(&r.program_id).ok_or_else(|| {
+                FieldError::new(
+                    format!(
+                        "program_upgrades has a row for an unknown program id: {}",
+                        bs58::encode(&r.program_id).into_string()
+                    ),
+                    Value::null(),
+                )
+            })?;
+            upgrades.push(ProgramUpgrade {
+                program,
+                upgrade_slot: I64(r.upgrade_slot),
+                signature: r.signature,
+                source: r.source,
+                detected_at: r.detected_at,
+            });
+        }
+        Ok(upgrades)
     }
 
     /// The shared instruction history: every successfully indexed instruction of every
