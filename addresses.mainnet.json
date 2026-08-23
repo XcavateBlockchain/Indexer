@@ -1,0 +1,7 @@
+{
+  "_comment": "PLACEHOLDER — nothing is deployed on mainnet. When mainnet deployment starts, this file takes addresses.json's exact shape (programs, deploy_slots, mints, configs, wallets) for mainnet-beta, and docs/agentic-maintenance.md §8 describes the environment split. Until then every tool reads addresses.json (devnet) only.",
+  "cluster": "https://api.mainnet-beta.solana.com",
+  "status": "not-deployed",
+  "programs": {},
+  "deploy_slots": {}
+}

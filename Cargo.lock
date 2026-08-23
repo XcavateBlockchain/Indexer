@@ -2410,6 +2410,7 @@ dependencies = [
  "solana-instruction",
  "solana-message",
  "solana-pubkey 3.0.0",
+ "solana-sdk-ids",
  "solana-signature",
  "solana-transaction-status",
  "sqlx",

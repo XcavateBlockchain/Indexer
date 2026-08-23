@@ -22,6 +22,7 @@ pub mod models;
 pub mod property;
 pub mod regions;
 pub mod sync_state;
+pub mod upgrades;
 
 #[cfg(test)]
 mod tests;

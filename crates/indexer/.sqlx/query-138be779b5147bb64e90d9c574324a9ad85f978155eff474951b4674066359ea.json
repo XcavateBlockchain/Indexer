@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT upgrade_slot, signature, source, detected_at\n        FROM program_upgrades\n        WHERE program_id = $1\n        ORDER BY upgrade_slot ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "upgrade_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "signature",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "detected_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "138be779b5147bb64e90d9c574324a9ad85f978155eff474951b4674066359ea"
+}

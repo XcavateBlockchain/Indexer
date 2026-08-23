@@ -34,6 +34,14 @@ pub struct ProgramSpec {
     pub id: Pubkey,
     /// Deployment slot on devnet: the backfill floor.
     pub deploy_slot: u64,
+    /// The newest `program_upgrades` boundary this crate's checked-in IDL (and therefore
+    /// its generated decoder) was written for. Equal to `deploy_slot` while a program has
+    /// never been upgraded; the maintenance procedures (`agent/skills/regen-decoders`,
+    /// `agent/skills/versioned-decoder`) bump it to the recorded upgrade slot whenever the
+    /// IDL is updated for a post-upgrade program. `main::start` warns at startup only for
+    /// recorded 'chain' boundaries ABOVE this stamp -- without it, an append-only boundary
+    /// table would make the "decoder is stale" warning fire forever after remediation.
+    pub decoder_covers_boundary: u64,
     /// Decode one `getProgramAccounts` result with this program's decoder and map it to the
     /// same state-table upsert the live account stream would produce. `None` = the account is
     /// owned by the program but does not decode (IDL drift -- the caller logs it loudly).
@@ -54,6 +62,7 @@ pub static PROGRAMS: &[ProgramSpec] = &[
         name: "xcavate_whitelist",
         id: carbon_xcavate_whitelist_decoder::PROGRAM_ID,
         deploy_slot: 483_386_556,
+        decoder_covers_boundary: 483_386_556,
         snapshot_write_op: crate::mapping::whitelist::snapshot_write_op,
         tables: &[
             StateTable::Config,
@@ -65,6 +74,7 @@ pub static PROGRAMS: &[ProgramSpec] = &[
         name: "regions",
         id: carbon_regions_decoder::PROGRAM_ID,
         deploy_slot: 483_386_626,
+        decoder_covers_boundary: 483_386_626,
         snapshot_write_op: crate::mapping::regions::snapshot_write_op,
         tables: &[
             StateTable::RegionsConfig,
@@ -79,6 +89,7 @@ pub static PROGRAMS: &[ProgramSpec] = &[
         name: "marketplace",
         id: carbon_marketplace_decoder::PROGRAM_ID,
         deploy_slot: 483_386_726,
+        decoder_covers_boundary: 483_386_726,
         snapshot_write_op: crate::mapping::marketplace::snapshot_write_op,
         tables: &[
             StateTable::MarketplaceConfig,
@@ -96,6 +107,7 @@ pub static PROGRAMS: &[ProgramSpec] = &[
         name: "property",
         id: carbon_property_decoder::PROGRAM_ID,
         deploy_slot: 483_386_809,
+        decoder_covers_boundary: 483_386_809,
         snapshot_write_op: crate::mapping::property::snapshot_write_op,
         tables: &[
             StateTable::PropertyConfig,
@@ -134,6 +146,13 @@ mod tests {
             .as_object()
             .expect("addresses.json has a programs block");
         assert_eq!(programs.len(), PROGRAMS.len());
+        // deploy_slots exists for the maintenance tooling (scripts/agent/ probes the chain
+        // and needs the expected version-1 slots without parsing this file's Rust); the
+        // registry stays the compiled-in runtime source and the two must agree.
+        let deploy_slots = addresses["deploy_slots"]
+            .as_object()
+            .expect("addresses.json has a deploy_slots block");
+        assert_eq!(deploy_slots.len(), PROGRAMS.len());
         for spec in PROGRAMS {
             let addr = programs[spec.name]
                 .as_str()
@@ -142,6 +161,14 @@ mod tests {
                 addr,
                 spec.id.to_string(),
                 "registry address for {} must match addresses.json",
+                spec.name
+            );
+            let slot = deploy_slots[spec.name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("addresses.json lists a deploy slot for {}", spec.name));
+            assert_eq!(
+                slot, spec.deploy_slot,
+                "registry deploy slot for {} must match addresses.json",
                 spec.name
             );
         }
@@ -164,6 +191,20 @@ mod tests {
                 Some(&1),
                 "{} must appear in exactly one program's table list",
                 table.table_name()
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_coverage_stamp_never_precedes_the_deploy() {
+        // decoder_covers_boundary starts life equal to deploy_slot and only ever moves
+        // FORWARD to a recorded upgrade slot (see the field's doc); a value below the
+        // deploy slot would claim the decoder covers a version that never existed.
+        for spec in PROGRAMS {
+            assert!(
+                spec.decoder_covers_boundary >= spec.deploy_slot,
+                "{}: decoder_covers_boundary must be >= deploy_slot",
+                spec.name
             );
         }
     }

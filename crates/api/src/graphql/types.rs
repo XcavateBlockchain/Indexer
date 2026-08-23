@@ -135,6 +135,23 @@ pub struct ProgramSyncStatus {
     pub snapshot_slot: Option<I64>,
 }
 
+/// One recorded version boundary of a program (`program_upgrades`, ADR-24): a slot at which
+/// bytecode became live for that program.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct ProgramUpgrade {
+    pub program: ProgramName,
+    /// Slot the version's bytecode became live.
+    pub upgrade_slot: I64,
+    /// base58 signature of the upgrade transaction; null for the seeded deploy row.
+    pub signature: Option<String>,
+    /// `"deploy"` (the seeded initial deploy slot) or `"chain"` (an observed
+    /// BPFLoaderUpgradeable upgrade). A plain string, not a GraphQL enum, on purpose: it is
+    /// an internal provenance tag with no on-chain borsh order to mirror, and keeping it a
+    /// string means widening the migration's CHECK never needs an api release in lockstep.
+    pub source: String,
+    pub detected_at: DateTime<Utc>,
+}
+
 /// One row of the shared `program_instructions` history: every successfully indexed
 /// instruction of every indexed program, with its decoded args as JSON. `id` is
 /// `"<txSignature>-<ixIndex>"` for a top-level instruction and

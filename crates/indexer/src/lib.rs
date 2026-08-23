@@ -19,6 +19,7 @@
 //! | [`sync_frontier`] | The contiguity contract governing `sync_state.last_contiguous_slot`. |
 //! | [`metrics`] | `carbon_core::metrics::Metrics` on Prometheus + the `/metrics` listener. |
 //! | [`grpc_smoke`] | The `smoke-grpc` check, reused as `run`'s startup subscribe gate. |
+//! | [`upgrades`] | BPFLoaderUpgradeable upgrade detection: the version-boundary recorder. |
 //!
 //! Data flows one way: datasource -> carbon decodes -> processor maps -> batcher commits.
 //! Processors never touch the database directly and the batcher never decodes anything.
@@ -42,6 +43,7 @@ pub mod programs;
 pub mod reconcile;
 pub mod snapshot;
 pub mod sync_frontier;
+pub mod upgrades;
 
 #[cfg(test)]
 mod integration_tests;

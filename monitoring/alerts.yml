@@ -87,6 +87,38 @@ groups:
             note this undercounts brief blips the datasource heals internally (see
             IndexerDown's description), so treat this as a lower bound.
 
+      # ProgramUpgradeDetected -- the agentic-maintenance trigger (ADR-24).
+      #
+      # program_upgrades_detected_total counts FIRST observations only: the batcher bumps
+      # it exclusively for `program_upgrades` rows its ON CONFLICT insert actually created,
+      # strictly after their commit (crates/indexer/src/batcher.rs), so backfill re-walks
+      # re-delivering a historical upgrade transaction can never re-fire this. The series
+      # is pre-registered at zero per program (metrics.rs install()), so `increase()` reads
+      # a real 0 -> 1 step rather than "no data".
+      #
+      # The 1h window is a visibility choice, not a detection one (detection is
+      # at-most-once per boundary -- an ambiguous commit retried as a no-op can skip the
+      # counter, which is one more reason the durable record below matters):
+      # with no Alertmanager (ruling R19), a firing alert is only as useful as the chance
+      # someone sees it on the /alerts page or the Grafana annotation, so it stays lit for
+      # a full hour after the step. The durable record is the `program_upgrades` table and
+      # the `programUpgrades` GraphQL query -- if this alert has come and gone, the row has
+      # not.
+      - alert: ProgramUpgradeDetected
+        expr: increase(program_upgrades_detected_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.program }} was upgraded on-chain -- its decoder may now be stale"
+          description: >-
+            The indexer observed a BPFLoaderUpgradeable Upgrade of {{ $labels.program }}
+            and recorded a new version boundary in program_upgrades. The running decoder
+            was generated from the checked-in pre-upgrade IDL: until the maintenance
+            pipeline ships a decoder for the new version, instructions the upgrade added
+            or changed will surface as DecodeFailures (or, worse, not at all). Follow
+            RUNBOOK.md "After a program upgrade"; the boundary slot is in the
+            programUpgrades GraphQL query.
+
       # BackfillStalled -- derived, not the brief's literal expression.
       #
       # The brief's suggested rule (`backfill_complete == 0 and

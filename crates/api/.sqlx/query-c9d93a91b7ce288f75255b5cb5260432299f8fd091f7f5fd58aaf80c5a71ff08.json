@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT program_id, upgrade_slot, signature, source, detected_at\n            FROM program_upgrades\n            WHERE ($1::bytea IS NULL OR program_id = $1)\n              AND ($2::bytea[] IS NULL OR program_id = ANY($2))\n            ORDER BY upgrade_slot ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "program_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "upgrade_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "signature",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "detected_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "ByteaArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c9d93a91b7ce288f75255b5cb5260432299f8fd091f7f5fd58aaf80c5a71ff08"
+}

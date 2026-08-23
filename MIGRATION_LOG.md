@@ -701,3 +701,58 @@ event-derivability audits, on-chain source cross-checks) was done against
   region PDA, operator owner, both postcodes, both lawyer wallets, the accepted payment
   mints) and the legacy whitelist surface (`admins`, `roleAssignments`, `checkAccess`)
   unchanged.
+
+## Agentic maintenance enablement — 2026-08-22
+
+The post-migration extension that turns "keep the indexer in lockstep with the programs"
+from an operator procedure into an automated, PR-gated maintenance loop (ADR-23/24/25;
+design in `docs/agentic-maintenance.md`; procedures in `agent/skills/`, entry point
+`AGENTS.md`; tooling in `scripts/agent/`).
+
+### What was built
+
+- **Upgrade detection in-pipeline** (ADR-24): migration `0011_program_upgrades.sql`
+  (version-boundary table seeded with deploy slots + a nullable
+  `program_instructions.decoder_version` column), a hand-written BPFLoaderUpgradeable
+  `Upgrade` decoder + recorder pipe (`crates/indexer/src/upgrades.rs`) on
+  `common_pipes` (rides live stream and all crawls), detection side effects at most once
+  per boundary strictly after commit (`batcher.rs`), the
+  `program_upgrades_detected_total{program}` counter + `ProgramUpgradeDetected` alert, a
+  `programUpgrades` GraphQL query, and a startup warning for boundaries newer than the
+  binary. `addresses.json` gained a `deploy_slots` block, pinned to the registry by test.
+- **Versioned decoding designed, dormant** (ADR-25): mapper-level slot routing on the
+  recorded boundary, frozen `-vN` decoder crates (`freeze-decoder-version.sh`),
+  newest-first snapshot fallback, restart-based activation healed by an idempotent
+  backfill re-walk. Nothing routes today — the chain still runs version 1 of everything.
+- **Additive-only migration policy, mechanized**: `scripts/lint-migrations.sh` + the
+  `migration-lint` CI job (immutable history, strictly-increasing numbering, destructive
+  SQL only under an in-file `-- lint: allow` argument).
+- **Agent tooling** (`scripts/agent/`): upstream watcher (settled-HEAD poll),
+  Anchor-version-checked IDL build + address normalization + structural diff classifier
+  (identical/additive/breaking), on-chain ProgramData probe, decoder purity check, and a
+  full devnet rebuild-verify loop against the public RPC.
+
+### Findings
+
+| Finding | Detail |
+| --- | --- |
+| Upstream main vs deployed chain already diverge | on 2026-08-22 the chain runs version 1 of all four programs (probe: all last-deploy slots equal the recon deploy slots) while upstream `main@5927362` is IDENTICAL for regions/whitelist and **BREAKING** for marketplace/property (secondary market, offers, income, governance) — the versioned-decoder procedure's first real customer is already queued. |
+| Anchor naming drift can masquerade as breakage | anchor-lang 1.1.2 namespaces ambiguous IDL type names (`Config` → `marketplace::state::Config`); the diff classifier reports it, and `upstream-sync/SKILL.md` instructs judging layouts/discriminators, not labels. |
+| Upstream builds need a version-matched Anchor CLI | upstream pins no CLI; an 0.29-era CLI silently emits old-format IDLs. `build-upstream-idls.sh` hard-checks the CLI against upstream's `Cargo.lock` (needs 1.1.x today). |
+| Upgrade transactions already flow through both data paths | `account_required`/`getSignaturesForAddress` match the program account an `Upgrade` references, so detection needed a decoder, not a subscription — and a full backfill re-walk rebuilds the complete upgrade timeline from nothing. |
+| README's regen command was un-pinned | `carbon-cli@latest` could silently target a newer carbon-core (ADR-12 lockstep); now pinned to `@0.12.0` in README and `verify-decoder-purity.sh`. |
+
+### Verification
+
+- `cargo fmt --check`, `clippy --workspace --all-targets` (zero warnings),
+  `SQLX_OFFLINE=true cargo build --workspace --locked`, full workspace test suite (113
+  indexer tests incl. 9 new upgrade-recorder/timeline tests) against a live migrated
+  Postgres, per-crate `cargo sqlx prepare --check` with regenerated caches.
+- `scripts/agent/verify-devnet.sh` end-to-end against live devnet (public RPC, fresh
+  database): 4 programs, 29 instructions, 4 snapshots, zero undecodable, 4 seeded
+  version boundaries, 0 chain upgrades — VERIFY OK.
+- `scripts/agent/check-program-upgrades.py` live: all four programs unchanged on-chain.
+- `scripts/agent/build-upstream-idls.sh` live with anchor-cli 1.1.2: built and classified
+  upstream `main@5927362` (exit 20, see Findings).
+- `scripts/lint-migrations.sh` exercised on clean, destructive, marker-exempted and
+  misnumbered fixtures.

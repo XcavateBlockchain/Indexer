@@ -1,10 +1,12 @@
 # Decisions
 
-Architecture decision records for the SubQuery → Carbon migration. Each entry is short:
-context, decision, consequences. Source material and raw reasoning: `MIGRATION_LOG.md` and
-the controller ledger (`.superpowers/sdd/carbon-migration-spec/progress.md`, rulings R1–R20).
-Referenced from `docker-compose.subquery.yml`, `.github/workflows/ci.yml` and
-`.github/workflows/deploy.yml`'s rollback comments, and from `RUNBOOK.md`.
+Architecture decision records: ADR-1..22 for the SubQuery → Carbon migration, ADR-23+ for
+the agentic-maintenance era that followed it. Each entry is short: context, decision,
+consequences. Source material and raw reasoning: `MIGRATION_LOG.md` and the controller
+ledger (`.superpowers/sdd/carbon-migration-spec/progress.md`, rulings R1–R20); for ADR-23+,
+`docs/agentic-maintenance.md`. Referenced from `docker-compose.subquery.yml`,
+`.github/workflows/ci.yml` and `.github/workflows/deploy.yml`'s rollback comments, and from
+`RUNBOOK.md`.
 
 ## ADR-1: Carbon over SubQuery
 
@@ -494,3 +496,106 @@ in-place by migration 0007 without re-backfilling the whitelist. RPC budget scal
 with programs (~4x reconcile cost — still under 6% of Alchemy's free tier). The revisit
 trigger in ADR-9 (PostGraphile/Hasura once the query surface grows) is now materially closer:
 the hand-written surface is ~24 connections across four programs.
+
+## ADR-23: Agentic maintenance — PR-gated, chain-authoritative, indexer-before-multisig
+
+**Context.** The upstream programs repo (`XcavateBlockchain/realxmarket-solana`) moves fast,
+commits no IDLs, and has no CI; deployments to devnet are made by hand from uncommitted
+keypairs, and an on-chain upgrade multisig is planned. Keeping this indexer in lockstep was
+an operator procedure (RUNBOOK "After a program upgrade"). An always-on local AI agent now
+automates it, which forces the implicit rules to become explicit ones — most sharply because
+a push to `main` auto-deploys production (`deploy.yml`), and because upstream `main` and the
+deployed chain routinely disagree (measured on 2026-08-22: upstream HEAD is breaking for
+marketplace/property while the chain still runs version 1 of everything).
+
+**Decision.** The maintenance loop (design: `docs/agentic-maintenance.md`; procedures:
+`agent/skills/`; tooling: `scripts/agent/`) is governed by three contracts. (1) *PRs only*:
+the agent never pushes `main`; a human reviews every change, and CI (including the new
+`migration-lint` job) gates it. (2) *The chain is authoritative*: upstream `main` says what
+is coming, the on-chain probe (`check-program-upgrades.py`) says what is deployed, and
+`idls/` must always decode the deployed programs: an additive update may land ahead of the
+chain (a superset decoder still decodes everything deployed), while a breaking one prepares
+through the versioned-decoder mechanism (ADR-25) — never an early swap that would orphan
+the deployed version. (3) *Ordering*: the multisig
+executes an on-chain upgrade only after the updated indexer is merged, deployed and healthy;
+the go/no-go evidence is the deployed sha, `/health`, the `programUpgrades` timeline and a
+zero `DecodeFailures` reading.
+
+**Consequences.** The indexer ships forward-compatible and the multisig can delay or reject
+an upgrade indefinitely without ever de-syncing it. The agent's autonomy ends at two human
+gates (PR review, multisig signatures). Verification is chain-grounded and cheap — a full
+devnet rebuild into a disposable database (`verify-devnet.sh`, ~1 minute, public RPC) is
+required evidence on every PR. The trigger is a settled-HEAD poll, not a webhook. Everything
+is devnet-only today; mainnet is an explicit placeholder (`addresses.mainnet.json`,
+`docs/agentic-maintenance.md` §8).
+
+## ADR-24: On-chain upgrade detection: the `program_upgrades` version timeline
+
+**Context.** Phase 0 established that none of the four programs had ever been upgraded, so
+version handling was consciously deferred ("No versioned decoders needed"). The agentic
+loop needs the opposite stance: an upgrade must be *detected* the moment it lands, with a
+durable record of every version boundary — and the detection must survive indexer downtime.
+The key observation: an upgrade is itself a transaction (the BPF upgradeable loader's
+`Upgrade` instruction referencing the program account), so both existing data paths — the
+per-program Yellowstone filters and the `getSignaturesForAddress` crawls — already deliver
+it; it just decoded to nothing.
+
+**Decision.** A hand-written loader decoder + recorder pipe
+(`crates/indexer/src/upgrades.rs` — the one non-generated decoder in the workspace; the
+native loader has no IDL and the interesting surface is one instruction) is registered on
+`common_pipes`, so it rides the live stream and every crawl. It writes `program_upgrades`
+(migration 0011): one row per (program, boundary slot), seeded at startup with each
+program's deploy slot (`source='deploy'`), appended by observation (`source='chain'`),
+idempotent under re-walks. Detection side effects fire at most once per boundary, after
+commit: `program_upgrades_detected_total{program}`, a `warn!`, and the
+ProgramUpgradeDetected alert. The timeline is served by the `programUpgrades` GraphQL query;
+`scripts/agent/check-program-upgrades.py` probes ProgramData last-deploy slots directly as
+the out-of-band cross-check (and catches what the recorder cannot: loader-v4 migrations,
+devnet resets, deployments the indexer never saw). `main::start` warns loudly when the
+database knows boundaries the running binary's decoders were not built for.
+`program_instructions` gains a nullable `decoder_version` column now (NULL = "version 1"),
+so activating version attribution later is a code change, not a migration racing an
+upgrade.
+
+**Consequences.** An upgrade during downtime is recovered by the next crawl over that range
+(a full backfill re-walk rebuilds the whole timeline from nothing — verified end-to-end on
+devnet). Detection is decoupled from reaction: the indexer never swaps decoders by itself;
+a recorded boundary means "the checked-in IDL may no longer match the deployed program",
+and the reaction is the maintenance loop. The recorder records `Upgrade` only — initial
+deploys are the seeded rows, and loader-v4 (should devnet ever migrate) is the probe
+script's job to flag.
+
+## ADR-25: Slot-routed versioned decoding (designed, dormant) and the additive-only migration policy
+
+**Context.** A breaking program upgrade must not make pre-upgrade history undecodable:
+backfill and reconciliation deliberately re-walk old ranges through the same pipes as the
+live stream (ADR-15), and a swapped decoder would turn the completeness machinery into a
+failure generator — or, when a discriminator survives with a changed layout, into a silent
+mis-decoder. Carbon decoders are slot-blind (`decode_instruction` sees only bytes), so the
+routing point has to live where the slot is: the mapper. Nothing needs routing *today* (the
+chain still runs version 1 of everything), but upstream already carries breaking changes,
+so the design is fixed now while there is no deadline.
+
+**Decision.** When the first breaking upgrade is prepared: freeze the current generated
+crate as `crates/<p>-decoder-vN` (`freeze-decoder-version.sh`; one scripted package-rename
+line is the single sanctioned deviation from "generated crates are never edited") and
+archive its IDL under `idls/versions/<p>/`; regenerate `crates/<p>-decoder` from the new
+IDL; wrap both in a versioned mapper that routes on the recorded `program_upgrades`
+boundary, read at startup — dormant (boundary = +∞) until the upgrade actually lands, which
+is what makes the indexer forward-compatible while the multisig deliberates. Activation is
+restart-based, healed by an idempotent backfill re-walk; the boundary slot itself routes to
+the new version with a decode-attempt fallback for that slot only; snapshots
+(slot-unattributable by nature) try newest-first down the version list; the versioned
+mapper stamps `program_instructions.decoder_version`. Supporting policy, enforced
+mechanically (`scripts/lint-migrations.sh` + the `migration-lint` CI job): migrations are
+additive-only — applied files immutable, numbers strictly increasing, no destructive SQL
+without an in-file `-- lint: allow <KEYWORD> -- <why>` marker carrying a written
+correctness argument (the 0007 precedent).
+
+**Consequences.** Old bytes decode under the decoder that was true when they were written,
+forever; state tables stay ADR-2 disposable mirrors (version metadata lives in
+`program_upgrades` and `decoder_version`, never in state rows); rollback to a previous
+image stays safe because the schema only ever gains. The cost is carried complexity per
+version split (a frozen crate, a wrapper mapper, wiring) — accepted, because it is paid
+only when a breaking upgrade actually ships and is removable once a version's history is
+no longer served. Procedure: `agent/skills/versioned-decoder/SKILL.md`.
