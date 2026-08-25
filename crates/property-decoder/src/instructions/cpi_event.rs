@@ -16,10 +16,23 @@ pub enum CpiEvent {
     AgentVotesUnlocked(events::agent_votes_unlocked::AgentVotesUnlockedEvent),
     AuthorityUpdateProposed(events::authority_update_proposed::AuthorityUpdateProposedEvent),
     AuthorityUpdated(events::authority_updated::AuthorityUpdatedEvent),
+    ChallengeFinalized(events::challenge_finalized::ChallengeFinalizedEvent),
+    ChallengeOpened(events::challenge_opened::ChallengeOpenedEvent),
+    ChallengeVoteCast(events::challenge_vote_cast::ChallengeVoteCastEvent),
+    ChallengeVotesUnlocked(events::challenge_votes_unlocked::ChallengeVotesUnlockedEvent),
     ConfigInitialized(events::config_initialized::ConfigInitializedEvent),
     ConfigUpdated(events::config_updated::ConfigUpdatedEvent),
+    IncomeCheckpointClosed(events::income_checkpoint_closed::IncomeCheckpointClosedEvent),
+    IncomeClaimed(events::income_claimed::IncomeClaimedEvent),
+    IncomeDistributed(events::income_distributed::IncomeDistributedEvent),
+    IncomeSettled(events::income_settled::IncomeSettledEvent),
     LettingAgentAdded(events::letting_agent_added::LettingAgentAddedEvent),
     LettingAgentRemoved(events::letting_agent_removed::LettingAgentRemovedEvent),
+    ProposalCreated(events::proposal_created::ProposalCreatedEvent),
+    ProposalExecuted(events::proposal_executed::ProposalExecutedEvent),
+    ProposalFinalized(events::proposal_finalized::ProposalFinalizedEvent),
+    ProposalVoteCast(events::proposal_vote_cast::ProposalVoteCastEvent),
+    ProposalVotesUnlocked(events::proposal_votes_unlocked::ProposalVotesUnlockedEvent),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,17 +82,56 @@ impl CpiEvent {
                 if let Some(decoded) = events::authority_updated::AuthorityUpdatedEvent::decode(event_data) {
             return Some(CpiEvent::AuthorityUpdated(decoded));
         }
+                if let Some(decoded) = events::challenge_finalized::ChallengeFinalizedEvent::decode(event_data) {
+            return Some(CpiEvent::ChallengeFinalized(decoded));
+        }
+                if let Some(decoded) = events::challenge_opened::ChallengeOpenedEvent::decode(event_data) {
+            return Some(CpiEvent::ChallengeOpened(decoded));
+        }
+                if let Some(decoded) = events::challenge_vote_cast::ChallengeVoteCastEvent::decode(event_data) {
+            return Some(CpiEvent::ChallengeVoteCast(decoded));
+        }
+                if let Some(decoded) = events::challenge_votes_unlocked::ChallengeVotesUnlockedEvent::decode(event_data) {
+            return Some(CpiEvent::ChallengeVotesUnlocked(decoded));
+        }
                 if let Some(decoded) = events::config_initialized::ConfigInitializedEvent::decode(event_data) {
             return Some(CpiEvent::ConfigInitialized(decoded));
         }
                 if let Some(decoded) = events::config_updated::ConfigUpdatedEvent::decode(event_data) {
             return Some(CpiEvent::ConfigUpdated(decoded));
         }
+                if let Some(decoded) = events::income_checkpoint_closed::IncomeCheckpointClosedEvent::decode(event_data) {
+            return Some(CpiEvent::IncomeCheckpointClosed(decoded));
+        }
+                if let Some(decoded) = events::income_claimed::IncomeClaimedEvent::decode(event_data) {
+            return Some(CpiEvent::IncomeClaimed(decoded));
+        }
+                if let Some(decoded) = events::income_distributed::IncomeDistributedEvent::decode(event_data) {
+            return Some(CpiEvent::IncomeDistributed(decoded));
+        }
+                if let Some(decoded) = events::income_settled::IncomeSettledEvent::decode(event_data) {
+            return Some(CpiEvent::IncomeSettled(decoded));
+        }
                 if let Some(decoded) = events::letting_agent_added::LettingAgentAddedEvent::decode(event_data) {
             return Some(CpiEvent::LettingAgentAdded(decoded));
         }
                 if let Some(decoded) = events::letting_agent_removed::LettingAgentRemovedEvent::decode(event_data) {
             return Some(CpiEvent::LettingAgentRemoved(decoded));
+        }
+                if let Some(decoded) = events::proposal_created::ProposalCreatedEvent::decode(event_data) {
+            return Some(CpiEvent::ProposalCreated(decoded));
+        }
+                if let Some(decoded) = events::proposal_executed::ProposalExecutedEvent::decode(event_data) {
+            return Some(CpiEvent::ProposalExecuted(decoded));
+        }
+                if let Some(decoded) = events::proposal_finalized::ProposalFinalizedEvent::decode(event_data) {
+            return Some(CpiEvent::ProposalFinalized(decoded));
+        }
+                if let Some(decoded) = events::proposal_vote_cast::ProposalVoteCastEvent::decode(event_data) {
+            return Some(CpiEvent::ProposalVoteCast(decoded));
+        }
+                if let Some(decoded) = events::proposal_votes_unlocked::ProposalVotesUnlockedEvent::decode(event_data) {
+            return Some(CpiEvent::ProposalVotesUnlocked(decoded));
         }
                 None
     }

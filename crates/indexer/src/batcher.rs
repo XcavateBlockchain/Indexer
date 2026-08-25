@@ -61,15 +61,31 @@ pub enum WriteOp {
         pubkey: Vec<u8>,
         slot: i64,
     },
-    /// The one conditional close in the protocol: property's `remove_letting_agent` closes
-    /// the `LettingAgent` PDA on-chain only when the removed location was its last. The
-    /// mapper cannot decide that (it is pure, no DB), so the decision is made by the write
-    /// itself against the stored row -- see `db::property::close_letting_agent_if_last`.
+    /// A conditional close the mapper cannot decide (it is pure, no DB), made by the write
+    /// itself against the stored row: property's `remove_letting_agent` closes the
+    /// `LettingAgent` PDA on-chain only when the removed location was its last -- see
+    /// `db::property::close_letting_agent_if_last`.
     CloseLettingAgentIfLast {
         pubkey: Vec<u8>,
         /// The removed location's postcode as a UTF-8 string, matching the shape the
         /// `locations` JSONB stores.
         removed_postcode: String,
+        slot: i64,
+    },
+    /// Conditional close of a `ShareListing` by `buy_relisted_shares` (on-chain: closed only
+    /// when the buy emptied it) -- see `db::marketplace::close_share_listing_if_emptied`.
+    CloseShareListingIfEmptied {
+        pubkey: Vec<u8>,
+        /// The instruction's `amount` arg: how many shares were bought.
+        bought_amount: i64,
+        slot: i64,
+    },
+    /// Conditional close of a `ShareListing` by `accept_offer`, whose sold amount is the
+    /// offer account's amount rather than an instruction arg -- see
+    /// `db::marketplace::close_share_listing_if_emptied_by_offer`.
+    CloseShareListingIfEmptiedByOffer {
+        pubkey: Vec<u8>,
+        offer_pubkey: Vec<u8>,
         slot: i64,
     },
     /// Close driven by carbon's `AccountDeletion`, which carries only `{pubkey, slot}` and so
@@ -136,6 +152,8 @@ impl WriteOp {
             WriteOp::InsertAction(r) => r.slot,
             WriteOp::CloseAccount { slot, .. }
             | WriteOp::CloseLettingAgentIfLast { slot, .. }
+            | WriteOp::CloseShareListingIfEmptied { slot, .. }
+            | WriteOp::CloseShareListingIfEmptiedByOffer { slot, .. }
             | WriteOp::CloseUnknownAccount { slot, .. }
             | WriteOp::SetBackfillCursor { slot, .. } => *slot,
             WriteOp::RecordProgramUpgrade { upgrade_slot, .. } => *upgrade_slot,
@@ -157,6 +175,8 @@ impl WriteOp {
             WriteOp::InsertAction(_) => 2,
             WriteOp::CloseAccount { .. }
             | WriteOp::CloseLettingAgentIfLast { .. }
+            | WriteOp::CloseShareListingIfEmptied { .. }
+            | WriteOp::CloseShareListingIfEmptiedByOffer { .. }
             | WriteOp::CloseUnknownAccount { .. } => 3,
             WriteOp::SetBackfillCursor { .. } => 4,
         }
@@ -421,6 +441,32 @@ async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<Vec<NewUpgrade>,
                 let postcode = serde_json::Value::String(removed_postcode.clone());
                 db::property::close_letting_agent_if_last(&mut *tx, pubkey, &postcode, *slot)
                     .await?;
+            }
+            WriteOp::CloseShareListingIfEmptied {
+                pubkey,
+                bought_amount,
+                slot,
+            } => {
+                db::marketplace::close_share_listing_if_emptied(
+                    &mut *tx,
+                    pubkey,
+                    *bought_amount,
+                    *slot,
+                )
+                .await?;
+            }
+            WriteOp::CloseShareListingIfEmptiedByOffer {
+                pubkey,
+                offer_pubkey,
+                slot,
+            } => {
+                db::marketplace::close_share_listing_if_emptied_by_offer(
+                    &mut *tx,
+                    pubkey,
+                    offer_pubkey,
+                    *slot,
+                )
+                .await?;
             }
             WriteOp::CloseUnknownAccount { pubkey, slot } => {
                 for table in StateTable::ALL {

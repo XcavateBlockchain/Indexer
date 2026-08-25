@@ -3,6 +3,7 @@ use carbon_core::graphql::primitives::Pubkey;
 use carbon_core::graphql::primitives::U64;
 use carbon_core::graphql::primitives::U8;
 use crate::types::graphql::AgentElectionGraphQL;
+use crate::types::graphql::GovStateGraphQL;
 use juniper::GraphQLObject;
 
 #[derive(Debug, Clone, GraphQLObject)]
@@ -12,6 +13,7 @@ pub struct PropertyLettingGraphQL {
     pub asset_id: U64,
     pub agent: Pubkey,
     pub election: AgentElectionGraphQL,
+    pub governance: GovStateGraphQL,
     pub rent_payer: Pubkey,
     pub bump: U8,
 }
@@ -24,6 +26,7 @@ impl TryFrom<crate::accounts::postgres::PropertyLettingRow> for PropertyLettingG
             asset_id: carbon_core::graphql::primitives::U64(*row.asset_id),
             agent: carbon_core::graphql::primitives::Pubkey(row.agent.0),
             election: row.election.0.into(),
+            governance: row.governance.0.into(),
             rent_payer: carbon_core::graphql::primitives::Pubkey(row.rent_payer.0),
             bump: carbon_core::graphql::primitives::U8((*row.bump) as u8),
         })

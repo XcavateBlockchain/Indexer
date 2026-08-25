@@ -10,7 +10,8 @@ pub struct ShareHoldingGraphQL {
     pub asset_id: U64,
     pub owner: Pubkey,
     pub amount: U32,
-    pub locked_amount: U32,
+    pub locks: Vec<U32>,
+    pub listed: U32,
     pub bump: U8,
 }
 
@@ -20,7 +21,8 @@ impl From<crate::types::ShareHolding> for ShareHoldingGraphQL {
             asset_id: carbon_core::graphql::primitives::U64(original.asset_id),
             owner: carbon_core::graphql::primitives::Pubkey(original.owner),
             amount: carbon_core::graphql::primitives::U32(original.amount),
-            locked_amount: carbon_core::graphql::primitives::U32(original.locked_amount),
+            locks: original.locks.into_iter().map(|item| carbon_core::graphql::primitives::U32(item)).collect(),
+            listed: carbon_core::graphql::primitives::U32(original.listed),
             bump: carbon_core::graphql::primitives::U8(original.bump),
         }
     }

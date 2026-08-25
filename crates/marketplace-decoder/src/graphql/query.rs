@@ -175,6 +175,34 @@ impl QueryRoot {
         Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
     }
 
+    async fn offer(
+        context: &crate::graphql::context::GraphQLContext,
+        pubkey: String,
+    ) -> FieldResult<Option<crate::accounts::graphql::OfferGraphQL>> {
+        use carbon_core::postgres::operations::LookUp;
+        use carbon_core::postgres::primitives::Pubkey as PgPubkey;
+        let pk = PgPubkey(solana_pubkey::Pubkey::from_str(&pubkey).map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?);
+        let row = crate::accounts::postgres::OfferRow::lookup(pk, &context.pool).await
+            .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(row.map(|row| row.try_into().ok()).flatten())
+    }
+
+    async fn list_offer(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::accounts::graphql::OfferGraphQL>> {
+        let rows: Vec<crate::accounts::postgres::OfferRow> = sqlx::query_as(
+            r#"SELECT * FROM offer_account ORDER BY __slot DESC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
     async fn property_asset(
         context: &crate::graphql::context::GraphQLContext,
         pubkey: String,
@@ -259,7 +287,67 @@ impl QueryRoot {
         Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
     }
 
+    async fn share_listing(
+        context: &crate::graphql::context::GraphQLContext,
+        pubkey: String,
+    ) -> FieldResult<Option<crate::accounts::graphql::ShareListingGraphQL>> {
+        use carbon_core::postgres::operations::LookUp;
+        use carbon_core::postgres::primitives::Pubkey as PgPubkey;
+        let pk = PgPubkey(solana_pubkey::Pubkey::from_str(&pubkey).map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?);
+        let row = crate::accounts::postgres::ShareListingRow::lookup(pk, &context.pool).await
+            .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(row.map(|row| row.try_into().ok()).flatten())
+    }
+
+    async fn list_share_listing(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::accounts::graphql::ShareListingGraphQL>> {
+        let rows: Vec<crate::accounts::postgres::ShareListingRow> = sqlx::query_as(
+            r#"SELECT * FROM share_listing_account ORDER BY __slot DESC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
     // Instructions (per-instruction list and lookup by signature+index)
+    async fn accept_offer(
+        context: &crate::graphql::context::GraphQLContext,
+        signature: String,
+        instruction_index: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::AcceptOfferGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::AcceptOfferRow> = sqlx::query_as(
+            r#"SELECT * FROM accept_offer_instruction WHERE __signature = $1 AND __instruction_index = $2 ORDER BY __stack_height ASC"#,
+        )
+        .bind(signature)
+        .bind(instruction_index)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn list_accept_offer(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::AcceptOfferGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::AcceptOfferRow> = sqlx::query_as(
+            r#"SELECT * FROM accept_offer_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
     async fn assign_developer_lawyer(
         context: &crate::graphql::context::GraphQLContext,
         signature: String,
@@ -315,6 +403,38 @@ impl QueryRoot {
     ) -> FieldResult<Vec<crate::instructions::graphql::BuyPropertySharesGraphQL>> {
         let rows: Vec<crate::instructions::postgres::BuyPropertySharesRow> = sqlx::query_as(
             r#"SELECT * FROM buy_property_shares_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn buy_relisted_shares(
+        context: &crate::graphql::context::GraphQLContext,
+        signature: String,
+        instruction_index: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::BuyRelistedSharesGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::BuyRelistedSharesRow> = sqlx::query_as(
+            r#"SELECT * FROM buy_relisted_shares_instruction WHERE __signature = $1 AND __instruction_index = $2 ORDER BY __stack_height ASC"#,
+        )
+        .bind(signature)
+        .bind(instruction_index)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn list_buy_relisted_shares(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::BuyRelistedSharesGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::BuyRelistedSharesRow> = sqlx::query_as(
+            r#"SELECT * FROM buy_relisted_shares_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
         )
         .bind(limit)
         .bind(offset)
@@ -772,6 +892,38 @@ impl QueryRoot {
         Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
     }
 
+    async fn make_offer(
+        context: &crate::graphql::context::GraphQLContext,
+        signature: String,
+        instruction_index: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::MakeOfferGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::MakeOfferRow> = sqlx::query_as(
+            r#"SELECT * FROM make_offer_instruction WHERE __signature = $1 AND __instruction_index = $2 ORDER BY __stack_height ASC"#,
+        )
+        .bind(signature)
+        .bind(instruction_index)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn list_make_offer(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::MakeOfferGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::MakeOfferRow> = sqlx::query_as(
+            r#"SELECT * FROM make_offer_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
     async fn register_lawyer(
         context: &crate::graphql::context::GraphQLContext,
         signature: String,
@@ -804,6 +956,38 @@ impl QueryRoot {
         Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
     }
 
+    async fn reject_offer(
+        context: &crate::graphql::context::GraphQLContext,
+        signature: String,
+        instruction_index: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::RejectOfferGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::RejectOfferRow> = sqlx::query_as(
+            r#"SELECT * FROM reject_offer_instruction WHERE __signature = $1 AND __instruction_index = $2 ORDER BY __stack_height ASC"#,
+        )
+        .bind(signature)
+        .bind(instruction_index)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn list_reject_offer(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::RejectOfferGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::RejectOfferRow> = sqlx::query_as(
+            r#"SELECT * FROM reject_offer_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
     async fn release_reservation(
         context: &crate::graphql::context::GraphQLContext,
         signature: String,
@@ -827,6 +1011,38 @@ impl QueryRoot {
     ) -> FieldResult<Vec<crate::instructions::graphql::ReleaseReservationGraphQL>> {
         let rows: Vec<crate::instructions::postgres::ReleaseReservationRow> = sqlx::query_as(
             r#"SELECT * FROM release_reservation_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn relist_shares(
+        context: &crate::graphql::context::GraphQLContext,
+        signature: String,
+        instruction_index: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::RelistSharesGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::RelistSharesRow> = sqlx::query_as(
+            r#"SELECT * FROM relist_shares_instruction WHERE __signature = $1 AND __instruction_index = $2 ORDER BY __stack_height ASC"#,
+        )
+        .bind(signature)
+        .bind(instruction_index)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn list_relist_shares(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::RelistSharesGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::RelistSharesRow> = sqlx::query_as(
+            r#"SELECT * FROM relist_shares_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
         )
         .bind(limit)
         .bind(offset)
@@ -923,6 +1139,38 @@ impl QueryRoot {
     ) -> FieldResult<Vec<crate::instructions::graphql::ResolveSilentVerdictGraphQL>> {
         let rows: Vec<crate::instructions::postgres::ResolveSilentVerdictRow> = sqlx::query_as(
             r#"SELECT * FROM resolve_silent_verdict_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn send_property_shares(
+        context: &crate::graphql::context::GraphQLContext,
+        signature: String,
+        instruction_index: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::SendPropertySharesGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::SendPropertySharesRow> = sqlx::query_as(
+            r#"SELECT * FROM send_property_shares_instruction WHERE __signature = $1 AND __instruction_index = $2 ORDER BY __stack_height ASC"#,
+        )
+        .bind(signature)
+        .bind(instruction_index)
+        .fetch_all(&*context.pool)
+        .await
+        .map_err(|e| juniper::FieldError::new(e.to_string(), juniper::Value::null()))?;
+        Ok(rows.into_iter().filter_map(|row| row.try_into().ok()).collect())
+    }
+
+    async fn list_send_property_shares(
+        context: &crate::graphql::context::GraphQLContext,
+        limit: i32,
+        offset: i32,
+    ) -> FieldResult<Vec<crate::instructions::graphql::SendPropertySharesGraphQL>> {
+        let rows: Vec<crate::instructions::postgres::SendPropertySharesRow> = sqlx::query_as(
+            r#"SELECT * FROM send_property_shares_instruction ORDER BY __slot DESC, __signature DESC, __instruction_index ASC LIMIT $1 OFFSET $2"#,
         )
         .bind(limit)
         .bind(offset)

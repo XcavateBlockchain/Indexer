@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, owner, amount,\n               lock_lawyer_election, lock_agent_election, lock_proposal, lock_challenge, listed\n        FROM marketplace_share_holding\n        WHERE ($1::bigint IS NULL OR asset_id = $1)\n          AND ($2::bytea IS NULL OR owner = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $4 OFFSET $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "owner",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "lock_lawyer_election",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "lock_agent_election",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "lock_proposal",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "lock_challenge",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "listed",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "080636b82c0da24973c53435d6253ef08168b0d2ca5756e7a988e06e17460a02"
+}

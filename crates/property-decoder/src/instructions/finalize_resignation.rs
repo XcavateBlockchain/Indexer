@@ -18,7 +18,7 @@ pub struct FinalizeResignationInstructionAccounts {
     pub rent_payer: solana_pubkey::Pubkey,
     pub letting: solana_pubkey::Pubkey,
     pub property: solana_pubkey::Pubkey,
-    pub agent_entry: solana_pubkey::Pubkey,
+    pub agent_entry: Option<solana_pubkey::Pubkey>,
     pub notice: solana_pubkey::Pubkey,
     pub remaining: Vec<solana_instruction::AccountMeta>,
 }
@@ -53,7 +53,7 @@ impl ArrangeAccounts for FinalizeResignation {
         let rent_payer = next_account(&mut iter)?;
         let letting = next_account(&mut iter)?;
         let property = next_account(&mut iter)?;
-        let agent_entry = next_account(&mut iter)?;
+        let agent_entry = next_account(&mut iter);
         let notice = next_account(&mut iter)?;
 
         let remaining = iter.as_slice();

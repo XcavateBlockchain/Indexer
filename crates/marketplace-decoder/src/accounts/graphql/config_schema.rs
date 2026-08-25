@@ -28,6 +28,7 @@ pub struct ConfigGraphQL {
     pub lawyer_voting_time: I64,
     pub min_voting_quorum_bps: i32,
     pub next_listing_id: U64,
+    pub next_share_listing_id: U64,
     pub bump: U8,
 }
 
@@ -54,6 +55,7 @@ impl TryFrom<crate::accounts::postgres::ConfigRow> for ConfigGraphQL {
             lawyer_voting_time: carbon_core::graphql::primitives::I64(row.lawyer_voting_time),
             min_voting_quorum_bps: (*row.min_voting_quorum_bps) as i32,
             next_listing_id: carbon_core::graphql::primitives::U64(*row.next_listing_id),
+            next_share_listing_id: carbon_core::graphql::primitives::U64(*row.next_share_listing_id),
             bump: carbon_core::graphql::primitives::U8((*row.bump) as u8),
         })
     }

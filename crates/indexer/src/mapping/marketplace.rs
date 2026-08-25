@@ -1,6 +1,7 @@
 //! The `marketplace` program mapping: one `program_instructions` row per instruction (no
 //! action log -- see the module docs on [`super`]), plus PendingCloses read off the on-chain
-//! source's `close =` constraints. Ten closing instructions, fourteen close operations:
+//! source's `close =` constraints and runtime `close()` calls. Sixteen closing
+//! instructions, twenty close operations:
 //!
 //! | instruction | closes | at index |
 //! |---|---|---|
@@ -14,12 +15,26 @@
 //! | `withdraw_expired` | InvestorPosition AND ShareHolding | 5, 6 |
 //! | `withdraw_legal_process_expired` | InvestorPosition AND ShareHolding | 5, 6 |
 //! | `withdraw_cancelled` | InvestorPosition AND ShareHolding | 5, 6 |
+//! | `accept_offer` | Offer AND ShareListing (CONDITIONAL: emptied) | 10, 6 |
+//! | `reject_offer` | Offer | 4 |
+//! | `cancel_offer` | Offer | 2 |
+//! | `buy_relisted_shares` | ShareListing (CONDITIONAL: emptied) | 6 |
+//! | `delist_shares` | ShareListing | 2 |
+//! | `close_share_holding` | ShareHolding | 4 |
 //!
 //! Note InvestorPosition is closed at index 4 by two instructions and index 5 by three
 //! others -- close positions are per-instruction facts. `close_case` closes NOTHING despite
 //! its name; `close_dead_listing` additionally closes token accounts/mint via CPI, which are
 //! not state tables and need no PendingClose. Its optional accounts sit at indices 6 and 9,
 //! AFTER both closed accounts, so the close indices are stable.
+//!
+//! The secondary market brought the program's first runtime closes: `accept_offer` closes
+//! its Offer unconditionally at the END of the handler (still a close on every successful
+//! transaction, so an ordinary [`PendingClose::Account`]), while the ShareListing in
+//! `accept_offer` / `buy_relisted_shares` closes only when the sale emptied it -- a
+//! condition on account state the pure mapper cannot evaluate, so those two emit the
+//! conditional ops decided by the batcher's SQL (`db::marketplace`). `make_offer` /
+//! `relist_shares` / `send_property_shares` close nothing.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
@@ -35,14 +50,15 @@ use solana_account::Account;
 use solana_pubkey::Pubkey;
 
 use super::{
-    close_at, instruction_row, ix_context, MappedInstruction, MappingError, ProgramMapper,
+    account_bytes_at, close_at, instruction_row, ix_context, MappedInstruction, MappingError,
+    PendingClose, ProgramMapper,
 };
 use crate::batcher::WriteOp;
 use crate::db::close::StateTable;
 use crate::db::marketplace::{
     DocumentStatus, InvestorPositionRow, LawyerAssignmentCols, LawyerCandidacyRow, LawyerRow,
     LawyerVoteRow, ListingRow, ListingStatus, MarketplaceAccountRow, MarketplaceConfigRow,
-    PropertyAssetRow, ReservationRow, ShareHoldingRow,
+    OfferRow, PropertyAssetRow, ReservationRow, ShareHoldingRow, ShareListingRow,
 };
 
 /// The marketplace program's [`ProgramMapper`] instantiation.
@@ -75,8 +91,11 @@ impl ProgramMapper for Marketplace {
 pub fn ix_name(ix: &MarketplaceInstruction) -> &'static str {
     match ix {
         MarketplaceInstruction::AcceptAuthority(_) => "accept_authority",
+        MarketplaceInstruction::AcceptOffer(_) => "accept_offer",
         MarketplaceInstruction::AssignDeveloperLawyer(_) => "assign_developer_lawyer",
         MarketplaceInstruction::BuyPropertyShares(_) => "buy_property_shares",
+        MarketplaceInstruction::BuyRelistedShares(_) => "buy_relisted_shares",
+        MarketplaceInstruction::CancelOffer(_) => "cancel_offer",
         MarketplaceInstruction::ClaimShares(_) => "claim_shares",
         MarketplaceInstruction::ClaimSpvCase(_) => "claim_spv_case",
         MarketplaceInstruction::CloseCancelledPosition(_) => "close_cancelled_position",
@@ -84,7 +103,9 @@ pub fn ix_name(ix: &MarketplaceInstruction) -> &'static str {
         MarketplaceInstruction::CloseCase(_) => "close_case",
         MarketplaceInstruction::CloseDeadListing(_) => "close_dead_listing",
         MarketplaceInstruction::CloseReservation(_) => "close_reservation",
+        MarketplaceInstruction::CloseShareHolding(_) => "close_share_holding",
         MarketplaceInstruction::CreateSpv(_) => "create_spv",
+        MarketplaceInstruction::DelistShares(_) => "delist_shares",
         MarketplaceInstruction::ExecuteDeal(_) => "execute_deal",
         MarketplaceInstruction::FinalizeSpvElection(_) => "finalize_spv_election",
         MarketplaceInstruction::InitializeConfig(_) => "initialize_config",
@@ -92,11 +113,15 @@ pub fn ix_name(ix: &MarketplaceInstruction) -> &'static str {
         MarketplaceInstruction::LawyerConfirmDocuments(_) => "lawyer_confirm_documents",
         MarketplaceInstruction::ListProperty(_) => "list_property",
         MarketplaceInstruction::LockShares(_) => "lock_shares",
+        MarketplaceInstruction::MakeOffer(_) => "make_offer",
         MarketplaceInstruction::RegisterLawyer(_) => "register_lawyer",
+        MarketplaceInstruction::RejectOffer(_) => "reject_offer",
         MarketplaceInstruction::ReleaseReservation(_) => "release_reservation",
+        MarketplaceInstruction::RelistShares(_) => "relist_shares",
         MarketplaceInstruction::ReserveShares(_) => "reserve_shares",
         MarketplaceInstruction::ResignFromCase(_) => "resign_from_case",
         MarketplaceInstruction::ResolveSilentVerdict(_) => "resolve_silent_verdict",
+        MarketplaceInstruction::SendPropertyShares(_) => "send_property_shares",
         MarketplaceInstruction::SettleCancelledFees(_) => "settle_cancelled_fees",
         MarketplaceInstruction::UnlockShares(_) => "unlock_shares",
         MarketplaceInstruction::UnlockVotingShares(_) => "unlock_voting_shares",
@@ -207,6 +232,59 @@ pub fn map_instruction(
             )?,
             close_at(accounts, 6, name, StateTable::MarketplaceShareHolding, slot)?,
         ],
+        MarketplaceInstruction::AcceptOffer(_) => vec![
+            // The offer closes at the end of the handler on every success (a runtime
+            // close, but unconditional); the share listing only if the sale emptied it --
+            // by the OFFER's amount, which the pure mapper cannot read, so the batcher
+            // decides against the stored offer row.
+            close_at(accounts, 10, name, StateTable::MarketplaceOffer, slot)?,
+            PendingClose::ShareListingIfEmptiedByOffer {
+                pubkey: account_bytes_at(accounts, 6, name)?,
+                offer_pubkey: account_bytes_at(accounts, 10, name)?,
+                slot,
+            },
+        ],
+        MarketplaceInstruction::RejectOffer(_) => {
+            vec![close_at(
+                accounts,
+                4,
+                name,
+                StateTable::MarketplaceOffer,
+                slot,
+            )?]
+        }
+        MarketplaceInstruction::CancelOffer(_) => {
+            vec![close_at(
+                accounts,
+                2,
+                name,
+                StateTable::MarketplaceOffer,
+                slot,
+            )?]
+        }
+        MarketplaceInstruction::BuyRelistedShares(args) => {
+            // Closed on-chain only when this buy took the listing's last shares; the
+            // instruction's own `amount` arg carries how many were bought.
+            vec![PendingClose::ShareListingIfEmptied {
+                pubkey: account_bytes_at(accounts, 6, name)?,
+                bought_amount: args.amount as i64,
+                slot,
+            }]
+        }
+        MarketplaceInstruction::DelistShares(_) => vec![close_at(
+            accounts,
+            2,
+            name,
+            StateTable::MarketplaceShareListing,
+            slot,
+        )?],
+        MarketplaceInstruction::CloseShareHolding(_) => vec![close_at(
+            accounts,
+            4,
+            name,
+            StateTable::MarketplaceShareHolding,
+            slot,
+        )?],
         _ => vec![],
     };
 
@@ -285,6 +363,7 @@ pub fn account_write_op(
             lawyer_voting_time: c.lawyer_voting_time,
             min_voting_quorum_bps: c.min_voting_quorum_bps as i32,
             next_listing_id: c.next_listing_id as i64,
+            next_share_listing_id: c.next_share_listing_id as i64,
             bump: c.bump as i16,
         }),
         MarketplaceAccount::InvestorPosition(p) => {
@@ -375,6 +454,7 @@ pub fn account_write_op(
             developer_engaged: l.developer_engaged,
             spv_costs_due: l.spv_costs_due as i64,
             spv_costs_payee: l.spv_costs_payee.to_bytes().to_vec(),
+            collected_fee_quote: l.collected_fee_quote as i64,
             collected: serde_json::Value::Array(
                 l.collected
                     .iter()
@@ -400,7 +480,8 @@ pub fn account_write_op(
                 slot,
                 lamports,
                 asset_id: p.asset_id as i64,
-                core_asset: p.core_asset.to_bytes().to_vec(),
+                name: p.name.clone(),
+                metadata_uri: p.metadata_uri.clone(),
                 share_mint: p.share_mint.to_bytes().to_vec(),
                 region_id: p.region_id as i32,
                 location: p.location.clone(),
@@ -427,10 +508,47 @@ pub fn account_write_op(
                 asset_id: h.asset_id as i64,
                 owner: h.owner.to_bytes().to_vec(),
                 amount: h.amount as i64,
-                locked_amount: h.locked_amount as i64,
+                // The [u32; 4] lock array, one counter per LockReason in borsh order (the
+                // migration-0012 columns are named after the variants).
+                lock_lawyer_election: h.locks[0] as i64,
+                lock_agent_election: h.locks[1] as i64,
+                lock_proposal: h.locks[2] as i64,
+                lock_challenge: h.locks[3] as i64,
+                listed: h.listed as i64,
                 bump: h.bump as i16,
             })
         }
+        MarketplaceAccount::ShareListing(l) => {
+            MarketplaceAccountRow::ShareListing(ShareListingRow {
+                pubkey,
+                slot,
+                lamports,
+                id: l.id as i64,
+                asset_id: l.asset_id as i64,
+                seller: l.seller.to_bytes().to_vec(),
+                share_price: l.share_price as i64,
+                amount: l.amount as i64,
+                fee_bps: l.fee_bps as i32,
+                next_offer_nonce: l.next_offer_nonce as i64,
+                rent_payer: l.rent_payer.to_bytes().to_vec(),
+                bump: l.bump as i16,
+            })
+        }
+        MarketplaceAccount::Offer(o) => MarketplaceAccountRow::Offer(OfferRow {
+            pubkey,
+            slot,
+            lamports,
+            listing_id: o.listing_id as i64,
+            asset_id: o.asset_id as i64,
+            offeror: o.offeror.to_bytes().to_vec(),
+            share_price: o.share_price as i64,
+            amount: o.amount as i64,
+            payment_mint: o.payment_mint.to_bytes().to_vec(),
+            held: o.held as i64,
+            nonce: o.nonce as i64,
+            rent_payer: o.rent_payer.to_bytes().to_vec(),
+            bump: o.bump as i16,
+        }),
     };
     WriteOp::UpsertMarketplaceAccount(row)
 }

@@ -313,7 +313,7 @@
       "id": 9,
       "type": "timeseries",
       "title": "Backfill progress: last processed slot",
-      "description": "backfill_last_processed_slot -- oldest slot the running history walk has committed (falls monotonically while a walk is in progress, then freezes once complete; only the history walk sets it, not reconciliation -- task-4-report.md). The horizontal line marks the oldest program's backfill_floor_slot (the whitelist's deploy slot 483386556; the sibling programs' floors sit within ~300 slots of it): a program's walk is done once its series reaches its floor.",
+      "description": "backfill_last_processed_slot -- oldest slot the running history walk has committed (falls monotonically while a walk is in progress, then freezes once complete; only the history walk sets it, not reconciliation -- task-4-report.md). The horizontal line marks the oldest program's backfill_floor_slot (the whitelist's deploy slot 487427394; the sibling programs' floors sit within ~350 slots of it): a program's walk is done once its series reaches its floor.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 12, "y": 24 },
       "targets": [
@@ -343,7 +343,7 @@
             "mode": "absolute",
             "steps": [
               { "color": "gray", "value": null },
-              { "color": "orange", "value": 483386556 }
+              { "color": "orange", "value": 487427394 }
             ]
           }
         },

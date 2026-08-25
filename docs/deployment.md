@@ -152,7 +152,14 @@ docker compose up -d
 
 History is small (indexing starts at the deploy slot), so a full reindex is quick — see
 [../RUNBOOK.md "Devnet ledger reset"](../RUNBOOK.md#devnet-ledger-reset) for the full
-procedure and what triggers it.
+procedure and what triggers it (that section also spells out what the volume drop takes
+with it).
+
+Run this once right after the ADR-26 redeploy change deploys: the new binary indexes the
+new program addresses correctly even against the old volume (`sync_state` keys by program
+id, so the new programs seed and rebuild on their own; the first snapshot sweeps the old
+addresses' state rows closed), but the wipe is what clears the abandoned deployments' dead
+history and the reshaped tables' padding defaults.
 
 ### Upgrading images
 

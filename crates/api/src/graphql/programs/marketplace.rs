@@ -1,6 +1,7 @@
 //! The `marketplace` program's read surface: entity types over
-//! `migrations/0009_marketplace_state.sql` and the resolver bodies `QueryRoot` delegates to.
-//! See [`super`] for the shared conventions.
+//! `migrations/0009_marketplace_state.sql` (as reshaped by `0012_redeploy_new_programs.sql`)
+//! and the resolver bodies `QueryRoot` delegates to. See [`super`] for the shared
+//! conventions.
 
 use carbon_core::graphql::primitives::I64;
 use juniper::{FieldResult, GraphQLObject, ID};
@@ -38,6 +39,7 @@ pub struct MarketplaceConfig {
     pub lawyer_voting_time: I64,
     pub min_voting_quorum_bps: i32,
     pub next_listing_id: I64,
+    pub next_share_listing_id: I64,
 }
 
 /// One investor's position in one listing: bought/reserved share counts and the funds, tax and
@@ -178,6 +180,7 @@ pub struct Listing {
     pub developer_engaged: bool,
     pub spv_costs_due: I64,
     pub spv_costs_payee: String,
+    pub collected_fee_quote: I64,
     pub collected: String,
     pub spv_election_expiry: I64,
     pub spv_election_candidate_count: I64,
@@ -192,8 +195,7 @@ pub struct ListingConnection {
 }
 
 /// The tokenised property behind one listing (`asset_id == listing_id` in current source).
-/// `core_asset` keeps the on-chain all-zero pubkey verbatim (base58
-/// `11111111111111111111111111111111`) -- it is only ever that today.
+/// `name` and `metadata_uri` are empty until `init_property_assets` attaches them.
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct PropertyAsset {
     pub id: ID,
@@ -202,7 +204,8 @@ pub struct PropertyAsset {
     pub active: bool,
     pub closed_at_slot: Option<I64>,
     pub asset_id: I64,
-    pub core_asset: String,
+    pub name: String,
+    pub metadata_uri: String,
     pub share_mint: String,
     pub region_id: i32,
     pub location: String,
@@ -237,7 +240,9 @@ pub struct ReservationConnection {
     pub total_count: i32,
 }
 
-/// One owner's share holding in one property asset.
+/// One owner's share holding in one property asset. The four `lock*` counters mirror the
+/// on-chain per-`LockReason` array (the effective lock is the largest of them); `listed` is
+/// what sits in open secondary listings, still counted in `amount`.
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct ShareHolding {
     pub id: ID,
@@ -248,12 +253,66 @@ pub struct ShareHolding {
     pub asset_id: I64,
     pub owner: String,
     pub amount: I64,
-    pub locked_amount: I64,
+    pub lock_lawyer_election: I64,
+    pub lock_agent_election: I64,
+    pub lock_proposal: I64,
+    pub lock_challenge: I64,
+    pub listed: I64,
 }
 
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct ShareHoldingConnection {
     pub nodes: Vec<ShareHolding>,
+    pub total_count: i32,
+}
+
+/// A holder's open secondary-market listing of part of their shares.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct ShareListing {
+    pub id: ID,
+    pub slot: I64,
+    pub lamports: I64,
+    pub active: bool,
+    pub closed_at_slot: Option<I64>,
+    pub share_listing_id: I64,
+    pub asset_id: I64,
+    pub seller: String,
+    pub share_price: I64,
+    pub amount: I64,
+    pub fee_bps: i32,
+    pub next_offer_nonce: I64,
+    pub rent_payer: String,
+}
+
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct ShareListingConnection {
+    pub nodes: Vec<ShareListing>,
+    pub total_count: i32,
+}
+
+/// A bid on one share listing, one per bidder per listing; the bid money sits in the
+/// offer's own vault until accept/reject/cancel. `listingId` is the ShareListing id.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct Offer {
+    pub id: ID,
+    pub slot: I64,
+    pub lamports: I64,
+    pub active: bool,
+    pub closed_at_slot: Option<I64>,
+    pub listing_id: I64,
+    pub asset_id: I64,
+    pub offeror: String,
+    pub share_price: I64,
+    pub amount: I64,
+    pub payment_mint: String,
+    pub held: I64,
+    pub nonce: I64,
+    pub rent_payer: String,
+}
+
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct OfferConnection {
+    pub nodes: Vec<Offer>,
     pub total_count: i32,
 }
 
@@ -268,7 +327,7 @@ pub async fn marketplace_config(
                treasury, rent_collector, accepted_payment_mints, listing_deposit, lawyer_deposit,
                min_property_shares, max_property_shares, marketplace_fee_bps, investor_fee_bps,
                max_ownership_bps, claiming_time, legal_process_time, lawyer_voting_time,
-               min_voting_quorum_bps, next_listing_id
+               min_voting_quorum_bps, next_listing_id, next_share_listing_id
         FROM marketplace_config
         ORDER BY slot DESC
         LIMIT 1
@@ -300,6 +359,7 @@ pub async fn marketplace_config(
         lawyer_voting_time: I64(r.lawyer_voting_time),
         min_voting_quorum_bps: r.min_voting_quorum_bps,
         next_listing_id: I64(r.next_listing_id),
+        next_share_listing_id: I64(r.next_share_listing_id),
     }))
 }
 
@@ -623,7 +683,8 @@ pub async fn listings(
                legal_deadline, deposit, developer_lawyer, developer_lawyer_costs,
                developer_lawyer_doc_status, developer_lawyer_documents_hash, spv_lawyer,
                spv_lawyer_costs, spv_lawyer_doc_status, spv_lawyer_documents_hash,
-               second_attempt, developer_engaged, spv_costs_due, spv_costs_payee, collected,
+               second_attempt, developer_engaged, spv_costs_due, spv_costs_payee,
+               collected_fee_quote, collected,
                spv_election_expiry, spv_election_candidate_count, spv_election_round, status
         FROM marketplace_listing
         WHERE ($1::bigint IS NULL OR listing_id = $1)
@@ -715,6 +776,7 @@ pub async fn listings(
                 developer_engaged: r.developer_engaged,
                 spv_costs_due: I64(r.spv_costs_due),
                 spv_costs_payee: b58(&r.spv_costs_payee),
+                collected_fee_quote: I64(r.collected_fee_quote),
                 collected: json_string(&r.collected),
                 spv_election_expiry: I64(r.spv_election_expiry),
                 spv_election_candidate_count: I64(r.spv_election_candidate_count),
@@ -744,7 +806,7 @@ pub async fn property_assets(
 
     let rows = sqlx::query!(
         r#"
-        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, core_asset, share_mint,
+        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, name, metadata_uri, share_mint,
                region_id, location, share_amount, spv_created, finalized, holder_count
         FROM marketplace_property_asset
         WHERE ($1::bigint IS NULL OR asset_id = $1)
@@ -787,7 +849,8 @@ pub async fn property_assets(
                 active: r.closed_at_slot.is_none(),
                 closed_at_slot: r.closed_at_slot.map(I64),
                 asset_id: I64(r.asset_id),
-                core_asset: b58(&r.core_asset),
+                name: r.name,
+                metadata_uri: r.metadata_uri,
                 share_mint: b58(&r.share_mint),
                 region_id: r.region_id,
                 location: utf8_lossy(&r.location),
@@ -880,7 +943,8 @@ pub async fn share_holdings(
 
     let rows = sqlx::query!(
         r#"
-        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, owner, amount, locked_amount
+        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, owner, amount,
+               lock_lawyer_election, lock_agent_election, lock_proposal, lock_challenge, listed
         FROM marketplace_share_holding
         WHERE ($1::bigint IS NULL OR asset_id = $1)
           AND ($2::bytea IS NULL OR owner = $2)
@@ -924,7 +988,166 @@ pub async fn share_holdings(
                 asset_id: I64(r.asset_id),
                 owner: b58(&r.owner),
                 amount: I64(r.amount),
-                locked_amount: I64(r.locked_amount),
+                lock_lawyer_election: I64(r.lock_lawyer_election),
+                lock_agent_election: I64(r.lock_agent_election),
+                lock_proposal: I64(r.lock_proposal),
+                lock_challenge: I64(r.lock_challenge),
+                listed: I64(r.listed),
+            })
+            .collect(),
+        total_count: total_count_i32(total),
+    })
+}
+
+pub async fn share_listings(
+    context: &GraphQLContext,
+    share_listing_id: Option<I64>,
+    asset_id: Option<I64>,
+    seller: Option<String>,
+    active: Option<bool>,
+    first: Option<i32>,
+    offset: Option<i32>,
+) -> FieldResult<ShareListingConnection> {
+    let limit = clamp_first(first);
+    let skip = clamp_offset(offset);
+    let share_listing_id = share_listing_id.map(|v| v.0);
+    let asset_id = asset_id.map(|v| v.0);
+    let seller = seller
+        .as_deref()
+        .map(|s| parse_b58("seller", s))
+        .transpose()?;
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT pubkey, slot, lamports, closed_at_slot, id, asset_id, seller, share_price,
+               amount, fee_bps, next_offer_nonce, rent_payer
+        FROM marketplace_share_listing
+        WHERE ($1::bigint IS NULL OR id = $1)
+          AND ($2::bigint IS NULL OR asset_id = $2)
+          AND ($3::bytea IS NULL OR seller = $3)
+          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)
+        ORDER BY slot DESC, pubkey ASC
+        LIMIT $5 OFFSET $6
+        "#,
+        share_listing_id,
+        asset_id,
+        seller.as_deref(),
+        active,
+        limit,
+        skip,
+    )
+    .fetch_all(&context.pool)
+    .await?;
+
+    let total = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) FROM marketplace_share_listing
+        WHERE ($1::bigint IS NULL OR id = $1)
+          AND ($2::bigint IS NULL OR asset_id = $2)
+          AND ($3::bytea IS NULL OR seller = $3)
+          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)
+        "#,
+        share_listing_id,
+        asset_id,
+        seller.as_deref(),
+        active,
+    )
+    .fetch_one(&context.pool)
+    .await?
+    .unwrap_or(0);
+
+    Ok(ShareListingConnection {
+        nodes: rows
+            .into_iter()
+            .map(|r| ShareListing {
+                id: ID::new(b58(&r.pubkey)),
+                slot: I64(r.slot),
+                lamports: I64(r.lamports),
+                active: r.closed_at_slot.is_none(),
+                closed_at_slot: r.closed_at_slot.map(I64),
+                share_listing_id: I64(r.id),
+                asset_id: I64(r.asset_id),
+                seller: b58(&r.seller),
+                share_price: I64(r.share_price),
+                amount: I64(r.amount),
+                fee_bps: r.fee_bps,
+                next_offer_nonce: I64(r.next_offer_nonce),
+                rent_payer: b58(&r.rent_payer),
+            })
+            .collect(),
+        total_count: total_count_i32(total),
+    })
+}
+
+pub async fn offers(
+    context: &GraphQLContext,
+    listing_id: Option<I64>,
+    offeror: Option<String>,
+    active: Option<bool>,
+    first: Option<i32>,
+    offset: Option<i32>,
+) -> FieldResult<OfferConnection> {
+    let limit = clamp_first(first);
+    let skip = clamp_offset(offset);
+    let listing_id = listing_id.map(|v| v.0);
+    let offeror = offeror
+        .as_deref()
+        .map(|s| parse_b58("offeror", s))
+        .transpose()?;
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, asset_id, offeror,
+               share_price, amount, payment_mint, held, nonce, rent_payer
+        FROM marketplace_offer
+        WHERE ($1::bigint IS NULL OR listing_id = $1)
+          AND ($2::bytea IS NULL OR offeror = $2)
+          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)
+        ORDER BY slot DESC, pubkey ASC
+        LIMIT $4 OFFSET $5
+        "#,
+        listing_id,
+        offeror.as_deref(),
+        active,
+        limit,
+        skip,
+    )
+    .fetch_all(&context.pool)
+    .await?;
+
+    let total = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) FROM marketplace_offer
+        WHERE ($1::bigint IS NULL OR listing_id = $1)
+          AND ($2::bytea IS NULL OR offeror = $2)
+          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)
+        "#,
+        listing_id,
+        offeror.as_deref(),
+        active,
+    )
+    .fetch_one(&context.pool)
+    .await?
+    .unwrap_or(0);
+
+    Ok(OfferConnection {
+        nodes: rows
+            .into_iter()
+            .map(|r| Offer {
+                id: ID::new(b58(&r.pubkey)),
+                slot: I64(r.slot),
+                lamports: I64(r.lamports),
+                active: r.closed_at_slot.is_none(),
+                closed_at_slot: r.closed_at_slot.map(I64),
+                listing_id: I64(r.listing_id),
+                asset_id: I64(r.asset_id),
+                offeror: b58(&r.offeror),
+                share_price: I64(r.share_price),
+                amount: I64(r.amount),
+                payment_mint: b58(&r.payment_mint),
+                held: I64(r.held),
+                nonce: I64(r.nonce),
+                rent_payer: b58(&r.rent_payer),
             })
             .collect(),
         total_count: total_count_i32(total),

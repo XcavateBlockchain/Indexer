@@ -12,5 +12,12 @@ pub struct ConfigParams {
     pub agent_voting_time: i64,
     pub min_voting_quorum_bps: u16,
     pub agent_notice_period: i64,
+    pub proposal_voting_time: i64,
+    pub low_proposal: u64,
+    pub high_proposal: u64,
+    pub high_threshold_bps: u16,
+    pub auto_approval_cooldown: i64,
+    pub challenge_deposit: u64,
+    pub agent_slash_amount: u64,
 }
 

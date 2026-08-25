@@ -5,6 +5,7 @@ use carbon_core::postgres::primitives::Pubkey;
 use carbon_core::postgres::primitives::U64;
 use carbon_core::postgres::primitives::U8;
 use crate::types::AgentElection;
+use crate::types::GovState;
 
 #[derive(sqlx::FromRow, Debug, Clone)]
 pub struct PropertyLettingRow {
@@ -13,6 +14,7 @@ pub struct PropertyLettingRow {
     pub asset_id: U64,
     pub agent: Pubkey,
     pub election: sqlx::types::Json<AgentElection>,
+    pub governance: sqlx::types::Json<GovState>,
     pub rent_payer: Pubkey,
     pub bump: U8,
 }
@@ -24,6 +26,7 @@ impl PropertyLettingRow {
             asset_id: source.asset_id.into(),
             agent: source.agent.into(),
             election: sqlx::types::Json(source.election.into()),
+            governance: sqlx::types::Json(source.governance.into()),
             rent_payer: source.rent_payer.into(),
             bump: source.bump.into(),
         }
@@ -37,6 +40,7 @@ impl TryFrom<PropertyLettingRow> for crate::accounts::property_letting::Property
             asset_id: *source.asset_id,
             agent: *source.agent,
             election: source.election.0,
+            governance: source.governance.0,
             rent_payer: *source.rent_payer,
             bump: source.bump.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
         })
@@ -55,6 +59,7 @@ impl carbon_core::postgres::operations::Table for crate::accounts::property_lett
             "asset_id",
             "agent",
             "election",
+            "governance",
             "rent_payer",
             "bump",
         ]
@@ -69,15 +74,17 @@ impl carbon_core::postgres::operations::Insert for PropertyLettingRow {
                 "asset_id",
                 "agent",
                 "election",
+                "governance",
                 "rent_payer",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             )"#)
         .bind(self.asset_id.clone())
         .bind(self.agent.clone())
         .bind(self.election.clone())
+        .bind(self.governance.clone())
         .bind(self.rent_payer.clone())
         .bind(self.bump.clone())
         .bind(self.account_metadata.pubkey.clone())
@@ -95,17 +102,19 @@ impl carbon_core::postgres::operations::Upsert for PropertyLettingRow {
                 "asset_id",
                 "agent",
                 "election",
+                "governance",
                 "rent_payer",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             ) ON CONFLICT (
                 __pubkey
             ) DO UPDATE SET
                 "asset_id" = EXCLUDED."asset_id",
                 "agent" = EXCLUDED."agent",
                 "election" = EXCLUDED."election",
+                "governance" = EXCLUDED."governance",
                 "rent_payer" = EXCLUDED."rent_payer",
                 "bump" = EXCLUDED."bump",
                 __slot = EXCLUDED.__slot
@@ -113,6 +122,7 @@ impl carbon_core::postgres::operations::Upsert for PropertyLettingRow {
         .bind(self.asset_id.clone())
         .bind(self.agent.clone())
         .bind(self.election.clone())
+        .bind(self.governance.clone())
         .bind(self.rent_payer.clone())
         .bind(self.bump.clone())
         .bind(self.account_metadata.pubkey)
@@ -163,6 +173,7 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for PropertyLettingMigrationOperat
                 "asset_id" NUMERIC(20) NOT NULL,
                 "agent" BYTEA NOT NULL,
                 "election" JSONB NOT NULL,
+                "governance" JSONB NOT NULL,
                 "rent_payer" BYTEA NOT NULL,
                 "bump" INT2 NOT NULL,
                 -- Account metadata

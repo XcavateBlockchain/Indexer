@@ -9,32 +9,56 @@ pub mod graphql;
 
 pub mod accept_authority;
 pub mod add_letting_agent;
+pub mod challenge_agent;
+pub mod claim_income;
 pub mod claim_property;
 pub mod close_agent_candidacy;
+pub mod close_income_checkpoint;
+pub mod distribute_income;
 pub mod finalize_agent_election;
+pub mod finalize_challenge;
+pub mod finalize_proposal;
 pub mod finalize_resignation;
 pub mod initialize_config;
+pub mod propose;
 pub mod remove_letting_agent;
 pub mod resign;
+pub mod settle_income;
 pub mod unlock_agent_votes;
+pub mod unlock_challenge_votes;
+pub mod unlock_proposal_votes;
 pub mod update_authority;
 pub mod update_config;
 pub mod vote_on_agent;
+pub mod vote_on_challenge;
+pub mod vote_on_proposal;
 pub mod cpi_event;
 
 pub use self::accept_authority::*;
 pub use self::add_letting_agent::*;
+pub use self::challenge_agent::*;
+pub use self::claim_income::*;
 pub use self::claim_property::*;
 pub use self::close_agent_candidacy::*;
+pub use self::close_income_checkpoint::*;
+pub use self::distribute_income::*;
 pub use self::finalize_agent_election::*;
+pub use self::finalize_challenge::*;
+pub use self::finalize_proposal::*;
 pub use self::finalize_resignation::*;
 pub use self::initialize_config::*;
+pub use self::propose::*;
 pub use self::remove_letting_agent::*;
 pub use self::resign::*;
+pub use self::settle_income::*;
 pub use self::unlock_agent_votes::*;
+pub use self::unlock_challenge_votes::*;
+pub use self::unlock_proposal_votes::*;
 pub use self::update_authority::*;
 pub use self::update_config::*;
 pub use self::vote_on_agent::*;
+pub use self::vote_on_challenge::*;
+pub use self::vote_on_proposal::*;
 pub use self::cpi_event::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,17 +67,29 @@ pub use self::cpi_event::*;
 pub enum PropertyInstruction {
     AcceptAuthority(AcceptAuthority),
     AddLettingAgent(AddLettingAgent),
+    ChallengeAgent(ChallengeAgent),
+    ClaimIncome(ClaimIncome),
     ClaimProperty(ClaimProperty),
     CloseAgentCandidacy(CloseAgentCandidacy),
+    CloseIncomeCheckpoint(CloseIncomeCheckpoint),
+    DistributeIncome(DistributeIncome),
     FinalizeAgentElection(FinalizeAgentElection),
+    FinalizeChallenge(FinalizeChallenge),
+    FinalizeProposal(FinalizeProposal),
     FinalizeResignation(FinalizeResignation),
     InitializeConfig(InitializeConfig),
+    Propose(Propose),
     RemoveLettingAgent(RemoveLettingAgent),
     Resign(Resign),
+    SettleIncome(SettleIncome),
     UnlockAgentVotes(UnlockAgentVotes),
+    UnlockChallengeVotes(UnlockChallengeVotes),
+    UnlockProposalVotes(UnlockProposalVotes),
     UpdateAuthority(UpdateAuthority),
     UpdateConfig(UpdateConfig),
     VoteOnAgent(VoteOnAgent),
+    VoteOnChallenge(VoteOnChallenge),
+    VoteOnProposal(VoteOnProposal),
     // Anchor CPI Event Instruction
     CpiEvent(CpiEvent)
 }
@@ -90,6 +126,24 @@ impl carbon_core::instruction::InstructionDecoder<'_> for PropertyDecoder {
             }
         }
         {
+            if let Some(decoded) = challenge_agent::ChallengeAgent::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::ChallengeAgent(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = claim_income::ClaimIncome::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::ClaimIncome(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = claim_property::ClaimProperty::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
@@ -108,10 +162,46 @@ impl carbon_core::instruction::InstructionDecoder<'_> for PropertyDecoder {
             }
         }
         {
+            if let Some(decoded) = close_income_checkpoint::CloseIncomeCheckpoint::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::CloseIncomeCheckpoint(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = distribute_income::DistributeIncome::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::DistributeIncome(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = finalize_agent_election::FinalizeAgentElection::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
                     data: PropertyInstruction::FinalizeAgentElection(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = finalize_challenge::FinalizeChallenge::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::FinalizeChallenge(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = finalize_proposal::FinalizeProposal::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::FinalizeProposal(decoded),
                     accounts: instruction.accounts.clone(),
                 });
             }
@@ -135,6 +225,15 @@ impl carbon_core::instruction::InstructionDecoder<'_> for PropertyDecoder {
             }
         }
         {
+            if let Some(decoded) = propose::Propose::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::Propose(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = remove_letting_agent::RemoveLettingAgent::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
@@ -153,10 +252,37 @@ impl carbon_core::instruction::InstructionDecoder<'_> for PropertyDecoder {
             }
         }
         {
+            if let Some(decoded) = settle_income::SettleIncome::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::SettleIncome(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = unlock_agent_votes::UnlockAgentVotes::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
                     data: PropertyInstruction::UnlockAgentVotes(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = unlock_challenge_votes::UnlockChallengeVotes::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::UnlockChallengeVotes(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = unlock_proposal_votes::UnlockProposalVotes::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::UnlockProposalVotes(decoded),
                     accounts: instruction.accounts.clone(),
                 });
             }
@@ -184,6 +310,24 @@ impl carbon_core::instruction::InstructionDecoder<'_> for PropertyDecoder {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
                     data: PropertyInstruction::VoteOnAgent(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = vote_on_challenge::VoteOnChallenge::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::VoteOnChallenge(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = vote_on_proposal::VoteOnProposal::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: PropertyInstruction::VoteOnProposal(decoded),
                     accounts: instruction.accounts.clone(),
                 });
             }

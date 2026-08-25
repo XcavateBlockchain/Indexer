@@ -10,9 +10,14 @@ pub mod graphql;
 
 pub mod agent_candidacy;
 pub mod agent_vote;
-pub mod config;
+pub mod challenge;
+pub mod gov_vote;
+pub mod income_checkpoint;
 pub mod letting_agent;
+pub mod property_income;
 pub mod property_letting;
+pub mod property_state_config;
+pub mod proposal;
 pub mod resignation_notice;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,9 +26,14 @@ pub mod resignation_notice;
 pub enum PropertyAccount {
     AgentCandidacy(Box<agent_candidacy::AgentCandidacy>),
     AgentVote(Box<agent_vote::AgentVote>),
-    Config(Box<config::Config>),
+    Challenge(Box<challenge::Challenge>),
+    GovVote(Box<gov_vote::GovVote>),
+    IncomeCheckpoint(Box<income_checkpoint::IncomeCheckpoint>),
     LettingAgent(Box<letting_agent::LettingAgent>),
+    PropertyIncome(Box<property_income::PropertyIncome>),
     PropertyLetting(Box<property_letting::PropertyLetting>),
+    PropertyStateConfig(Box<property_state_config::PropertyStateConfig>),
+    Proposal(Box<proposal::Proposal>),
     ResignationNotice(Box<resignation_notice::ResignationNotice>),
 }
 
@@ -63,10 +73,32 @@ impl<'a> carbon_core::account::AccountDecoder<'a> for PropertyDecoder {
             }
         }
         {
-            if let Some(decoded) = config::Config::decode(data) {
+            if let Some(decoded) = challenge::Challenge::decode(data) {
                 return Some(carbon_core::account::DecodedAccount {
                     lamports: account.lamports,
-                    data: PropertyAccount::Config(Box::new(decoded)),
+                    data: PropertyAccount::Challenge(Box::new(decoded)),
+                    owner: account.owner,
+                    executable: account.executable,
+                    rent_epoch: account.rent_epoch,
+                });
+            }
+        }
+        {
+            if let Some(decoded) = gov_vote::GovVote::decode(data) {
+                return Some(carbon_core::account::DecodedAccount {
+                    lamports: account.lamports,
+                    data: PropertyAccount::GovVote(Box::new(decoded)),
+                    owner: account.owner,
+                    executable: account.executable,
+                    rent_epoch: account.rent_epoch,
+                });
+            }
+        }
+        {
+            if let Some(decoded) = income_checkpoint::IncomeCheckpoint::decode(data) {
+                return Some(carbon_core::account::DecodedAccount {
+                    lamports: account.lamports,
+                    data: PropertyAccount::IncomeCheckpoint(Box::new(decoded)),
                     owner: account.owner,
                     executable: account.executable,
                     rent_epoch: account.rent_epoch,
@@ -85,6 +117,17 @@ impl<'a> carbon_core::account::AccountDecoder<'a> for PropertyDecoder {
             }
         }
         {
+            if let Some(decoded) = property_income::PropertyIncome::decode(data) {
+                return Some(carbon_core::account::DecodedAccount {
+                    lamports: account.lamports,
+                    data: PropertyAccount::PropertyIncome(Box::new(decoded)),
+                    owner: account.owner,
+                    executable: account.executable,
+                    rent_epoch: account.rent_epoch,
+                });
+            }
+        }
+        {
             if let Some(decoded) = property_letting::PropertyLetting::decode(data) {
                 return Some(carbon_core::account::DecodedAccount {
                     lamports: account.lamports,
@@ -96,10 +139,32 @@ impl<'a> carbon_core::account::AccountDecoder<'a> for PropertyDecoder {
             }
         }
         {
+            if let Some(decoded) = proposal::Proposal::decode(data) {
+                return Some(carbon_core::account::DecodedAccount {
+                    lamports: account.lamports,
+                    data: PropertyAccount::Proposal(Box::new(decoded)),
+                    owner: account.owner,
+                    executable: account.executable,
+                    rent_epoch: account.rent_epoch,
+                });
+            }
+        }
+        {
             if let Some(decoded) = resignation_notice::ResignationNotice::decode(data) {
                 return Some(carbon_core::account::DecodedAccount {
                     lamports: account.lamports,
                     data: PropertyAccount::ResignationNotice(Box::new(decoded)),
+                    owner: account.owner,
+                    executable: account.executable,
+                    rent_epoch: account.rent_epoch,
+                });
+            }
+        }
+        {
+            if let Some(decoded) = property_state_config::PropertyStateConfig::decode(data) {
+                return Some(carbon_core::account::DecodedAccount {
+                    lamports: account.lamports,
+                    data: PropertyAccount::PropertyStateConfig(Box::new(decoded)),
                     owner: account.owner,
                     executable: account.executable,
                     rent_epoch: account.rent_epoch,

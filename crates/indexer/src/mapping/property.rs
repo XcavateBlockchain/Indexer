@@ -7,18 +7,33 @@
 //! | `unlock_agent_votes` | AgentVote | 4 |
 //! | `finalize_resignation` | ResignationNotice | 5 |
 //! | `remove_letting_agent` | LettingAgent (CONDITIONAL) | 2 |
+//! | `finalize_proposal` | Proposal | 4 |
+//! | `unlock_proposal_votes` | GovVote | 4 |
+//! | `finalize_challenge` | Challenge | 5 |
+//! | `unlock_challenge_votes` | GovVote | 4 |
+//! | `close_income_checkpoint` | IncomeCheckpoint | 2 |
 //!
-//! The first three are Anchor `close =` constraints (unconditional on success). The fourth
-//! is the one conditional close in the whole protocol: on-chain it is a runtime `close()`
-//! call that fires only when the removed location was the agent's last -- the mapper cannot
-//! know that (it is pure, no DB), so it emits [`PendingClose::LettingAgentIfLast`] and the
-//! batcher's write (`db::property::close_letting_agent_if_last`) decides against the stored
-//! row.
+//! The unlock/close instructions are Anchor `close =` constraints; `finalize_proposal` /
+//! `finalize_challenge` close their PDA by a runtime `close()` call that runs on every
+//! successful transaction, so all of these are unconditional on success.
+//! `remove_letting_agent` is conditional: on-chain its runtime `close()` fires only when
+//! the removed location was the agent's last -- the mapper cannot know that (it is pure, no
+//! DB), so it emits [`PendingClose::LettingAgentIfLast`] and the batcher's write
+//! (`db::property::close_letting_agent_if_last`) decides against the stored row.
+//! `finalize_challenge`'s optional `agent_entry` sits at index 6, AFTER the closed
+//! challenge at 5, so the close index is stable.
+//!
+//! `propose` needs NO close arm despite its auto-approval path closing the just-created
+//! Proposal: that create+close happens inside one instruction, so the account's
+//! post-transaction state is already closed and never matches the owner-scoped account
+//! filter -- no row is ever written for it, so there is nothing to close (unlike the
+//! two-transaction same-slot tie `db::close` documents).
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
 use carbon_property_decoder::accounts::PropertyAccount;
 use carbon_property_decoder::instructions::PropertyInstruction;
+use carbon_property_decoder::types::VoteChoice as ChainVoteChoice;
 use carbon_property_decoder::{PropertyDecoder, PROGRAM_ID};
 use chrono::{DateTime, Utc};
 use solana_account::Account;
@@ -31,8 +46,9 @@ use super::{
 use crate::batcher::WriteOp;
 use crate::db::close::StateTable;
 use crate::db::property::{
-    AgentCandidacyRow, AgentVoteRow, LettingAgentRow, PropertyAccountRow, PropertyConfigRow,
-    PropertyLettingRow, ResignationNoticeRow,
+    AgentCandidacyRow, AgentVoteRow, ChallengeRow, GovVoteRow, IncomeCheckpointRow,
+    LettingAgentRow, PropertyAccountRow, PropertyConfigRow, PropertyIncomeRow, PropertyLettingRow,
+    ProposalRow, ResignationNoticeRow, VoteChoice,
 };
 
 /// The property program's [`ProgramMapper`] instantiation.
@@ -66,17 +82,29 @@ pub fn ix_name(ix: &PropertyInstruction) -> &'static str {
     match ix {
         PropertyInstruction::AcceptAuthority(_) => "accept_authority",
         PropertyInstruction::AddLettingAgent(_) => "add_letting_agent",
+        PropertyInstruction::ChallengeAgent(_) => "challenge_agent",
+        PropertyInstruction::ClaimIncome(_) => "claim_income",
         PropertyInstruction::ClaimProperty(_) => "claim_property",
         PropertyInstruction::CloseAgentCandidacy(_) => "close_agent_candidacy",
+        PropertyInstruction::CloseIncomeCheckpoint(_) => "close_income_checkpoint",
+        PropertyInstruction::DistributeIncome(_) => "distribute_income",
         PropertyInstruction::FinalizeAgentElection(_) => "finalize_agent_election",
+        PropertyInstruction::FinalizeChallenge(_) => "finalize_challenge",
+        PropertyInstruction::FinalizeProposal(_) => "finalize_proposal",
         PropertyInstruction::FinalizeResignation(_) => "finalize_resignation",
         PropertyInstruction::InitializeConfig(_) => "initialize_config",
+        PropertyInstruction::Propose(_) => "propose",
         PropertyInstruction::RemoveLettingAgent(_) => "remove_letting_agent",
         PropertyInstruction::Resign(_) => "resign",
+        PropertyInstruction::SettleIncome(_) => "settle_income",
         PropertyInstruction::UnlockAgentVotes(_) => "unlock_agent_votes",
+        PropertyInstruction::UnlockChallengeVotes(_) => "unlock_challenge_votes",
+        PropertyInstruction::UnlockProposalVotes(_) => "unlock_proposal_votes",
         PropertyInstruction::UpdateAuthority(_) => "update_authority",
         PropertyInstruction::UpdateConfig(_) => "update_config",
         PropertyInstruction::VoteOnAgent(_) => "vote_on_agent",
+        PropertyInstruction::VoteOnChallenge(_) => "vote_on_challenge",
+        PropertyInstruction::VoteOnProposal(_) => "vote_on_proposal",
         PropertyInstruction::CpiEvent(_) => "cpi_event",
     }
 }
@@ -145,6 +173,41 @@ pub fn map_instruction(
                 slot,
             }]
         }
+        PropertyInstruction::FinalizeProposal(_) => {
+            vec![close_at(
+                accounts,
+                4,
+                name,
+                StateTable::PropertyProposal,
+                slot,
+            )?]
+        }
+        PropertyInstruction::UnlockProposalVotes(_)
+        | PropertyInstruction::UnlockChallengeVotes(_) => {
+            vec![close_at(
+                accounts,
+                4,
+                name,
+                StateTable::PropertyGovVote,
+                slot,
+            )?]
+        }
+        PropertyInstruction::FinalizeChallenge(_) => {
+            vec![close_at(
+                accounts,
+                5,
+                name,
+                StateTable::PropertyChallenge,
+                slot,
+            )?]
+        }
+        PropertyInstruction::CloseIncomeCheckpoint(_) => vec![close_at(
+            accounts,
+            2,
+            name,
+            StateTable::PropertyIncomeCheckpoint,
+            slot,
+        )?],
         _ => vec![],
     };
 
@@ -155,12 +218,22 @@ pub fn map_instruction(
     }))
 }
 
+fn vote_choice_from_chain(choice: &ChainVoteChoice) -> VoteChoice {
+    match choice {
+        ChainVoteChoice::Yes => VoteChoice::Yes,
+        ChainVoteChoice::No => VoteChoice::No,
+        ChainVoteChoice::Abstain => VoteChoice::Abstain,
+    }
+}
+
 /// Decoded account -> state-table upsert (same contract as the whitelist's; see
 /// [`super::whitelist::account_write_op`]).
 ///
 /// `LettingAgent.locations` is serialized to the JSONB shape the migration documents
 /// (postcodes as UTF-8 strings, NOT the decoder's serde byte arrays) -- the conditional
-/// close's SQL comparison depends on this shape.
+/// close's SQL comparison depends on this shape. `PropertyIncome.streams` /
+/// `IncomeCheckpoint.entries` likewise take migration 0012's shapes, with the u128
+/// `per_share` as a decimal string (serde_json's number type cannot carry the full range).
 pub fn account_write_op(
     pubkey: Pubkey,
     slot: i64,
@@ -169,7 +242,10 @@ pub fn account_write_op(
 ) -> WriteOp {
     let pubkey = pubkey.to_bytes().to_vec();
     let row = match &decoded.data {
-        PropertyAccount::Config(c) => PropertyAccountRow::Config(PropertyConfigRow {
+        // The IDL spells the account `property::state::Config` (namespaced because the
+        // program now also imports the marketplace's Config type); the table stays
+        // `property_config`.
+        PropertyAccount::PropertyStateConfig(c) => PropertyAccountRow::Config(PropertyConfigRow {
             pubkey,
             slot,
             lamports,
@@ -182,6 +258,13 @@ pub fn account_write_op(
             agent_voting_time: c.agent_voting_time,
             min_voting_quorum_bps: c.min_voting_quorum_bps as i32,
             agent_notice_period: c.agent_notice_period,
+            proposal_voting_time: c.proposal_voting_time,
+            low_proposal: c.low_proposal as i64,
+            high_proposal: c.high_proposal as i64,
+            high_threshold_bps: c.high_threshold_bps as i32,
+            auto_approval_cooldown: c.auto_approval_cooldown,
+            challenge_deposit: c.challenge_deposit as i64,
+            agent_slash_amount: c.agent_slash_amount as i64,
             bump: c.bump as i16,
         }),
         PropertyAccount::AgentCandidacy(a) => {
@@ -241,8 +324,103 @@ pub fn account_write_op(
                 election_candidate_count: l.election.candidate_count as i64,
                 election_round: l.election.round as i64,
                 election_quorum_bps: l.election.quorum_bps as i32,
+                governance_proposal_count: l.governance.proposal_count as i64,
+                governance_challenge_count: l.governance.challenge_count as i64,
+                governance_active_proposal: l.governance.active_proposal as i64,
+                governance_active_challenge: l.governance.active_challenge as i64,
+                governance_strikes: l.governance.strikes as i16,
+                governance_last_auto_approval_ts: l.governance.last_auto_approval_ts,
                 rent_payer: l.rent_payer.to_bytes().to_vec(),
                 bump: l.bump as i16,
+            })
+        }
+        PropertyAccount::Proposal(p) => PropertyAccountRow::Proposal(ProposalRow {
+            pubkey,
+            slot,
+            lamports,
+            asset_id: p.asset_id as i64,
+            id: p.id as i64,
+            proposer: p.proposer.to_bytes().to_vec(),
+            amount: p.amount as i64,
+            details_hash: p.details_hash.to_vec(),
+            expiry: p.expiry,
+            tally_yes: p.tally.yes as i64,
+            tally_no: p.tally.no as i64,
+            tally_abstain: p.tally.abstain as i64,
+            quorum_bps: p.quorum_bps as i32,
+            threshold_bps: p.threshold_bps as i32,
+            rent_payer: p.rent_payer.to_bytes().to_vec(),
+            bump: p.bump as i16,
+        }),
+        PropertyAccount::Challenge(c) => PropertyAccountRow::Challenge(ChallengeRow {
+            pubkey,
+            slot,
+            lamports,
+            asset_id: c.asset_id as i64,
+            id: c.id as i64,
+            challenger: c.challenger.to_bytes().to_vec(),
+            agent: c.agent.to_bytes().to_vec(),
+            deposit: c.deposit as i64,
+            expiry: c.expiry,
+            tally_yes: c.tally.yes as i64,
+            tally_no: c.tally.no as i64,
+            tally_abstain: c.tally.abstain as i64,
+            quorum_bps: c.quorum_bps as i32,
+            rent_payer: c.rent_payer.to_bytes().to_vec(),
+            bump: c.bump as i16,
+        }),
+        PropertyAccount::GovVote(v) => PropertyAccountRow::GovVote(GovVoteRow {
+            pubkey,
+            slot,
+            lamports,
+            asset_id: v.asset_id as i64,
+            id: v.id as i64,
+            voter: v.voter.to_bytes().to_vec(),
+            choice: vote_choice_from_chain(&v.choice),
+            power: v.power as i64,
+            rent_payer: v.rent_payer.to_bytes().to_vec(),
+            bump: v.bump as i16,
+        }),
+        PropertyAccount::PropertyIncome(i) => PropertyAccountRow::Income(PropertyIncomeRow {
+            pubkey,
+            slot,
+            lamports,
+            asset_id: i.asset_id as i64,
+            streams: serde_json::Value::Array(
+                i.streams
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "mint": s.mint.to_string(),
+                            "per_share": s.per_share.to_string(),
+                            "dust": s.dust,
+                        })
+                    })
+                    .collect(),
+            ),
+            rent_payer: i.rent_payer.to_bytes().to_vec(),
+            bump: i.bump as i16,
+        }),
+        PropertyAccount::IncomeCheckpoint(c) => {
+            PropertyAccountRow::IncomeCheckpoint(IncomeCheckpointRow {
+                pubkey,
+                slot,
+                lamports,
+                asset_id: c.asset_id as i64,
+                owner: c.owner.to_bytes().to_vec(),
+                entries: serde_json::Value::Array(
+                    c.entries
+                        .iter()
+                        .map(|e| {
+                            serde_json::json!({
+                                "per_share": e.per_share.to_string(),
+                                "pending": e.pending,
+                            })
+                        })
+                        .collect(),
+                ),
+                rent_payer: c.rent_payer.to_bytes().to_vec(),
+                bump: c.bump as i16,
             })
         }
         PropertyAccount::ResignationNotice(n) => {

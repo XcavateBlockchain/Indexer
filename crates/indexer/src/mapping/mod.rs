@@ -56,16 +56,36 @@ pub enum PendingClose {
         pubkey: Vec<u8>,
         slot: i64,
     },
-    /// The one conditional close in the protocol: property's `remove_letting_agent` closes
-    /// the `LettingAgent` PDA only when the removed location was its last (a runtime
-    /// `close()` call, not an Anchor constraint). The mapper cannot decide that without the
-    /// stored row, so the decision lives in the batcher's write
+    /// A conditional close the mapper cannot decide (a runtime `close()` call behind a
+    /// condition on account state, not an Anchor constraint): property's
+    /// `remove_letting_agent` closes the `LettingAgent` PDA only when the removed location
+    /// was its last. The decision lives in the batcher's write
     /// (`db::property::close_letting_agent_if_last`); this op just carries the evidence.
     /// `removed_postcode` is the postcode arg as a UTF-8 string, matching the shape the
     /// `locations` JSONB stores.
     LettingAgentIfLast {
         pubkey: Vec<u8>,
         removed_postcode: String,
+        slot: i64,
+    },
+    /// Conditional close of a `ShareListing` by `buy_relisted_shares`, which on-chain closes
+    /// the PDA only when the buy emptied it. The instruction's `amount` arg carries how many
+    /// shares were bought; the batcher's write
+    /// (`db::marketplace::close_share_listing_if_emptied`) compares it against the stored
+    /// row's remaining amount.
+    ShareListingIfEmptied {
+        pubkey: Vec<u8>,
+        bought_amount: i64,
+        slot: i64,
+    },
+    /// Conditional close of a `ShareListing` by `accept_offer`, whose sold amount is the
+    /// OFFER's amount -- an account fact, not an instruction arg -- so this op carries the
+    /// offer's pubkey instead and the batcher's write
+    /// (`db::marketplace::close_share_listing_if_emptied_by_offer`) reads the amount from
+    /// the stored offer row.
+    ShareListingIfEmptiedByOffer {
+        pubkey: Vec<u8>,
+        offer_pubkey: Vec<u8>,
         slot: i64,
     },
 }

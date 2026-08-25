@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE marketplace_share_listing\n        SET slot = $2, closed_at_slot = $2\n        WHERE pubkey = $1\n          AND slot < $2\n          AND amount = (SELECT amount FROM marketplace_offer WHERE pubkey = $3)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a8e460e0599ebc56c422de760b32996eb9278cab98fd26f73db5fba103ace7ec"
+}

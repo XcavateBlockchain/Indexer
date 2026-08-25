@@ -9,6 +9,7 @@ pub struct PropertyAssetsInitializedGraphQL {
     pub listing_id: U64,
     pub share_mint: Pubkey,
     pub share_amount: U32,
+    pub metadata_uri: String,
 }
 
 impl From<crate::types::PropertyAssetsInitialized> for PropertyAssetsInitializedGraphQL {
@@ -17,6 +18,7 @@ impl From<crate::types::PropertyAssetsInitialized> for PropertyAssetsInitialized
             listing_id: carbon_core::graphql::primitives::U64(original.listing_id),
             share_mint: carbon_core::graphql::primitives::Pubkey(original.share_mint),
             share_amount: carbon_core::graphql::primitives::U32(original.share_amount),
+            metadata_uri: original.metadata_uri,
         }
     }
 }

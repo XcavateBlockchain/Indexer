@@ -689,6 +689,41 @@ impl QueryRoot {
         programs::marketplace::share_holdings(context, asset_id, owner, active, first, offset).await
     }
 
+    /// Secondary-market share listings. `shareListingId` filters by the on-chain listing id
+    /// (a separate id space from primary `listings`).
+    async fn share_listings(
+        context: &GraphQLContext,
+        share_listing_id: Option<I64>,
+        asset_id: Option<I64>,
+        seller: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::ShareListingConnection> {
+        programs::marketplace::share_listings(
+            context,
+            share_listing_id,
+            asset_id,
+            seller,
+            active,
+            first,
+            offset,
+        )
+        .await
+    }
+
+    /// Bids on secondary-market share listings. `listingId` is the ShareListing id.
+    async fn offers(
+        context: &GraphQLContext,
+        listing_id: Option<I64>,
+        offeror: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::OfferConnection> {
+        programs::marketplace::offers(context, listing_id, offeror, active, first, offset).await
+    }
+
     // --- property ---------------------------------------------------------------------------
 
     /// The property program's singleton config PDA.
@@ -756,6 +791,68 @@ impl QueryRoot {
         offset: Option<i32>,
     ) -> FieldResult<programs::property::ResignationNoticeConnection> {
         programs::property::resignation_notices(context, asset_id, agent, active, first, offset)
+            .await
+    }
+
+    /// Holder spending proposals (above-low-tier only; auto-approved ones never reach
+    /// storage).
+    async fn proposals(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        proposer: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::ProposalConnection> {
+        programs::property::proposals(context, asset_id, proposer, active, first, offset).await
+    }
+
+    /// Holder challenges against sitting letting agents.
+    async fn challenges(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        challenger: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::ChallengeConnection> {
+        programs::property::challenges(context, asset_id, challenger, active, first, offset).await
+    }
+
+    /// Votes on proposals and challenges (one account type behind both -- disambiguate by
+    /// joining `voteId` against `proposals` / `challenges`).
+    async fn gov_votes(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        voter: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::GovVoteConnection> {
+        programs::property::gov_votes(context, asset_id, voter, active, first, offset).await
+    }
+
+    /// Per-property rental income ledgers.
+    async fn property_incomes(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::PropertyIncomeConnection> {
+        programs::property::property_incomes(context, asset_id, active, first, offset).await
+    }
+
+    /// Per-holder income claim checkpoints.
+    async fn income_checkpoints(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        owner: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::property::IncomeCheckpointConnection> {
+        programs::property::income_checkpoints(context, asset_id, owner, active, first, offset)
             .await
     }
 

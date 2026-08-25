@@ -5,9 +5,11 @@ pub mod lawyer_schema;
 pub mod lawyer_candidacy_schema;
 pub mod lawyer_vote_schema;
 pub mod listing_schema;
+pub mod offer_schema;
 pub mod property_asset_schema;
 pub mod reservation_schema;
 pub mod share_holding_schema;
+pub mod share_listing_schema;
 
 pub use config_schema::*;
 pub use investor_position_schema::*;
@@ -15,9 +17,11 @@ pub use lawyer_schema::*;
 pub use lawyer_candidacy_schema::*;
 pub use lawyer_vote_schema::*;
 pub use listing_schema::*;
+pub use offer_schema::*;
 pub use property_asset_schema::*;
 pub use reservation_schema::*;
 pub use share_holding_schema::*;
+pub use share_listing_schema::*;
 
 use juniper::GraphQLObject;
 

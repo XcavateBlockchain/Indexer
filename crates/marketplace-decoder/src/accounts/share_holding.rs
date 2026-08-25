@@ -10,8 +10,13 @@ pub struct ShareHolding {
     pub asset_id: u64,
     pub owner: Pubkey,
     pub amount: u32,
-    /// Shares locked by votes; blocked from transfer until unlocked.
-    pub locked_amount: u32,
+    /// Shares locked by votes, one counter per `LockReason`. Counters are
+    /// additive within a reason but overlap across reasons.
+    pub locks: [u32; 4],
+    /// Shares committed to open secondary listings. Still counted in
+    /// `amount` — the seller keeps the ledger, and the income that comes
+    /// with it, until the moment of sale — but out of voting and transfers.
+    pub listed: u32,
     pub bump: u8,
 }
 

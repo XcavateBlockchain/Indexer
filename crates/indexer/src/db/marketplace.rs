@@ -1,10 +1,12 @@
 //! Row shapes and slot-guarded writes for the `marketplace` program's account-state tables
-//! (`migrations/0009_marketplace_state.sql`). Same contract as [`super::accounts`].
+//! (`migrations/0009_marketplace_state.sql` + `0012_redeploy_new_programs.sql`). Same
+//! contract as [`super::accounts`].
 //!
-//! Shape notes (see the migration header): the `LawyerAssignment` and `SpvElection` nested
-//! structs are flattened into typed columns; `accepted_payment_mints` and `collected` are
-//! JSONB lists in shapes this module's callers construct (pubkeys as base58 strings);
-//! `PropertyAsset.location` is the raw postcode byte string.
+//! Shape notes (see the migration headers): the `LawyerAssignment`, `SpvElection` and
+//! `ShareHolding.locks` nested/fixed shapes are flattened into typed columns;
+//! `accepted_payment_mints` and `collected` are JSONB lists in shapes this module's callers
+//! construct (pubkeys as base58 strings); `PropertyAsset.location` is the raw postcode byte
+//! string.
 
 use sqlx::postgres::PgQueryResult;
 use sqlx::PgExecutor;
@@ -91,6 +93,7 @@ pub struct MarketplaceConfigRow {
     pub lawyer_voting_time: i64,
     pub min_voting_quorum_bps: i32,
     pub next_listing_id: i64,
+    pub next_share_listing_id: i64,
     pub bump: i16,
 }
 
@@ -187,6 +190,7 @@ pub struct ListingRow {
     pub developer_engaged: bool,
     pub spv_costs_due: i64,
     pub spv_costs_payee: Vec<u8>,
+    pub collected_fee_quote: i64,
     /// JSONB array of `{"mint": "<base58>", "funds": N, "fee": N, "tax": N}`.
     pub collected: serde_json::Value,
     pub spv_election_expiry: i64,
@@ -202,7 +206,8 @@ pub struct PropertyAssetRow {
     pub slot: i64,
     pub lamports: i64,
     pub asset_id: i64,
-    pub core_asset: Vec<u8>,
+    pub name: String,
+    pub metadata_uri: String,
     pub share_mint: Vec<u8>,
     pub region_id: i32,
     /// Raw postcode byte string.
@@ -232,7 +237,49 @@ pub struct ShareHoldingRow {
     pub asset_id: i64,
     pub owner: Vec<u8>,
     pub amount: i64,
-    pub locked_amount: i64,
+    /// The on-chain `locks: [u32; 4]` array, one counter per `LockReason` variant in borsh
+    /// order (LawyerElection, AgentElection, Proposal, Challenge); the effective lock is
+    /// the largest of them.
+    pub lock_lawyer_election: i64,
+    pub lock_agent_election: i64,
+    pub lock_proposal: i64,
+    pub lock_challenge: i64,
+    /// Shares committed to open secondary listings (still counted in `amount`).
+    pub listed: i64,
+    pub bump: i16,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShareListingRow {
+    pub pubkey: Vec<u8>,
+    pub slot: i64,
+    pub lamports: i64,
+    pub id: i64,
+    pub asset_id: i64,
+    pub seller: Vec<u8>,
+    pub share_price: i64,
+    pub amount: i64,
+    pub fee_bps: i32,
+    pub next_offer_nonce: i64,
+    pub rent_payer: Vec<u8>,
+    pub bump: i16,
+}
+
+#[derive(Debug, Clone)]
+pub struct OfferRow {
+    pub pubkey: Vec<u8>,
+    pub slot: i64,
+    pub lamports: i64,
+    /// The ShareListing id this bids on (NOT a primary listing_id).
+    pub listing_id: i64,
+    pub asset_id: i64,
+    pub offeror: Vec<u8>,
+    pub share_price: i64,
+    pub amount: i64,
+    pub payment_mint: Vec<u8>,
+    pub held: i64,
+    pub nonce: i64,
+    pub rent_payer: Vec<u8>,
     pub bump: i16,
 }
 
@@ -245,9 +292,11 @@ pub enum MarketplaceAccountRow {
     LawyerCandidacy(LawyerCandidacyRow),
     LawyerVote(LawyerVoteRow),
     Listing(Box<ListingRow>),
+    Offer(OfferRow),
     PropertyAsset(PropertyAssetRow),
     Reservation(ReservationRow),
     ShareHolding(ShareHoldingRow),
+    ShareListing(ShareListingRow),
 }
 
 impl MarketplaceAccountRow {
@@ -259,9 +308,11 @@ impl MarketplaceAccountRow {
             MarketplaceAccountRow::LawyerCandidacy(r) => r.slot,
             MarketplaceAccountRow::LawyerVote(r) => r.slot,
             MarketplaceAccountRow::Listing(r) => r.slot,
+            MarketplaceAccountRow::Offer(r) => r.slot,
             MarketplaceAccountRow::PropertyAsset(r) => r.slot,
             MarketplaceAccountRow::Reservation(r) => r.slot,
             MarketplaceAccountRow::ShareHolding(r) => r.slot,
+            MarketplaceAccountRow::ShareListing(r) => r.slot,
         }
     }
 }
@@ -281,9 +332,11 @@ where
         MarketplaceAccountRow::LawyerCandidacy(r) => upsert_lawyer_candidacy(executor, r).await,
         MarketplaceAccountRow::LawyerVote(r) => upsert_lawyer_vote(executor, r).await,
         MarketplaceAccountRow::Listing(r) => upsert_listing(executor, r).await,
+        MarketplaceAccountRow::Offer(r) => upsert_offer(executor, r).await,
         MarketplaceAccountRow::PropertyAsset(r) => upsert_property_asset(executor, r).await,
         MarketplaceAccountRow::Reservation(r) => upsert_reservation(executor, r).await,
         MarketplaceAccountRow::ShareHolding(r) => upsert_share_holding(executor, r).await,
+        MarketplaceAccountRow::ShareListing(r) => upsert_share_listing(executor, r).await,
     }
 }
 
@@ -300,9 +353,10 @@ where
             pending_authority, xcav_mint, treasury, rent_collector, accepted_payment_mints,
             listing_deposit, lawyer_deposit, min_property_shares, max_property_shares,
             marketplace_fee_bps, investor_fee_bps, max_ownership_bps, claiming_time,
-            legal_process_time, lawyer_voting_time, min_voting_quorum_bps, next_listing_id, bump)
+            legal_process_time, lawyer_voting_time, min_voting_quorum_bps, next_listing_id,
+            next_share_listing_id, bump)
         VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                $17, $18, $19, $20, $21, $22)
+                $17, $18, $19, $20, $21, $22, $23)
         ON CONFLICT (pubkey) DO UPDATE SET
             slot                   = EXCLUDED.slot,
             lamports               = EXCLUDED.lamports,
@@ -325,6 +379,7 @@ where
             lawyer_voting_time     = EXCLUDED.lawyer_voting_time,
             min_voting_quorum_bps  = EXCLUDED.min_voting_quorum_bps,
             next_listing_id        = EXCLUDED.next_listing_id,
+            next_share_listing_id  = EXCLUDED.next_share_listing_id,
             bump                   = EXCLUDED.bump
         WHERE marketplace_config.slot < EXCLUDED.slot
         "#,
@@ -349,6 +404,7 @@ where
         row.lawyer_voting_time,
         row.min_voting_quorum_bps,
         row.next_listing_id,
+        row.next_share_listing_id,
         row.bump,
     )
     .execute(executor)
@@ -548,11 +604,12 @@ where
             developer_lawyer, developer_lawyer_costs, developer_lawyer_doc_status,
             developer_lawyer_documents_hash,
             spv_lawyer, spv_lawyer_costs, spv_lawyer_doc_status, spv_lawyer_documents_hash,
-            second_attempt, developer_engaged, spv_costs_due, spv_costs_payee, collected,
+            second_attempt, developer_engaged, spv_costs_due, spv_costs_payee,
+            collected_fee_quote, collected,
             spv_election_expiry, spv_election_candidate_count, spv_election_round, status, bump)
         VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                 $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
+                $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
         ON CONFLICT (pubkey) DO UPDATE SET
             slot                            = EXCLUDED.slot,
             lamports                        = EXCLUDED.lamports,
@@ -590,6 +647,7 @@ where
             developer_engaged               = EXCLUDED.developer_engaged,
             spv_costs_due                   = EXCLUDED.spv_costs_due,
             spv_costs_payee                 = EXCLUDED.spv_costs_payee,
+            collected_fee_quote             = EXCLUDED.collected_fee_quote,
             collected                       = EXCLUDED.collected,
             spv_election_expiry             = EXCLUDED.spv_election_expiry,
             spv_election_candidate_count    = EXCLUDED.spv_election_candidate_count,
@@ -634,6 +692,7 @@ where
         row.developer_engaged,
         row.spv_costs_due,
         row.spv_costs_payee,
+        row.collected_fee_quote,
         row.collected,
         row.spv_election_expiry,
         row.spv_election_candidate_count,
@@ -655,15 +714,16 @@ where
     sqlx::query!(
         r#"
         INSERT INTO marketplace_property_asset (pubkey, slot, lamports, closed_at_slot,
-            asset_id, core_asset, share_mint, region_id, location, share_amount, spv_created,
-            finalized, holder_count, bump)
-        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            asset_id, name, metadata_uri, share_mint, region_id, location, share_amount,
+            spv_created, finalized, holder_count, bump)
+        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (pubkey) DO UPDATE SET
             slot           = EXCLUDED.slot,
             lamports       = EXCLUDED.lamports,
             closed_at_slot = EXCLUDED.closed_at_slot,
             asset_id       = EXCLUDED.asset_id,
-            core_asset     = EXCLUDED.core_asset,
+            name           = EXCLUDED.name,
+            metadata_uri   = EXCLUDED.metadata_uri,
             share_mint     = EXCLUDED.share_mint,
             region_id      = EXCLUDED.region_id,
             location       = EXCLUDED.location,
@@ -678,7 +738,8 @@ where
         row.slot,
         row.lamports,
         row.asset_id,
-        row.core_asset,
+        row.name,
+        row.metadata_uri,
         row.share_mint,
         row.region_id,
         row.location,
@@ -734,17 +795,22 @@ where
     sqlx::query!(
         r#"
         INSERT INTO marketplace_share_holding (pubkey, slot, lamports, closed_at_slot,
-            asset_id, owner, amount, locked_amount, bump)
-        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8)
+            asset_id, owner, amount, lock_lawyer_election, lock_agent_election, lock_proposal,
+            lock_challenge, listed, bump)
+        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (pubkey) DO UPDATE SET
-            slot           = EXCLUDED.slot,
-            lamports       = EXCLUDED.lamports,
-            closed_at_slot = EXCLUDED.closed_at_slot,
-            asset_id       = EXCLUDED.asset_id,
-            owner          = EXCLUDED.owner,
-            amount         = EXCLUDED.amount,
-            locked_amount  = EXCLUDED.locked_amount,
-            bump           = EXCLUDED.bump
+            slot                 = EXCLUDED.slot,
+            lamports             = EXCLUDED.lamports,
+            closed_at_slot       = EXCLUDED.closed_at_slot,
+            asset_id             = EXCLUDED.asset_id,
+            owner                = EXCLUDED.owner,
+            amount               = EXCLUDED.amount,
+            lock_lawyer_election = EXCLUDED.lock_lawyer_election,
+            lock_agent_election  = EXCLUDED.lock_agent_election,
+            lock_proposal        = EXCLUDED.lock_proposal,
+            lock_challenge       = EXCLUDED.lock_challenge,
+            listed               = EXCLUDED.listed,
+            bump                 = EXCLUDED.bump
         WHERE marketplace_share_holding.slot < EXCLUDED.slot
         "#,
         row.pubkey,
@@ -753,8 +819,164 @@ where
         row.asset_id,
         row.owner,
         row.amount,
-        row.locked_amount,
+        row.lock_lawyer_election,
+        row.lock_agent_election,
+        row.lock_proposal,
+        row.lock_challenge,
+        row.listed,
         row.bump,
+    )
+    .execute(executor)
+    .await
+}
+
+pub async fn upsert_share_listing<'e, E>(
+    executor: E,
+    row: &ShareListingRow,
+) -> Result<PgQueryResult, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query!(
+        r#"
+        INSERT INTO marketplace_share_listing (pubkey, slot, lamports, closed_at_slot, id,
+            asset_id, seller, share_price, amount, fee_bps, next_offer_nonce, rent_payer, bump)
+        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (pubkey) DO UPDATE SET
+            slot             = EXCLUDED.slot,
+            lamports         = EXCLUDED.lamports,
+            closed_at_slot   = EXCLUDED.closed_at_slot,
+            id               = EXCLUDED.id,
+            asset_id         = EXCLUDED.asset_id,
+            seller           = EXCLUDED.seller,
+            share_price      = EXCLUDED.share_price,
+            amount           = EXCLUDED.amount,
+            fee_bps          = EXCLUDED.fee_bps,
+            next_offer_nonce = EXCLUDED.next_offer_nonce,
+            rent_payer       = EXCLUDED.rent_payer,
+            bump             = EXCLUDED.bump
+        WHERE marketplace_share_listing.slot < EXCLUDED.slot
+        "#,
+        row.pubkey,
+        row.slot,
+        row.lamports,
+        row.id,
+        row.asset_id,
+        row.seller,
+        row.share_price,
+        row.amount,
+        row.fee_bps,
+        row.next_offer_nonce,
+        row.rent_payer,
+        row.bump,
+    )
+    .execute(executor)
+    .await
+}
+
+pub async fn upsert_offer<'e, E>(executor: E, row: &OfferRow) -> Result<PgQueryResult, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query!(
+        r#"
+        INSERT INTO marketplace_offer (pubkey, slot, lamports, closed_at_slot, listing_id,
+            asset_id, offeror, share_price, amount, payment_mint, held, nonce, rent_payer, bump)
+        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        ON CONFLICT (pubkey) DO UPDATE SET
+            slot           = EXCLUDED.slot,
+            lamports       = EXCLUDED.lamports,
+            closed_at_slot = EXCLUDED.closed_at_slot,
+            listing_id     = EXCLUDED.listing_id,
+            asset_id       = EXCLUDED.asset_id,
+            offeror        = EXCLUDED.offeror,
+            share_price    = EXCLUDED.share_price,
+            amount         = EXCLUDED.amount,
+            payment_mint   = EXCLUDED.payment_mint,
+            held           = EXCLUDED.held,
+            nonce          = EXCLUDED.nonce,
+            rent_payer     = EXCLUDED.rent_payer,
+            bump           = EXCLUDED.bump
+        WHERE marketplace_offer.slot < EXCLUDED.slot
+        "#,
+        row.pubkey,
+        row.slot,
+        row.lamports,
+        row.listing_id,
+        row.asset_id,
+        row.offeror,
+        row.share_price,
+        row.amount,
+        row.payment_mint,
+        row.held,
+        row.nonce,
+        row.rent_payer,
+        row.bump,
+    )
+    .execute(executor)
+    .await
+}
+
+/// The conditional close for `buy_relisted_shares`: on-chain, the `ShareListing` PDA is
+/// closed by a runtime `close()` call only when the buy emptied it (`share_listing.amount -
+/// amount == 0`). The mapper is pure (no DB access), so the decision is made here against
+/// the stored pre-instruction row: close only if its remaining `amount` equals the amount
+/// this instruction bought.
+///
+/// Same caveats as [`super::property::close_letting_agent_if_last`]: for a successful
+/// transaction the stored fresh row IS the on-chain pre-state, so the equality test is the
+/// on-chain "emptied" test; a stale row can mis-decide in either direction, and the healing
+/// paths are any later write to the account and, definitively, the snapshot sweep.
+pub async fn close_share_listing_if_emptied<'e, E>(
+    executor: E,
+    pubkey: &[u8],
+    bought_amount: i64,
+    slot: i64,
+) -> Result<PgQueryResult, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query!(
+        r#"
+        UPDATE marketplace_share_listing
+        SET slot = $2, closed_at_slot = $2
+        WHERE pubkey = $1
+          AND slot < $2
+          AND amount = $3
+        "#,
+        pubkey,
+        slot,
+        bought_amount,
+    )
+    .execute(executor)
+    .await
+}
+
+/// The conditional close for `accept_offer`, which sells the OFFER's amount -- an account
+/// fact, not an instruction arg -- so the emptied test compares the stored `ShareListing`
+/// row against the stored `Offer` row (closed or not: offers soft-close in the same batch,
+/// which leaves their columns readable). A missing offer row makes the subselect NULL and
+/// the close a no-op, healed like every other miss by the snapshot sweep.
+pub async fn close_share_listing_if_emptied_by_offer<'e, E>(
+    executor: E,
+    pubkey: &[u8],
+    offer_pubkey: &[u8],
+    slot: i64,
+) -> Result<PgQueryResult, sqlx::Error>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query!(
+        r#"
+        UPDATE marketplace_share_listing
+        SET slot = $2, closed_at_slot = $2
+        WHERE pubkey = $1
+          AND slot < $2
+          AND amount = (SELECT amount FROM marketplace_offer WHERE pubkey = $3)
+        "#,
+        pubkey,
+        slot,
+        offer_pubkey,
     )
     .execute(executor)
     .await

@@ -12,7 +12,8 @@ pub struct PropertyAssetRow {
     #[sqlx(flatten)]
     pub account_metadata: AccountRowMetadata,
     pub asset_id: U64,
-    pub core_asset: Pubkey,
+    pub name: String,
+    pub metadata_uri: String,
     pub share_mint: Pubkey,
     pub region_id: U16,
     pub location: Vec<u8>,
@@ -28,7 +29,8 @@ impl PropertyAssetRow {
         Self {
             account_metadata: metadata.into(),
             asset_id: source.asset_id.into(),
-            core_asset: source.core_asset.into(),
+            name: source.name.into(),
+            metadata_uri: source.metadata_uri.into(),
             share_mint: source.share_mint.into(),
             region_id: source.region_id.into(),
             location: source.location.into(),
@@ -46,7 +48,8 @@ impl TryFrom<PropertyAssetRow> for crate::accounts::property_asset::PropertyAsse
     fn try_from(source: PropertyAssetRow) -> Result<Self, Self::Error> {
         Ok(Self {
             asset_id: *source.asset_id,
-            core_asset: *source.core_asset,
+            name: source.name.into(),
+            metadata_uri: source.metadata_uri.into(),
             share_mint: *source.share_mint,
             region_id: source.region_id.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
             location: source.location.into(),
@@ -69,7 +72,8 @@ impl carbon_core::postgres::operations::Table for crate::accounts::property_asse
             "__pubkey",
             "__slot",
             "asset_id",
-            "core_asset",
+            "name",
+            "metadata_uri",
             "share_mint",
             "region_id",
             "location",
@@ -88,7 +92,8 @@ impl carbon_core::postgres::operations::Insert for PropertyAssetRow {
         sqlx::query(r#"
             INSERT INTO property_asset_account (
                 "asset_id",
-                "core_asset",
+                "name",
+                "metadata_uri",
                 "share_mint",
                 "region_id",
                 "location",
@@ -99,10 +104,11 @@ impl carbon_core::postgres::operations::Insert for PropertyAssetRow {
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             )"#)
         .bind(self.asset_id.clone())
-        .bind(self.core_asset.clone())
+        .bind(self.name.clone())
+        .bind(self.metadata_uri.clone())
         .bind(self.share_mint.clone())
         .bind(self.region_id.clone())
         .bind(self.location.clone())
@@ -124,7 +130,8 @@ impl carbon_core::postgres::operations::Upsert for PropertyAssetRow {
     async fn upsert(&self, pool: &sqlx::PgPool) -> carbon_core::error::CarbonResult<()> {
         sqlx::query(r#"INSERT INTO property_asset_account (
                 "asset_id",
-                "core_asset",
+                "name",
+                "metadata_uri",
                 "share_mint",
                 "region_id",
                 "location",
@@ -135,12 +142,13 @@ impl carbon_core::postgres::operations::Upsert for PropertyAssetRow {
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             ) ON CONFLICT (
                 __pubkey
             ) DO UPDATE SET
                 "asset_id" = EXCLUDED."asset_id",
-                "core_asset" = EXCLUDED."core_asset",
+                "name" = EXCLUDED."name",
+                "metadata_uri" = EXCLUDED."metadata_uri",
                 "share_mint" = EXCLUDED."share_mint",
                 "region_id" = EXCLUDED."region_id",
                 "location" = EXCLUDED."location",
@@ -152,7 +160,8 @@ impl carbon_core::postgres::operations::Upsert for PropertyAssetRow {
                 __slot = EXCLUDED.__slot
             "#)
         .bind(self.asset_id.clone())
-        .bind(self.core_asset.clone())
+        .bind(self.name.clone())
+        .bind(self.metadata_uri.clone())
         .bind(self.share_mint.clone())
         .bind(self.region_id.clone())
         .bind(self.location.clone())
@@ -207,7 +216,8 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for PropertyAssetMigrationOperatio
         sqlx::query(r#"CREATE TABLE IF NOT EXISTS property_asset_account (
                 -- Account data
                 "asset_id" NUMERIC(20) NOT NULL,
-                "core_asset" BYTEA NOT NULL,
+                "name" TEXT NOT NULL,
+                "metadata_uri" TEXT NOT NULL,
                 "share_mint" BYTEA NOT NULL,
                 "region_id" INT4 NOT NULL,
                 "location" BYTEA NOT NULL,

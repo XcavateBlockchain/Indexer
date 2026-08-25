@@ -14,7 +14,7 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 
 /// A slot comfortably above the program's deploy slot.
-pub const SLOT: u64 = 483_500_000;
+pub const SLOT: u64 = 487_500_000;
 
 /// Deterministic, visually distinguishable test pubkeys.
 pub fn pk(n: u8) -> Pubkey {

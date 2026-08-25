@@ -8,8 +8,11 @@ pub mod postgres;
 pub mod graphql;
 
 pub mod accept_authority;
+pub mod accept_offer;
 pub mod assign_developer_lawyer;
 pub mod buy_property_shares;
+pub mod buy_relisted_shares;
+pub mod cancel_offer;
 pub mod claim_shares;
 pub mod claim_spv_case;
 pub mod close_cancelled_position;
@@ -17,7 +20,9 @@ pub mod close_candidacy;
 pub mod close_case;
 pub mod close_dead_listing;
 pub mod close_reservation;
+pub mod close_share_holding;
 pub mod create_spv;
+pub mod delist_shares;
 pub mod execute_deal;
 pub mod finalize_spv_election;
 pub mod initialize_config;
@@ -25,11 +30,15 @@ pub mod init_property_assets;
 pub mod lawyer_confirm_documents;
 pub mod list_property;
 pub mod lock_shares;
+pub mod make_offer;
 pub mod register_lawyer;
+pub mod reject_offer;
 pub mod release_reservation;
+pub mod relist_shares;
 pub mod reserve_shares;
 pub mod resign_from_case;
 pub mod resolve_silent_verdict;
+pub mod send_property_shares;
 pub mod settle_cancelled_fees;
 pub mod unlock_shares;
 pub mod unlock_voting_shares;
@@ -46,8 +55,11 @@ pub mod withdraw_legal_process_expired;
 pub mod cpi_event;
 
 pub use self::accept_authority::*;
+pub use self::accept_offer::*;
 pub use self::assign_developer_lawyer::*;
 pub use self::buy_property_shares::*;
+pub use self::buy_relisted_shares::*;
+pub use self::cancel_offer::*;
 pub use self::claim_shares::*;
 pub use self::claim_spv_case::*;
 pub use self::close_cancelled_position::*;
@@ -55,7 +67,9 @@ pub use self::close_candidacy::*;
 pub use self::close_case::*;
 pub use self::close_dead_listing::*;
 pub use self::close_reservation::*;
+pub use self::close_share_holding::*;
 pub use self::create_spv::*;
+pub use self::delist_shares::*;
 pub use self::execute_deal::*;
 pub use self::finalize_spv_election::*;
 pub use self::initialize_config::*;
@@ -63,11 +77,15 @@ pub use self::init_property_assets::*;
 pub use self::lawyer_confirm_documents::*;
 pub use self::list_property::*;
 pub use self::lock_shares::*;
+pub use self::make_offer::*;
 pub use self::register_lawyer::*;
+pub use self::reject_offer::*;
 pub use self::release_reservation::*;
+pub use self::relist_shares::*;
 pub use self::reserve_shares::*;
 pub use self::resign_from_case::*;
 pub use self::resolve_silent_verdict::*;
+pub use self::send_property_shares::*;
 pub use self::settle_cancelled_fees::*;
 pub use self::unlock_shares::*;
 pub use self::unlock_voting_shares::*;
@@ -88,8 +106,11 @@ pub use self::cpi_event::*;
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "data"))]
 pub enum MarketplaceInstruction {
     AcceptAuthority(AcceptAuthority),
+    AcceptOffer(AcceptOffer),
     AssignDeveloperLawyer(AssignDeveloperLawyer),
     BuyPropertyShares(BuyPropertyShares),
+    BuyRelistedShares(BuyRelistedShares),
+    CancelOffer(CancelOffer),
     ClaimShares(ClaimShares),
     ClaimSpvCase(ClaimSpvCase),
     CloseCancelledPosition(CloseCancelledPosition),
@@ -97,7 +118,9 @@ pub enum MarketplaceInstruction {
     CloseCase(CloseCase),
     CloseDeadListing(CloseDeadListing),
     CloseReservation(CloseReservation),
+    CloseShareHolding(CloseShareHolding),
     CreateSpv(CreateSpv),
+    DelistShares(DelistShares),
     ExecuteDeal(ExecuteDeal),
     FinalizeSpvElection(FinalizeSpvElection),
     InitializeConfig(InitializeConfig),
@@ -105,11 +128,15 @@ pub enum MarketplaceInstruction {
     LawyerConfirmDocuments(LawyerConfirmDocuments),
     ListProperty(ListProperty),
     LockShares(LockShares),
+    MakeOffer(MakeOffer),
     RegisterLawyer(RegisterLawyer),
+    RejectOffer(RejectOffer),
     ReleaseReservation(ReleaseReservation),
+    RelistShares(RelistShares),
     ReserveShares(ReserveShares),
     ResignFromCase(ResignFromCase),
     ResolveSilentVerdict(ResolveSilentVerdict),
+    SendPropertyShares(SendPropertyShares),
     SettleCancelledFees(SettleCancelledFees),
     UnlockShares(UnlockShares),
     UnlockVotingShares(UnlockVotingShares),
@@ -150,6 +177,15 @@ impl carbon_core::instruction::InstructionDecoder<'_> for MarketplaceDecoder {
             }
         }
         {
+            if let Some(decoded) = accept_offer::AcceptOffer::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::AcceptOffer(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = assign_developer_lawyer::AssignDeveloperLawyer::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
@@ -163,6 +199,24 @@ impl carbon_core::instruction::InstructionDecoder<'_> for MarketplaceDecoder {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
                     data: MarketplaceInstruction::BuyPropertyShares(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = buy_relisted_shares::BuyRelistedShares::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::BuyRelistedShares(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = cancel_offer::CancelOffer::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::CancelOffer(decoded),
                     accounts: instruction.accounts.clone(),
                 });
             }
@@ -231,10 +285,28 @@ impl carbon_core::instruction::InstructionDecoder<'_> for MarketplaceDecoder {
             }
         }
         {
+            if let Some(decoded) = close_share_holding::CloseShareHolding::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::CloseShareHolding(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = create_spv::CreateSpv::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
                     data: MarketplaceInstruction::CreateSpv(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = delist_shares::DelistShares::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::DelistShares(decoded),
                     accounts: instruction.accounts.clone(),
                 });
             }
@@ -303,6 +375,15 @@ impl carbon_core::instruction::InstructionDecoder<'_> for MarketplaceDecoder {
             }
         }
         {
+            if let Some(decoded) = make_offer::MakeOffer::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::MakeOffer(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = register_lawyer::RegisterLawyer::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
@@ -312,10 +393,28 @@ impl carbon_core::instruction::InstructionDecoder<'_> for MarketplaceDecoder {
             }
         }
         {
+            if let Some(decoded) = reject_offer::RejectOffer::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::RejectOffer(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
             if let Some(decoded) = release_reservation::ReleaseReservation::decode(data) {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
                     data: MarketplaceInstruction::ReleaseReservation(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = relist_shares::RelistShares::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::RelistShares(decoded),
                     accounts: instruction.accounts.clone(),
                 });
             }
@@ -343,6 +442,15 @@ impl carbon_core::instruction::InstructionDecoder<'_> for MarketplaceDecoder {
                 return Some(carbon_core::instruction::DecodedInstruction {
                     program_id: instruction.program_id,
                     data: MarketplaceInstruction::ResolveSilentVerdict(decoded),
+                    accounts: instruction.accounts.clone(),
+                });
+            }
+        }
+        {
+            if let Some(decoded) = send_property_shares::SendPropertyShares::decode(data) {
+                return Some(carbon_core::instruction::DecodedInstruction {
+                    program_id: instruction.program_id,
+                    data: MarketplaceInstruction::SendPropertyShares(decoded),
                     accounts: instruction.accounts.clone(),
                 });
             }

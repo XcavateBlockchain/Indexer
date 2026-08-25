@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO marketplace_share_holding (pubkey, slot, lamports, closed_at_slot,\n            asset_id, owner, amount, lock_lawyer_election, lock_agent_election, lock_proposal,\n            lock_challenge, listed, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot                 = EXCLUDED.slot,\n            lamports             = EXCLUDED.lamports,\n            closed_at_slot       = EXCLUDED.closed_at_slot,\n            asset_id             = EXCLUDED.asset_id,\n            owner                = EXCLUDED.owner,\n            amount               = EXCLUDED.amount,\n            lock_lawyer_election = EXCLUDED.lock_lawyer_election,\n            lock_agent_election  = EXCLUDED.lock_agent_election,\n            lock_proposal        = EXCLUDED.lock_proposal,\n            lock_challenge       = EXCLUDED.lock_challenge,\n            listed               = EXCLUDED.listed,\n            bump                 = EXCLUDED.bump\n        WHERE marketplace_share_holding.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "55c196f1d2c735df2e4dad2932f3f79ba08b0a560dd44330217c2d248940dc42"
+}

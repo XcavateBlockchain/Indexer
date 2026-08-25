@@ -128,6 +128,24 @@ impl<M: ProgramMapper> Processor for InstructionProcessor<M> {
                     removed_postcode,
                     slot,
                 },
+                PendingClose::ShareListingIfEmptied {
+                    pubkey,
+                    bought_amount,
+                    slot,
+                } => WriteOp::CloseShareListingIfEmptied {
+                    pubkey,
+                    bought_amount,
+                    slot,
+                },
+                PendingClose::ShareListingIfEmptiedByOffer {
+                    pubkey,
+                    offer_pubkey,
+                    slot,
+                } => WriteOp::CloseShareListingIfEmptiedByOffer {
+                    pubkey,
+                    offer_pubkey,
+                    slot,
+                },
             });
         }
 

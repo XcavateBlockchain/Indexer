@@ -1,0 +1,104 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, name, metadata_uri, share_mint,\n               region_id, location, share_amount, spv_created, finalized, holder_count\n        FROM marketplace_property_asset\n        WHERE ($1::bigint IS NULL OR asset_id = $1)\n          AND ($2::int IS NULL OR region_id = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $4 OFFSET $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "metadata_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "share_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "region_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "location",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 10,
+        "name": "share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "spv_created",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "finalized",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 13,
+        "name": "holder_count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "458004b4d9b57d9df307d0464e8a68a39bc0dbf7606c26e34c4e177f8b4fbc52"
+}

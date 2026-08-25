@@ -1,0 +1,134 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, authority, pending_authority, xcav_mint,\n               treasury, rent_collector, agent_deposit, agent_voting_time,\n               min_voting_quorum_bps, agent_notice_period, proposal_voting_time, low_proposal,\n               high_proposal, high_threshold_bps, auto_approval_cooldown, challenge_deposit,\n               agent_slash_amount\n        FROM property_config\n        ORDER BY slot DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "authority",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "pending_authority",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "xcav_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "treasury",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "rent_collector",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 9,
+        "name": "agent_deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "agent_voting_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "min_voting_quorum_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "agent_notice_period",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "proposal_voting_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "low_proposal",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "high_proposal",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "high_threshold_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "auto_approval_cooldown",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 18,
+        "name": "challenge_deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 19,
+        "name": "agent_slash_amount",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2be2482614b87cf11b8704d696b1fca603c09974d4e7f64ce32237e9b89e28f4"
+}

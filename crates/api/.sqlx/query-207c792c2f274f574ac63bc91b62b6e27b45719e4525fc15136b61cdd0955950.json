@@ -1,0 +1,110 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, asset_id, id, challenger, agent,\n               deposit, expiry, tally_yes, tally_no, tally_abstain, quorum_bps, rent_payer\n        FROM property_challenge\n        WHERE ($1::bigint IS NULL OR asset_id = $1)\n          AND ($2::bytea IS NULL OR challenger = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $4 OFFSET $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "challenger",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "agent",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "tally_yes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "tally_no",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "tally_abstain",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "quorum_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "rent_payer",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "207c792c2f274f574ac63bc91b62b6e27b45719e4525fc15136b61cdd0955950"
+}

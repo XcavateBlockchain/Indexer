@@ -13,7 +13,8 @@ pub struct ShareHoldingRow {
     pub asset_id: U64,
     pub owner: Pubkey,
     pub amount: U32,
-    pub locked_amount: U32,
+    pub locks: Vec<U32>,
+    pub listed: U32,
     pub bump: U8,
 }
 
@@ -24,7 +25,8 @@ impl ShareHoldingRow {
             asset_id: source.asset_id.into(),
             owner: source.owner.into(),
             amount: source.amount.into(),
-            locked_amount: source.locked_amount.into(),
+            locks: source.locks.into_iter().map(|element| element.into()).collect(),
+            listed: source.listed.into(),
             bump: source.bump.into(),
         }
     }
@@ -37,7 +39,8 @@ impl TryFrom<ShareHoldingRow> for crate::accounts::share_holding::ShareHolding {
             asset_id: *source.asset_id,
             owner: *source.owner,
             amount: source.amount.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
-            locked_amount: source.locked_amount.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
+            locks: source.locks.into_iter().map(|element| Ok(element.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?)).collect::<Result<Vec<_>, _>>()?.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert array element to primitive".to_string()))?,
+            listed: source.listed.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
             bump: source.bump.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
         })
     }
@@ -55,7 +58,8 @@ impl carbon_core::postgres::operations::Table for crate::accounts::share_holding
             "asset_id",
             "owner",
             "amount",
-            "locked_amount",
+            "locks",
+            "listed",
             "bump",
         ]
     }
@@ -69,16 +73,18 @@ impl carbon_core::postgres::operations::Insert for ShareHoldingRow {
                 "asset_id",
                 "owner",
                 "amount",
-                "locked_amount",
+                "locks",
+                "listed",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             )"#)
         .bind(self.asset_id.clone())
         .bind(self.owner.clone())
         .bind(self.amount.clone())
-        .bind(self.locked_amount.clone())
+        .bind(self.locks.clone())
+        .bind(self.listed.clone())
         .bind(self.bump.clone())
         .bind(self.account_metadata.pubkey.clone())
         .bind(self.account_metadata.slot.clone())
@@ -95,25 +101,28 @@ impl carbon_core::postgres::operations::Upsert for ShareHoldingRow {
                 "asset_id",
                 "owner",
                 "amount",
-                "locked_amount",
+                "locks",
+                "listed",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             ) ON CONFLICT (
                 __pubkey
             ) DO UPDATE SET
                 "asset_id" = EXCLUDED."asset_id",
                 "owner" = EXCLUDED."owner",
                 "amount" = EXCLUDED."amount",
-                "locked_amount" = EXCLUDED."locked_amount",
+                "locks" = EXCLUDED."locks",
+                "listed" = EXCLUDED."listed",
                 "bump" = EXCLUDED."bump",
                 __slot = EXCLUDED.__slot
             "#)
         .bind(self.asset_id.clone())
         .bind(self.owner.clone())
         .bind(self.amount.clone())
-        .bind(self.locked_amount.clone())
+        .bind(self.locks.clone())
+        .bind(self.listed.clone())
         .bind(self.bump.clone())
         .bind(self.account_metadata.pubkey)
         .bind(self.account_metadata.slot.clone())
@@ -163,7 +172,8 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for ShareHoldingMigrationOperation
                 "asset_id" NUMERIC(20) NOT NULL,
                 "owner" BYTEA NOT NULL,
                 "amount" INT8 NOT NULL,
-                "locked_amount" INT8 NOT NULL,
+                "locks" INT8[] NOT NULL,
+                "listed" INT8 NOT NULL,
                 "bump" INT2 NOT NULL,
                 -- Account metadata
                 __pubkey BYTEA NOT NULL,

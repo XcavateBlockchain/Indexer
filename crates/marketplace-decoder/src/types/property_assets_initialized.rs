@@ -8,5 +8,6 @@ pub struct PropertyAssetsInitialized {
     pub listing_id: u64,
     pub share_mint: Pubkey,
     pub share_amount: u32,
+    pub metadata_uri: String,
 }
 
