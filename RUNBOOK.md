@@ -158,13 +158,18 @@ Solana devnet is periodically reset by the network operators, which orphans all 
 history.
 
 **Recovery** (minutes, at these programs' data volume — the whole four-program history is
-~26 signatures and ~20 accounts as of ADR-22):
+~31 signatures and ~30 accounts as of the ADR-26 redeploy):
 
 ```bash
 docker compose down
 docker volume rm indexer_pgdata      # check the exact name: docker volume ls
 docker compose up -d
 ```
+
+Know what the volume drop takes with it: `pgdata` also holds the inert SubQuery rollback
+schema (`app` — ADR-21), so wiping it abandons that rollback path. Deliberate since the
+ADR-26 redeploy (the old programs the SubQuery stack pointed at no longer exist), but worth
+knowing before this command runs.
 
 A fresh `pgdata` volume means a fresh `sync_state` too, so `indexer run`'s normal startup
 path (per-program snapshot, then backfill from each program's deploy slot) does the full

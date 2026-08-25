@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO property_income_checkpoint (pubkey, slot, lamports, closed_at_slot,\n            asset_id, owner, entries, rent_payer, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot           = EXCLUDED.slot,\n            lamports       = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            asset_id       = EXCLUDED.asset_id,\n            owner          = EXCLUDED.owner,\n            entries        = EXCLUDED.entries,\n            rent_payer     = EXCLUDED.rent_payer,\n            bump           = EXCLUDED.bump\n        WHERE property_income_checkpoint.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Jsonb",
+        "Bytea",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "38a9e0e0ac52d573f407b0a04df608efc3c77c9100d9d5622bda8e88f32d88b2"
+}

@@ -137,8 +137,9 @@ mod property {
     use super::*;
     use crate::mapping::property::map_instruction;
     use carbon_property_decoder::instructions::{
-        CloseAgentCandidacy, FinalizeResignation, PropertyInstruction, RemoveLettingAgent,
-        UnlockAgentVotes, VoteOnAgent,
+        ChallengeAgent, CloseAgentCandidacy, CloseIncomeCheckpoint, FinalizeChallenge,
+        FinalizeProposal, FinalizeResignation, PropertyInstruction, Propose, RemoveLettingAgent,
+        UnlockAgentVotes, UnlockChallengeVotes, UnlockProposalVotes, VoteOnAgent,
     };
     use carbon_property_decoder::PROGRAM_ID;
 
@@ -220,6 +221,97 @@ mod property {
         assert!(m.action.is_none());
         assert_eq!(m.instruction.ix_name, "vote_on_agent");
     }
+
+    #[test]
+    fn finalize_proposal_closes_the_proposal_at_index_4() {
+        // A runtime `proposal.close(rent_payer)` at the end of the handler, executed on
+        // every success -- unconditional from the mapping's point of view.
+        let m = map(
+            PropertyInstruction::FinalizeProposal(FinalizeProposal { asset_id: 1 }),
+            5,
+        );
+        assert_eq!(m.instruction.ix_name, "finalize_proposal");
+        expect_close(&m, StateTable::PropertyProposal, 4);
+    }
+
+    #[test]
+    fn finalize_challenge_closes_the_challenge_at_index_5() {
+        // The optional agent_entry sits at index 6, AFTER the closed challenge, so the
+        // close index is stable whether or not the entry is passed.
+        let m = map(
+            PropertyInstruction::FinalizeChallenge(FinalizeChallenge { asset_id: 1 }),
+            16,
+        );
+        assert_eq!(m.instruction.ix_name, "finalize_challenge");
+        expect_close(&m, StateTable::PropertyChallenge, 5);
+    }
+
+    #[test]
+    fn both_gov_unlocks_close_the_vote_record_at_index_4() {
+        // Proposal votes and challenge votes are the same GovVote account type behind two
+        // seed prefixes; both unlock instructions close it at the same position.
+        for (name, data) in [
+            (
+                "unlock_proposal_votes",
+                PropertyInstruction::UnlockProposalVotes(UnlockProposalVotes {
+                    asset_id: 1,
+                    id: 1,
+                }),
+            ),
+            (
+                "unlock_challenge_votes",
+                PropertyInstruction::UnlockChallengeVotes(UnlockChallengeVotes {
+                    asset_id: 1,
+                    id: 1,
+                }),
+            ),
+        ] {
+            let m = map(data, 7);
+            assert_eq!(m.instruction.ix_name, name);
+            expect_close(&m, StateTable::PropertyGovVote, 4);
+        }
+    }
+
+    #[test]
+    fn close_income_checkpoint_closes_the_checkpoint_at_index_2() {
+        let m = map(
+            PropertyInstruction::CloseIncomeCheckpoint(CloseIncomeCheckpoint { asset_id: 1 }),
+            4,
+        );
+        expect_close(&m, StateTable::PropertyIncomeCheckpoint, 2);
+    }
+
+    #[test]
+    fn propose_closes_nothing_despite_the_auto_approval_path() {
+        // An auto-approved (low-tier) proposal is created AND closed inside this one
+        // instruction, so its post-transaction state never matches the owner-scoped account
+        // filter and no row ever exists to close -- see the module doc's close table.
+        let m = map(
+            PropertyInstruction::Propose(Propose {
+                asset_id: 1,
+                id: 1,
+                amount: 10,
+                details_hash: [1; 32],
+            }),
+            7,
+        );
+        assert!(m.closes.is_empty());
+        assert_eq!(m.instruction.ix_name, "propose");
+    }
+
+    #[test]
+    fn challenge_agent_creates_without_closing() {
+        let m = map(
+            PropertyInstruction::ChallengeAgent(ChallengeAgent {
+                asset_id: 1,
+                id: 1,
+                max_deposit: 100,
+            }),
+            12,
+        );
+        assert!(m.closes.is_empty());
+        assert_eq!(m.instruction.ix_name, "challenge_agent");
+    }
 }
 
 // --- marketplace ----------------------------------------------------------------------------
@@ -228,9 +320,10 @@ mod marketplace {
     use super::*;
     use crate::mapping::marketplace::map_instruction;
     use carbon_marketplace_decoder::instructions::{
-        BuyPropertyShares, CloseCancelledPosition, CloseCase, CloseDeadListing,
-        MarketplaceInstruction, ReleaseReservation, UnregisterLawyer, WithdrawCancelled,
-        WithdrawExpired, WithdrawLegalProcessExpired,
+        AcceptOffer, BuyPropertyShares, BuyRelistedShares, CancelOffer, CloseCancelledPosition,
+        CloseCase, CloseDeadListing, CloseShareHolding, DelistShares, MakeOffer,
+        MarketplaceInstruction, RejectOffer, ReleaseReservation, RelistShares, SendPropertyShares,
+        UnregisterLawyer, WithdrawCancelled, WithdrawExpired, WithdrawLegalProcessExpired,
     };
     use carbon_marketplace_decoder::PROGRAM_ID;
 
@@ -384,6 +477,124 @@ mod marketplace {
         assert!(m.action.is_none());
         assert_eq!(m.instruction.program_id, PROGRAM_ID.to_bytes().to_vec());
         assert_eq!(m.instruction.ix_name, "buy_property_shares");
+    }
+
+    #[test]
+    fn accept_offer_closes_the_offer_and_conditionally_the_share_listing() {
+        // The offer's runtime close runs on every success (index 10); the share listing
+        // (index 6) closes on-chain only if the sale emptied it, by the OFFER's amount --
+        // so the conditional op carries the offer's pubkey for the batcher's lookup.
+        let m = map(
+            MarketplaceInstruction::AcceptOffer(AcceptOffer { id: 1, nonce: 0 }),
+            33,
+        );
+        assert_eq!(m.instruction.ix_name, "accept_offer");
+        assert_eq!(
+            m.closes,
+            vec![
+                PendingClose::Account {
+                    table: StateTable::MarketplaceOffer,
+                    pubkey: pk(11).to_bytes().to_vec(), // index 10
+                    slot: SLOT as i64,
+                },
+                PendingClose::ShareListingIfEmptiedByOffer {
+                    pubkey: pk(7).to_bytes().to_vec(),        // index 6
+                    offer_pubkey: pk(11).to_bytes().to_vec(), // index 10
+                    slot: SLOT as i64,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reject_offer_closes_the_offer_at_index_4() {
+        let m = map(
+            MarketplaceInstruction::RejectOffer(RejectOffer { id: 1, nonce: 0 }),
+            13,
+        );
+        expect_close(&m, StateTable::MarketplaceOffer, 4);
+    }
+
+    #[test]
+    fn cancel_offer_closes_the_offer_at_index_2() {
+        // Same account type as reject_offer, DIFFERENT position -- per-instruction facts.
+        let m = map(MarketplaceInstruction::CancelOffer(CancelOffer {}), 11);
+        expect_close(&m, StateTable::MarketplaceOffer, 2);
+    }
+
+    #[test]
+    fn buy_relisted_shares_emits_the_conditional_close_with_the_bought_amount() {
+        // Closed on-chain only when this buy emptied the listing; the instruction's own
+        // `amount` arg is the batcher's comparison value.
+        let m = map(
+            MarketplaceInstruction::BuyRelistedShares(BuyRelistedShares {
+                asset_id: 1,
+                id: 1,
+                amount: 7,
+                max_total_cost: 100,
+            }),
+            29,
+        );
+        assert_eq!(
+            m.closes,
+            vec![PendingClose::ShareListingIfEmptied {
+                pubkey: pk(7).to_bytes().to_vec(), // index 6
+                bought_amount: 7,
+                slot: SLOT as i64,
+            }]
+        );
+    }
+
+    #[test]
+    fn delist_shares_closes_the_share_listing_at_index_2() {
+        let m = map(MarketplaceInstruction::DelistShares(DelistShares {}), 4);
+        expect_close(&m, StateTable::MarketplaceShareListing, 2);
+    }
+
+    #[test]
+    fn close_share_holding_closes_the_holding_at_index_4() {
+        // ShareHolding sits at index 6 in the withdraw_* trio and index 4 here.
+        let m = map(
+            MarketplaceInstruction::CloseShareHolding(CloseShareHolding {}),
+            5,
+        );
+        expect_close(&m, StateTable::MarketplaceShareHolding, 4);
+    }
+
+    #[test]
+    fn the_non_closing_secondary_market_instructions_close_nothing() {
+        for (name, data, n) in [
+            (
+                "make_offer",
+                MarketplaceInstruction::MakeOffer(MakeOffer {
+                    id: 1,
+                    amount: 2,
+                    share_price: 10,
+                }),
+                13,
+            ),
+            (
+                "relist_shares",
+                MarketplaceInstruction::RelistShares(RelistShares {
+                    asset_id: 1,
+                    amount: 2,
+                    share_price: 10,
+                }),
+                8,
+            ),
+            (
+                "send_property_shares",
+                MarketplaceInstruction::SendPropertyShares(SendPropertyShares {
+                    asset_id: 1,
+                    amount: 2,
+                }),
+                21,
+            ),
+        ] {
+            let m = map(data, n);
+            assert!(m.closes.is_empty(), "{name}");
+            assert_eq!(m.instruction.ix_name, name);
+        }
     }
 }
 

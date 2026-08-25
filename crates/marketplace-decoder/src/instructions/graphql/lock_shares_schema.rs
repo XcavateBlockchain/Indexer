@@ -2,6 +2,7 @@
 use carbon_core::graphql::primitives::Pubkey;
 use carbon_core::graphql::primitives::U32;
 use carbon_core::graphql::primitives::U64;
+use crate::types::graphql::LockReasonGraphQL;
 use juniper::GraphQLObject;
 
 #[derive(Debug, Clone, GraphQLObject)]
@@ -10,6 +11,7 @@ pub struct LockSharesGraphQL {
     pub instruction_metadata: crate::instructions::graphql::InstructionMetadataGraphQL,
     pub asset_id: U64,
     pub owner: Pubkey,
+    pub reason: LockReasonGraphQL,
     pub amount: U32,
 }
 
@@ -20,6 +22,7 @@ impl TryFrom<crate::instructions::postgres::LockSharesRow> for LockSharesGraphQL
             instruction_metadata: row.instruction_metadata.into(),
             asset_id: carbon_core::graphql::primitives::U64(*row.asset_id),
             owner: carbon_core::graphql::primitives::Pubkey(row.owner.0),
+            reason: row.reason.0.into(),
             amount: carbon_core::graphql::primitives::U32((*row.amount) as u32),
         })
     }

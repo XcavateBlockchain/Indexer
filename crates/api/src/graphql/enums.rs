@@ -271,6 +271,37 @@ impl RegionVote {
     }
 }
 
+/// `property_gov_vote.choice` (`VoteChoice` on chain; borsh order load-bearing there).
+/// Named `GovVoteChoice` because the `GovVote` spelling is the entity type.
+#[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GovVoteChoice {
+    Yes,
+    No,
+    Abstain,
+}
+
+impl GovVoteChoice {
+    /// Unused today (no choice filter arg yet) but kept so every enum carries both
+    /// directions of the DB mirror, like the whitelist enums above.
+    #[allow(dead_code)]
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            GovVoteChoice::Yes => "YES",
+            GovVoteChoice::No => "NO",
+            GovVoteChoice::Abstain => "ABSTAIN",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "YES" => GovVoteChoice::Yes,
+            "NO" => GovVoteChoice::No,
+            "ABSTAIN" => GovVoteChoice::Abstain,
+            _ => return None,
+        })
+    }
+}
+
 /// The four indexed programs, for `programInstructions(program: ...)` filtering and
 /// attribution. `as_program_id_bytes` mirrors `addresses.json` / the indexer's registry.
 #[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,10 +316,10 @@ impl ProgramName {
     /// The program's base58 address (same values as `addresses.json`).
     pub const fn address(self) -> &'static str {
         match self {
-            ProgramName::XcavateWhitelist => "2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn",
-            ProgramName::Regions => "FYysH5v23qtz4gK4H1yLDHneFwx6PSAT7oQwHcuRyRh",
-            ProgramName::Marketplace => "B6YRVAmjmhN28smZxNfCnuKc19CamBbAEMXsp5KTfWog",
-            ProgramName::Property => "8f4NHc1wGBM1BAufDFd9dNechLW8pxmStSfxfuJfDzob",
+            ProgramName::XcavateWhitelist => "7TrzjKpdrEhnfhxuw8tWdH1sjxadazscsG5HXCDPLmaY",
+            ProgramName::Regions => "5iupkzVtWxee48UXh3s615V9sXXuYjsSr61VPuduXdPc",
+            ProgramName::Marketplace => "dj9Q3CpHvDHwexCbkgJ5APDx4JsTxPssNebkvP15g1T",
+            ProgramName::Property => "deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq",
         }
     }
 

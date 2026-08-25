@@ -1048,13 +1048,18 @@ async fn backfill_cursor_lifecycle(pool: PgPool) -> sqlx::Result<()> {
 }
 
 // ============================================================================================
-// Multi-program additions (migrations 0007..0010): the generic close must work against EVERY
+// Multi-program additions (migrations 0007..0012): the generic close must work against EVERY
 // state table (it is dynamic SQL over an enum -- this test is what catches schema drift), the
-// sibling tables must hold the same slot-guard contract as the whitelist's, and property's
-// conditional letting-agent close must only fire when the removed location was the last one.
+// sibling tables must hold the same slot-guard contract as the whitelist's, and the
+// conditional closes (property's letting agent, the marketplace's share listing) must only
+// fire when their stored-row condition holds.
 // ============================================================================================
 
 use super::close::{close_in_table, open_account_pubkeys, StateTable};
+use super::marketplace::{
+    close_share_listing_if_emptied, close_share_listing_if_emptied_by_offer, upsert_offer,
+    upsert_share_listing, OfferRow, ShareListingRow,
+};
 use super::property::{close_letting_agent_if_last, upsert_letting_agent, LettingAgentRow};
 use super::regions::{upsert_vote_record, Vote, VoteRecordRow};
 
@@ -1217,6 +1222,108 @@ async fn the_conditional_letting_agent_close_fires_only_on_the_last_location(
         .fetch_one(&pool)
         .await?;
     assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+    Ok(())
+}
+
+fn share_listing(pubkey: Vec<u8>, slot: i64, amount: i64) -> ShareListingRow {
+    ShareListingRow {
+        pubkey,
+        slot,
+        lamports: 1_000,
+        id: 7,
+        asset_id: 1,
+        seller: pk(2),
+        share_price: 10,
+        amount,
+        fee_bps: 100,
+        next_offer_nonce: 0,
+        rent_payer: pk(3),
+        bump: 255,
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_conditional_share_listing_close_fires_only_when_emptied(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    // buy_relisted_shares' variant: the bought amount comes with the op. A partial buy
+    // must NOT close; an emptying buy lands (and is slot-guarded).
+    let listing = pk(1);
+    upsert_share_listing(&pool, &share_listing(listing.clone(), 100, 5)).await?;
+
+    close_share_listing_if_emptied(&pool, &listing, 3, 150).await?; // partial: no-op
+    let row = sqlx::query("SELECT closed_at_slot FROM marketplace_share_listing WHERE pubkey = $1")
+        .bind(&listing)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+
+    close_share_listing_if_emptied(&pool, &listing, 5, 50).await?; // older: no-op
+    let row = sqlx::query("SELECT closed_at_slot FROM marketplace_share_listing WHERE pubkey = $1")
+        .bind(&listing)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+
+    close_share_listing_if_emptied(&pool, &listing, 5, 150).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM marketplace_share_listing WHERE pubkey = $1")
+        .bind(&listing)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), Some(150));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_offer_driven_share_listing_close_reads_the_stored_offer_amount(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    // accept_offer's variant: the sold amount is the OFFER's, looked up from its stored
+    // row -- which the same batch has already soft-closed (phase ordering puts the offer's
+    // unconditional close first), so the lookup must work against a closed row too.
+    let listing = pk(1);
+    let offer = pk(6);
+    upsert_share_listing(&pool, &share_listing(listing.clone(), 100, 5)).await?;
+    upsert_offer(
+        &pool,
+        &OfferRow {
+            pubkey: offer.clone(),
+            slot: 100,
+            lamports: 1_000,
+            listing_id: 7,
+            asset_id: 1,
+            offeror: pk(7),
+            share_price: 9,
+            amount: 3,
+            payment_mint: pk(8),
+            held: 27,
+            nonce: 0,
+            rent_payer: pk(3),
+            bump: 255,
+        },
+    )
+    .await?;
+    close_in_table(&pool, StateTable::MarketplaceOffer, &offer, 150).await?;
+
+    // Offer amount 3 != remaining 5: partial accept, listing stays open.
+    close_share_listing_if_emptied_by_offer(&pool, &listing, &offer, 150).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM marketplace_share_listing WHERE pubkey = $1")
+        .bind(&listing)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), None);
+
+    // A missing offer row makes the subselect NULL: still a no-op, never an error.
+    close_share_listing_if_emptied_by_offer(&pool, &listing, &pk(9), 150).await?;
+
+    // Offer amount == remaining: the accept emptied the listing.
+    upsert_share_listing(&pool, &share_listing(listing.clone(), 160, 3)).await?;
+    close_share_listing_if_emptied_by_offer(&pool, &listing, &offer, 170).await?;
+    let row = sqlx::query("SELECT closed_at_slot FROM marketplace_share_listing WHERE pubkey = $1")
+        .bind(&listing)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.get::<Option<i64>, _>("closed_at_slot"), Some(170));
     Ok(())
 }
 

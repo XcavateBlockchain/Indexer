@@ -8,7 +8,8 @@ use juniper::GraphQLObject;
 #[graphql(name = "PropertyAsset")]
 pub struct PropertyAssetGraphQL {
     pub asset_id: U64,
-    pub core_asset: Pubkey,
+    pub name: String,
+    pub metadata_uri: String,
     pub share_mint: Pubkey,
     pub region_id: i32,
     pub location: Vec<U8>,
@@ -23,7 +24,8 @@ impl From<crate::types::PropertyAsset> for PropertyAssetGraphQL {
     fn from(original: crate::types::PropertyAsset) -> Self {
         Self {
             asset_id: carbon_core::graphql::primitives::U64(original.asset_id),
-            core_asset: carbon_core::graphql::primitives::Pubkey(original.core_asset),
+            name: original.name,
+            metadata_uri: original.metadata_uri,
             share_mint: carbon_core::graphql::primitives::Pubkey(original.share_mint),
             region_id: original.region_id as i32,
             location: original.location.into_iter().map(|item| carbon_core::graphql::primitives::U8(item)).collect(),

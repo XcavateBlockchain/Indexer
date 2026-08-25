@@ -6,12 +6,12 @@
 //! actually has to hold at runtime.
 //!
 //! The account fixtures are **real devnet bytes**, captured with `getProgramAccounts` against
-//! `2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn` on 2026-08-15 (see the Task 3 report for the
-//! exact command and the full listing). Using real bytes rather than hand-built structs is the
-//! point: it is the only thing in the test suite that would catch a borsh layout or
-//! discriminator mismatch between the checked-in IDL and the deployed program. The expected
-//! values below were decoded independently of this crate (by hand, from the hex) so the test
-//! is not just asserting that the decoder agrees with itself.
+//! `7TrzjKpdrEhnfhxuw8tWdH1sjxadazscsG5HXCDPLmaY` on 2026-08-25 (the ADR-26 redeploy; the
+//! original capture procedure is in the Task 3 report). Using real bytes rather than
+//! hand-built structs is the point: it is the only thing in the test suite that would catch a
+//! borsh layout or discriminator mismatch between the checked-in IDL and the deployed
+//! program. The expected values below were decoded independently of this crate (by hand, from
+//! the hex) so the test is not just asserting that the decoder agrees with itself.
 //!
 //! The account path cannot be exercised by a history crawl -- the RPC transaction crawler is
 //! transaction-only -- and the live gRPC account stream only fires when an account actually
@@ -45,22 +45,22 @@ use crate::test_fixtures::{decoded, instruction_metadata, sig_from, tx_metadata}
 
 // --- real devnet fixtures --------------------------------------------------------------------
 
-const CONFIG_PUBKEY: &str = "Djht1K3NorKGGD4qcUut6xxqUpcXdAdw4XXchZ25i27E";
+const CONFIG_PUBKEY: &str = "2AbUzgHBgyYZ3ujZ2WbF78ZNUkK5LWTCRro1mGXuYcbo";
 const CONFIG_LAMPORTS: u64 = 1_405_920;
-const CONFIG_DATA_HEX: &str = "9b0caae01efacc8261edeac2df8a832fa780abe6aa5ae9cd806a64fa6eb9f0e4a014bf13b4f36cef00fd0000000000000000000000000000000000000000000000000000000000000000";
+const CONFIG_DATA_HEX: &str = "9b0caae01efacc8261edeac2df8a832fa780abe6aa5ae9cd806a64fa6eb9f0e4a014bf13b4f36cef00fe0000000000000000000000000000000000000000000000000000000000000000";
 /// Bytes 8..40 of `CONFIG_DATA_HEX`, base58-encoded.
 const CONFIG_AUTHORITY: &str = "7bGxnDFi3zKLAbgeXtCANcf8MGSYob1EAmoWZY77qjp2";
 /// Byte 41 of `CONFIG_DATA_HEX` (byte 40 is the `Option<Pubkey>` tag, `00` = None).
-const CONFIG_BUMP: i16 = 253;
+const CONFIG_BUMP: i16 = 254;
 
-const ADMIN_PUBKEY: &str = "GgbAVFmC41aaRnE9yq9xp2xc2oJAuKS4SA8vGyDLmUsn";
+const ADMIN_PUBKEY: &str = "3ZBsXLvJq16yqE7VdVEBAbpApV1iDCAJmL2gZnX6yS12";
 const ADMIN_LAMPORTS: u64 = 1_176_240;
 const ADMIN_DATA_HEX: &str =
-    "f49edc4108490441b3eb8835730bbb1331e04298a9f8f514fcf20e7220d937c497b7ca16af06f9d4fd";
+    "f49edc4108490441b3eb8835730bbb1331e04298a9f8f514fcf20e7220d937c497b7ca16af06f9d4ff";
 const ADMIN_ADMIN: &str = "D7LHTCvNtG37QsZSphsCTkJhLhg3SfpyjqMBwtfqbvaP";
-const ADMIN_BUMP: i16 = 253;
+const ADMIN_BUMP: i16 = 255;
 
-const ROLE_PUBKEY: &str = "2faa6q7HBRsUvazW7KxgRdrLHYepf7SFxrYzY2BwDbzG";
+const ROLE_PUBKEY: &str = "BeqdKucZAaDMAAj2f6UjrLXcnHGJ4Bws86VZAzZvkExz";
 const ROLE_LAMPORTS: u64 = 1_412_880;
 const ROLE_DATA_HEX: &str = "8eec87c5d603f4e229a21b8b7bc27b41e16d26a3efa1bd058e48ad3953fbb5ea081cd68a96ff61dd0300b3eb8835730bbb1331e04298a9f8f514fcf20e7220d937c497b7ca16af06f9d4fe";
 const ROLE_USER: &str = "3oX5ttHJvcqJDwbYh96tkShaa4bnWMM3JHc2N4kocSNY";
@@ -71,19 +71,19 @@ const ROLE_RENT_PAYER: &str = "D7LHTCvNtG37QsZSphsCTkJhLhg3SfpyjqMBwtfqbvaP";
 const ROLE_BUMP: i16 = 254;
 
 /// The transaction that created `ROLE_PUBKEY` on devnet
-/// (`FSAgM2tYh1SYDFspXUrBYsNGMrkEMxGRPx1J52kjiaf6tFHWMmMtASQkgr8nfH795zYoUhcc3CsURG2LSoKZiou`,
-/// slot 483386945): `assign_role(Lawyer)` with accounts
-/// `[admin_signer, admin, user, role_account, system_program]`. The full base64 instruction
-/// data was `ffae7db4cb9bca8303` -- discriminator + one borsh byte for the role.
+/// (`47o8ja6JZ3Bso1ErDBdvoSrBvisrpgeSeEnKm29kXaHTWtrKiMjo4K8wvyRt2CLmPSnwTUhbEJPbkgw59RM9J8nn`,
+/// slot 487427944): `assign_role(Lawyer)` with accounts
+/// `[admin_signer, admin, user, role_account, system_program]`. The full instruction data
+/// was `ffae7db4cb9bca8303` -- discriminator + one borsh byte for the role.
 const ASSIGN_ROLE_ACCOUNTS: [&str; 5] = [
     "D7LHTCvNtG37QsZSphsCTkJhLhg3SfpyjqMBwtfqbvaP", // admin_signer
-    "GgbAVFmC41aaRnE9yq9xp2xc2oJAuKS4SA8vGyDLmUsn", // admin PDA
+    "3ZBsXLvJq16yqE7VdVEBAbpApV1iDCAJmL2gZnX6yS12", // admin PDA
     "3oX5ttHJvcqJDwbYh96tkShaa4bnWMM3JHc2N4kocSNY", // user
-    "2faa6q7HBRsUvazW7KxgRdrLHYepf7SFxrYzY2BwDbzG", // role_account PDA
+    "BeqdKucZAaDMAAj2f6UjrLXcnHGJ4Bws86VZAzZvkExz", // role_account PDA
     "11111111111111111111111111111111",             // system_program
 ];
-const ASSIGN_ROLE_SLOT: u64 = 483_386_945;
-const ASSIGN_ROLE_BLOCK_TIME: i64 = 1_786_601_078;
+const ASSIGN_ROLE_SLOT: u64 = 487_427_944;
+const ASSIGN_ROLE_BLOCK_TIME: i64 = 1_787_582_872;
 
 fn hex(s: &str) -> Vec<u8> {
     (0..s.len())
@@ -597,7 +597,7 @@ async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool:
         signature: sig_from(77).as_ref().to_vec(),
         ix_index: 0,
         inner_index: -1,
-        slot: 483_386_945,
+        slot: 487_427_944,
         block_time: chrono::DateTime::from_timestamp(ASSIGN_ROLE_BLOCK_TIME, 0).unwrap(),
         ix_name: "assign_role".into(),
         accounts: vec![],
@@ -611,7 +611,7 @@ async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool:
             .push(batcher::WriteOp::SetBackfillCursor {
                 program_id: PROGRAM_ID.to_bytes().to_vec(),
                 signature: "SigOfTheOldestSignatureInThePage".into(),
-                slot: 483_386_945,
+                slot: 487_427_944,
             })
             .await
             .unwrap();
@@ -627,7 +627,7 @@ async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool:
         .expect("cursor read")
         .expect("cursor row written");
     assert_eq!(cursor.signature, "SigOfTheOldestSignatureInThePage");
-    assert_eq!(cursor.slot, 483_386_945);
+    assert_eq!(cursor.slot, 487_427_944);
 
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM program_instructions")
         .fetch_one(&pool)
@@ -644,7 +644,7 @@ async fn the_backfill_cursor_commits_together_with_the_rows_it_vouches_for(pool:
 /// a snapshot would differ from one seeded by the stream -- silently.
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_snapshot_row_is_identical_to_the_row_the_account_stream_would_write(pool: PgPool) {
-    const SLOT: u64 = 484_000_000;
+    const SLOT: u64 = 487_500_000;
 
     // 1. The stream path: real account bytes through the real `AccountProcessor`.
     apply_account(&pool, ROLE_PUBKEY, ROLE_DATA_HEX, ROLE_LAMPORTS, SLOT).await;
@@ -747,7 +747,7 @@ async fn apply_whitelist_upgrade(pool: &PgPool, slot: u64, signature_byte: u8) {
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn an_observed_upgrade_lands_in_program_upgrades_and_replays_are_no_ops(pool: PgPool) {
-    let slot: u64 = 483_600_000;
+    let slot: u64 = 487_600_000;
     apply_whitelist_upgrade(&pool, slot, 21).await;
     // A backfill re-walk re-delivers the same transaction; the row must not duplicate.
     apply_whitelist_upgrade(&pool, slot, 21).await;

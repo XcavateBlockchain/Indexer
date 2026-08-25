@@ -11,10 +11,10 @@ indexer's logic ended up; [DECISIONS.md](DECISIONS.md) for why things are built 
 
 | Program | Address (devnet) | Indexed from (deploy slot) |
 |---|---|---|
-| xcavate_whitelist | `2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn` | 483,386,556 |
-| regions | `FYysH5v23qtz4gK4H1yLDHneFwx6PSAT7oQwHcuRyRh` | 483,386,626 |
-| marketplace | `B6YRVAmjmhN28smZxNfCnuKc19CamBbAEMXsp5KTfWog` | 483,386,726 |
-| property | `8f4NHc1wGBM1BAufDFd9dNechLW8pxmStSfxfuJfDzob` | 483,386,809 |
+| xcavate_whitelist | `7TrzjKpdrEhnfhxuw8tWdH1sjxadazscsG5HXCDPLmaY` | 487,427,394 |
+| regions | `5iupkzVtWxee48UXh3s615V9sXXuYjsSr61VPuduXdPc` | 487,427,494 |
+| marketplace | `dj9Q3CpHvDHwexCbkgJ5APDx4JsTxPssNebkvP15g1T` | 487,427,626 |
+| property | `deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq` | 487,427,732 |
 
 Each program is indexed from its own deployment slot, so the dataset covers the protocol's
 complete history. The whitelist was migrated first (whitelist-only scope, ADR-19); the three

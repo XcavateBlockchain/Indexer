@@ -4,6 +4,7 @@ use carbon_core::postgres::metadata::InstructionRowMetadata;
 use carbon_core::postgres::primitives::Pubkey;
 use carbon_core::postgres::primitives::U32;
 use carbon_core::postgres::primitives::U64;
+use crate::types::LockReason;
 
 #[derive(sqlx::FromRow, Debug, Clone)]
 pub struct LockSharesRow {
@@ -11,6 +12,7 @@ pub struct LockSharesRow {
     pub instruction_metadata: InstructionRowMetadata,
     pub asset_id: U64,
     pub owner: Pubkey,
+    pub reason: sqlx::types::Json<LockReason>,
     pub amount: U32,
 }
 
@@ -20,6 +22,7 @@ impl LockSharesRow {
             instruction_metadata: metadata.into(),
             asset_id: source.asset_id.into(),
             owner: source.owner.into(),
+            reason: sqlx::types::Json(source.reason.into()),
             amount: source.amount.into(),
         }
     }
@@ -31,6 +34,7 @@ impl TryFrom<LockSharesRow> for crate::instructions::lock_shares::LockShares {
         Ok(Self {
             asset_id: *source.asset_id,
             owner: *source.owner,
+            reason: source.reason.0,
             amount: source.amount.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
         })
     }
@@ -49,6 +53,7 @@ impl carbon_core::postgres::operations::Table for crate::instructions::lock_shar
             "__slot",
             "asset_id",
             "owner",
+            "reason",
             "amount",
         ]
     }
@@ -61,13 +66,15 @@ impl carbon_core::postgres::operations::Insert for LockSharesRow {
             INSERT INTO lock_shares_instruction (
                 "asset_id",
                 "owner",
+                "reason",
                 "amount",
                 __signature, __instruction_index, __stack_height, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             )"#)
         .bind(self.asset_id.clone())
         .bind(self.owner.clone())
+        .bind(self.reason.clone())
         .bind(self.amount.clone())
         .bind(self.instruction_metadata.signature.clone())
         .bind(self.instruction_metadata.instruction_index.clone())
@@ -85,15 +92,17 @@ impl carbon_core::postgres::operations::Upsert for LockSharesRow {
         sqlx::query(r#"INSERT INTO lock_shares_instruction (
                 "asset_id",
                 "owner",
+                "reason",
                 "amount",
                 __signature, __instruction_index, __stack_height, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             ) ON CONFLICT (
                 __signature, __instruction_index, __stack_height
             ) DO UPDATE SET
                 "asset_id" = EXCLUDED."asset_id",
                 "owner" = EXCLUDED."owner",
+                "reason" = EXCLUDED."reason",
                 "amount" = EXCLUDED."amount",
                 __instruction_index = EXCLUDED.__instruction_index,
                 __stack_height = EXCLUDED.__stack_height,
@@ -101,6 +110,7 @@ impl carbon_core::postgres::operations::Upsert for LockSharesRow {
             "#)
         .bind(self.asset_id.clone())
         .bind(self.owner.clone())
+        .bind(self.reason.clone())
         .bind(self.amount.clone())
         .bind(self.instruction_metadata.signature.clone())
         .bind(self.instruction_metadata.instruction_index.clone())
@@ -155,6 +165,7 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for LockSharesMigrationOperation {
                 -- Instruction data
                 "asset_id" NUMERIC(20) NOT NULL,
                 "owner" BYTEA NOT NULL,
+                "reason" JSONB NOT NULL,
                 "amount" INT8 NOT NULL,
                 -- Instruction metadata
                 __signature TEXT NOT NULL,

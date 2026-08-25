@@ -14,9 +14,11 @@ pub mod lawyer;
 pub mod lawyer_candidacy;
 pub mod lawyer_vote;
 pub mod listing;
+pub mod offer;
 pub mod property_asset;
 pub mod reservation;
 pub mod share_holding;
+pub mod share_listing;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -28,9 +30,11 @@ pub enum MarketplaceAccount {
     LawyerCandidacy(Box<lawyer_candidacy::LawyerCandidacy>),
     LawyerVote(Box<lawyer_vote::LawyerVote>),
     Listing(Box<listing::Listing>),
+    Offer(Box<offer::Offer>),
     PropertyAsset(Box<property_asset::PropertyAsset>),
     Reservation(Box<reservation::Reservation>),
     ShareHolding(Box<share_holding::ShareHolding>),
+    ShareListing(Box<share_listing::ShareListing>),
 }
 
 impl<'a> carbon_core::account::AccountDecoder<'a> for MarketplaceDecoder {
@@ -113,6 +117,17 @@ impl<'a> carbon_core::account::AccountDecoder<'a> for MarketplaceDecoder {
             }
         }
         {
+            if let Some(decoded) = offer::Offer::decode(data) {
+                return Some(carbon_core::account::DecodedAccount {
+                    lamports: account.lamports,
+                    data: MarketplaceAccount::Offer(Box::new(decoded)),
+                    owner: account.owner,
+                    executable: account.executable,
+                    rent_epoch: account.rent_epoch,
+                });
+            }
+        }
+        {
             if let Some(decoded) = property_asset::PropertyAsset::decode(data) {
                 return Some(carbon_core::account::DecodedAccount {
                     lamports: account.lamports,
@@ -139,6 +154,17 @@ impl<'a> carbon_core::account::AccountDecoder<'a> for MarketplaceDecoder {
                 return Some(carbon_core::account::DecodedAccount {
                     lamports: account.lamports,
                     data: MarketplaceAccount::ShareHolding(Box::new(decoded)),
+                    owner: account.owner,
+                    executable: account.executable,
+                    rent_epoch: account.rent_epoch,
+                });
+            }
+        }
+        {
+            if let Some(decoded) = share_listing::ShareListing::decode(data) {
+                return Some(carbon_core::account::DecodedAccount {
+                    lamports: account.lamports,
+                    data: MarketplaceAccount::ShareListing(Box::new(decoded)),
                     owner: account.owner,
                     executable: account.executable,
                     rent_epoch: account.rent_epoch,

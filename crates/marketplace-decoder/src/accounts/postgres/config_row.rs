@@ -29,6 +29,7 @@ pub struct ConfigRow {
     pub lawyer_voting_time: i64,
     pub min_voting_quorum_bps: U16,
     pub next_listing_id: U64,
+    pub next_share_listing_id: U64,
     pub bump: U8,
 }
 
@@ -54,6 +55,7 @@ impl ConfigRow {
             lawyer_voting_time: source.lawyer_voting_time.into(),
             min_voting_quorum_bps: source.min_voting_quorum_bps.into(),
             next_listing_id: source.next_listing_id.into(),
+            next_share_listing_id: source.next_share_listing_id.into(),
             bump: source.bump.into(),
         }
     }
@@ -81,6 +83,7 @@ impl TryFrom<ConfigRow> for crate::accounts::config::Config {
             lawyer_voting_time: source.lawyer_voting_time.into(),
             min_voting_quorum_bps: source.min_voting_quorum_bps.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
             next_listing_id: *source.next_listing_id,
+            next_share_listing_id: *source.next_share_listing_id,
             bump: source.bump.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
         })
     }
@@ -113,6 +116,7 @@ impl carbon_core::postgres::operations::Table for crate::accounts::config::Confi
             "lawyer_voting_time",
             "min_voting_quorum_bps",
             "next_listing_id",
+            "next_share_listing_id",
             "bump",
         ]
     }
@@ -141,10 +145,11 @@ impl carbon_core::postgres::operations::Insert for ConfigRow {
                 "lawyer_voting_time",
                 "min_voting_quorum_bps",
                 "next_listing_id",
+                "next_share_listing_id",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
             )"#)
         .bind(self.authority.clone())
         .bind(self.pending_authority.clone())
@@ -164,6 +169,7 @@ impl carbon_core::postgres::operations::Insert for ConfigRow {
         .bind(self.lawyer_voting_time.clone())
         .bind(self.min_voting_quorum_bps.clone())
         .bind(self.next_listing_id.clone())
+        .bind(self.next_share_listing_id.clone())
         .bind(self.bump.clone())
         .bind(self.account_metadata.pubkey.clone())
         .bind(self.account_metadata.slot.clone())
@@ -195,10 +201,11 @@ impl carbon_core::postgres::operations::Upsert for ConfigRow {
                 "lawyer_voting_time",
                 "min_voting_quorum_bps",
                 "next_listing_id",
+                "next_share_listing_id",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
             ) ON CONFLICT (
                 __pubkey
             ) DO UPDATE SET
@@ -220,6 +227,7 @@ impl carbon_core::postgres::operations::Upsert for ConfigRow {
                 "lawyer_voting_time" = EXCLUDED."lawyer_voting_time",
                 "min_voting_quorum_bps" = EXCLUDED."min_voting_quorum_bps",
                 "next_listing_id" = EXCLUDED."next_listing_id",
+                "next_share_listing_id" = EXCLUDED."next_share_listing_id",
                 "bump" = EXCLUDED."bump",
                 __slot = EXCLUDED.__slot
             "#)
@@ -241,6 +249,7 @@ impl carbon_core::postgres::operations::Upsert for ConfigRow {
         .bind(self.lawyer_voting_time.clone())
         .bind(self.min_voting_quorum_bps.clone())
         .bind(self.next_listing_id.clone())
+        .bind(self.next_share_listing_id.clone())
         .bind(self.bump.clone())
         .bind(self.account_metadata.pubkey)
         .bind(self.account_metadata.slot.clone())
@@ -305,6 +314,7 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for ConfigMigrationOperation {
                 "lawyer_voting_time" INT8 NOT NULL,
                 "min_voting_quorum_bps" INT4 NOT NULL,
                 "next_listing_id" NUMERIC(20) NOT NULL,
+                "next_share_listing_id" NUMERIC(20) NOT NULL,
                 "bump" INT2 NOT NULL,
                 -- Account metadata
                 __pubkey BYTEA NOT NULL,

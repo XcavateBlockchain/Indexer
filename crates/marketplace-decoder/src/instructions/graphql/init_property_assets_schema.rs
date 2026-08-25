@@ -7,6 +7,8 @@ use juniper::GraphQLObject;
 pub struct InitPropertyAssetsGraphQL {
     pub instruction_metadata: crate::instructions::graphql::InstructionMetadataGraphQL,
     pub listing_id: U64,
+    pub name: String,
+    pub uri: String,
 }
 
 impl TryFrom<crate::instructions::postgres::InitPropertyAssetsRow> for InitPropertyAssetsGraphQL {
@@ -15,6 +17,8 @@ impl TryFrom<crate::instructions::postgres::InitPropertyAssetsRow> for InitPrope
         Ok(Self {
             instruction_metadata: row.instruction_metadata.into(),
             listing_id: carbon_core::graphql::primitives::U64(*row.listing_id),
+            name: row.name,
+            uri: row.uri,
         })
     }
 }

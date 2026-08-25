@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO property_challenge (pubkey, slot, lamports, closed_at_slot, asset_id, id,\n            challenger, agent, deposit, expiry, tally_yes, tally_no, tally_abstain,\n            quorum_bps, rent_payer, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot           = EXCLUDED.slot,\n            lamports       = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            asset_id       = EXCLUDED.asset_id,\n            id             = EXCLUDED.id,\n            challenger     = EXCLUDED.challenger,\n            agent          = EXCLUDED.agent,\n            deposit        = EXCLUDED.deposit,\n            expiry         = EXCLUDED.expiry,\n            tally_yes      = EXCLUDED.tally_yes,\n            tally_no       = EXCLUDED.tally_no,\n            tally_abstain  = EXCLUDED.tally_abstain,\n            quorum_bps     = EXCLUDED.quorum_bps,\n            rent_payer     = EXCLUDED.rent_payer,\n            bump           = EXCLUDED.bump\n        WHERE property_challenge.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Bytea",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "010faa696b302379e575cd46ed4492980cf60150c98ff754b14ca456a4bc8c3f"
+}

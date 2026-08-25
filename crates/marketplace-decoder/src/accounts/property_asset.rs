@@ -8,9 +8,12 @@ use solana_pubkey::Pubkey;
 #[derive(Debug, Clone, borsh::BorshSerialize, CarbonDeserialize, PartialEq)]
 pub struct PropertyAsset {
     pub asset_id: u64,
-    /// The Metaplex Core asset held in the property vault. Default until the
-    /// assets are initialized.
-    pub core_asset: Pubkey,
+    /// Display name, e.g. the street address. Empty until the assets are
+    /// initialized.
+    pub name: String,
+    /// IPFS URI of the property's documents and images; the canonical
+    /// off-chain record the frontend and indexers read.
+    pub metadata_uri: String,
     /// The Token-2022 share mint. Default until the assets are initialized.
     pub share_mint: Pubkey,
     pub region_id: u16,

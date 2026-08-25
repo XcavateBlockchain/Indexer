@@ -20,6 +20,7 @@ pub struct SettleCancelledFeesInstructionAccounts {
     pub payment_mint: solana_pubkey::Pubkey,
     pub listing_vault: solana_pubkey::Pubkey,
     pub listing_payment_account: solana_pubkey::Pubkey,
+    pub lawyer: solana_pubkey::Pubkey,
     pub lawyer_payment_account: solana_pubkey::Pubkey,
     pub treasury: solana_pubkey::Pubkey,
     pub treasury_payment_account: solana_pubkey::Pubkey,
@@ -61,6 +62,7 @@ impl ArrangeAccounts for SettleCancelledFees {
         let payment_mint = next_account(&mut iter)?;
         let listing_vault = next_account(&mut iter)?;
         let listing_payment_account = next_account(&mut iter)?;
+        let lawyer = next_account(&mut iter)?;
         let lawyer_payment_account = next_account(&mut iter)?;
         let treasury = next_account(&mut iter)?;
         let treasury_payment_account = next_account(&mut iter)?;
@@ -77,6 +79,7 @@ impl ArrangeAccounts for SettleCancelledFees {
             payment_mint,
             listing_vault,
             listing_payment_account,
+            lawyer,
             lawyer_payment_account,
             treasury,
             treasury_payment_account,

@@ -103,10 +103,13 @@ the reaction is the maintenance loop, not anything automatic in the indexer.
 ## 5. Version boundaries and slot-routed decoding (ADR-25 — designed, dormant)
 
 Nothing routes by version today because nothing has ever needed it: all four programs are
-still at their version-1 deploy (verified on-chain 2026-08-22), so one decoder per program
-is exact. The design below is pre-agreed so that activating it is mechanical when the first
-breaking upgrade is prepared (which is already visible: upstream `main@5927362` is BREAKING
-for marketplace and property, §7).
+still at their version-1 deploy (verified on-chain 2026-08-25 -- the version-1 deploys of
+the ADR-26 REDEPLOY at new addresses, which absorbed upstream `main@5927362`'s breaking
+changes without ever upgrading a program in place), so one decoder per program is exact.
+The design below is pre-agreed so that activating it is mechanical when the first breaking
+in-place upgrade is prepared. Note what ADR-26 makes explicit: a redeploy at a NEW address
+is not a version boundary and this mechanism cannot express it -- the answer there is the
+clean swap plus a from-empty database rebuild, not routing.
 
 * **Where routing lives: the mapper, not the decoder.** Carbon decoders are slot-blind
   (`decode_instruction(&Instruction)`), but every `ProgramMapper::map_instruction` call has
@@ -172,22 +175,21 @@ Two humans stay in the loop by design: the PR reviewer (nothing ships without on
 multisig signers (nothing deploys on-chain without them). The agent's autonomy budget is
 everything before those two gates.
 
-## 7. Current state (2026-08-22)
+## 7. Current state (2026-08-25, post-ADR-26 redeploy)
 
 Measured, not assumed — by running this pipeline's own tooling:
 
-* On-chain (devnet): all four programs still at their version-1 deploy slots
+* On-chain (devnet): all four programs are the 2026-08-25 redeploy at NEW addresses
+  (ADR-26; `addresses.json` is current), each still at its version-1 deploy slot
   (`check-program-upgrades.py` exit 0). `idls/` matches the deployed programs; the indexer
-  decodes every account and instruction on devnet (`verify-devnet.sh`: 4 programs, 29
+  decodes every account and instruction on devnet (`verify-devnet.sh`: 4 programs, 32
   instructions, 0 undecodable, 4 seeded boundaries).
-* Upstream `main@5927362` vs `idls/`: `regions` and `xcavate_whitelist` IDENTICAL;
-  `marketplace` and `property` **BREAKING** (secondary market, offers, income, governance —
-  9+12 new instructions, plus changed existing types such as `PropertyAsset` and
-  `ShareHolding`). When the multisig schedules that deployment, the versioned-decoder
-  procedure runs for those two programs. Nuance for the diff reader: part of the reported
-  type churn (`Config` → `marketplace::state::Config`) is Anchor-1.1.2 IDL *naming* drift,
-  not necessarily layout drift — the skill says to judge discriminators and layouts, and the
-  deployed chain governs.
+* Upstream `main@5927362` vs `idls/`: IDENTICAL for all four — the redeploy WAS that
+  upstream state (secondary market, offers, income, governance). What 2026-08-22's entry
+  here forecast as the first versioned-decoder activation instead arrived as a redeploy at
+  new addresses, which ADR-25's slot routing cannot express and does not need to: the old
+  deployments are abandoned and the database was rebuilt from empty. The next upstream
+  breaking diff against these addresses is again versioned-decoder territory.
 * Known upstream sharp edges the tooling already guards: no committed IDLs and no CI
   (`anchor build` is the only IDL source), no pinned Anchor CLI (the build script
   version-checks against upstream's `Cargo.lock`), `declare_id!`s that do not match the

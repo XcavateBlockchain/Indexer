@@ -1,16 +1,16 @@
 {
   "cluster": "https://api.devnet.solana.com",
   "programs": {
-    "xcavate_whitelist": "2vVARM46pPD4rcHdbXHnYA4vTGN14q6skQAzsQWcHUxn",
-    "regions": "FYysH5v23qtz4gK4H1yLDHneFwx6PSAT7oQwHcuRyRh",
-    "marketplace": "B6YRVAmjmhN28smZxNfCnuKc19CamBbAEMXsp5KTfWog",
-    "property": "8f4NHc1wGBM1BAufDFd9dNechLW8pxmStSfxfuJfDzob"
+    "xcavate_whitelist": "7TrzjKpdrEhnfhxuw8tWdH1sjxadazscsG5HXCDPLmaY",
+    "regions": "5iupkzVtWxee48UXh3s615V9sXXuYjsSr61VPuduXdPc",
+    "marketplace": "dj9Q3CpHvDHwexCbkgJ5APDx4JsTxPssNebkvP15g1T",
+    "property": "deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq"
   },
   "deploy_slots": {
-    "xcavate_whitelist": 483386556,
-    "regions": 483386626,
-    "marketplace": 483386726,
-    "property": 483386809
+    "xcavate_whitelist": 487427394,
+    "regions": 487427494,
+    "marketplace": 487427626,
+    "property": 487427732
   },
   "mints": {
     "xcav": "8dW943dozaNPdRRaW6xpV2vxFv1Kcpz3z63Nji3VLups",
@@ -18,12 +18,12 @@
     "tusdc": "8umv4NXybZFGiT3tQb1DqJ6DXxLa3rLNhPbcqbQsjXxW"
   },
   "configs": {
-    "whitelist": "Djht1K3NorKGGD4qcUut6xxqUpcXdAdw4XXchZ25i27E",
-    "regions": "AEQCtiQKCWfD7bK3V3jCfrQC5ST5a69BfxUrS6sBqP3R",
-    "marketplace": "CuP3QFcT3e39oiMEjrMVD5dFTfha6882WKaVhB8vTaBy",
-    "property": "81M67gjjuTKQLW6z6Aj73waiA6DLZUFtiGQCCeDQTBH7"
+    "whitelist": "2AbUzgHBgyYZ3ujZ2WbF78ZNUkK5LWTCRro1mGXuYcbo",
+    "regions": "FBq1xdKfjnGt68qUyspF5NaUPiNRbFECbsVtWXcjGV5q",
+    "marketplace": "FvypPqraGoYskTM9jiUywfsdfTeoqkXg2RdPHuw5S7aK",
+    "property": "B88Lhv3UsTKJ7hdubi5KHz5WynMx7GnEWmx6zDZvFpHa"
   },
-  "region": { "id": 1, "address": "HWAJRX33bbMEc2aEz7wZNLcwTcD3GKuVBJDHBpnTEam7", "postcodes": ["SW1A1AA", "M11AE"] },
+  "region": { "id": 1, "address": "5qDQzydw8oSw7uCPThUihyo6yc1NZcWQkhhebDKpC6Cn", "postcodes": ["SW1A1AA", "M11AE"] },
   "wallets": {
     "authority": "7bGxnDFi3zKLAbgeXtCANcf8MGSYob1EAmoWZY77qjp2",
     "admin": "D7LHTCvNtG37QsZSphsCTkJhLhg3SfpyjqMBwtfqbvaP",

@@ -599,3 +599,42 @@ image stays safe because the schema only ever gains. The cost is carried complex
 version split (a frozen crate, a wrapper mapper, wiring) — accepted, because it is paid
 only when a breaking upgrade actually ships and is removable once a version's history is
 no longer served. Procedure: `agent/skills/versioned-decoder/SKILL.md`.
+
+## ADR-26: A redeploy at new addresses is a clean swap plus a from-empty rebuild, not a version boundary
+
+**Context.** On 2026-08-25 the protocol team redeployed all four programs to brand-new
+devnet addresses (the deploys at slots 487427394..487427732) instead of upgrading the old
+deployments in place, and declared the old programs abandoned. The new bytecode is upstream
+`main@5927362` — the very state ADR-25 anticipated as the first BREAKING in-place upgrade
+for marketplace (secondary share market: `ShareListing`/`Offer`, per-reason share locks)
+and property (holder governance: `Proposal`/`Challenge`/`GovVote`; rental income:
+`PropertyIncome`/`IncomeCheckpoint`). ADR-25's slot routing keys on boundaries *within one
+program id* and cannot express "same logical program, different address"; every row the
+indexer had ever written — accounts, instruction history, sync state, seeded boundaries —
+described on-chain objects that no longer exist.
+
+**Decision.** Treat the redeploy exactly like a devnet ledger reset with new addresses
+(the case RUNBOOK "Devnet ledger reset" already anticipated): swap `addresses.json`, the
+registry (`crates/indexer/src/programs.rs`), the `idls/`, and the four regenerated decoder
+crates wholesale in one change; extend the schema for the new program surface in migration
+0012 (seven new state tables; column surgery on the four reshaped ones under lint-allow
+markers, correct because production is rebuilt from an empty database via the documented
+volume drop); no frozen decoder crates, no `idls/versions/` archive, no slot routing — the
+old deployments' history is abandoned along with the ADR-21 SubQuery rollback data in the
+shared `pgdata` volume (its "natural cleanup" clause, invoked deliberately). The old
+addresses survive only in immutable migrations 0007..0010 headers and historical logs.
+
+**Consequences.** One decoder per program stays exact, the version timeline re-seeds at the
+new version-1 deploy slots, and `verify-devnet.sh` proves the whole devnet dataset rebuilds
+from the public RPC (4 programs, 32 instructions, 0 undecodable). The cost is history: the
+old deployments' rows are gone rather than routed, acceptable because devnet data was
+disposable by construction (ADR-2) and the owner declared the old programs dead. The
+dormant ADR-25 machinery is untouched and still the answer for the next breaking IN-PLACE
+upgrade of these addresses; a future redeploy-at-new-addresses repeats this ADR instead.
+Two things this swap surfaced for later: the auto-approved `propose` path and the
+emptied-`ShareListing` sales are same-instruction create+close / conditional runtime closes
+(handled: no close op needed, and batcher-side conditional closes respectively), and three
+new event payloads are not exactly reconstructible after the fact (`IncomeClaimed.amount`,
+`ChallengeFinalized.slashed`, `IncomeDistributed.per_share_gain` — dust carry) — ADR-10
+stays in force, with that revisit noted for the property program if consumers ever need
+those exact figures.

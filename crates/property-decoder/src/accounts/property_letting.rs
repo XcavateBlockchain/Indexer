@@ -3,6 +3,7 @@ use carbon_core::CarbonDeserialize;
 use carbon_core::borsh;
 use carbon_core::deserialize::CarbonDeserialize;
 use crate::types::AgentElection;
+use crate::types::GovState;
 use solana_pubkey::Pubkey;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -12,6 +13,7 @@ pub struct PropertyLetting {
     /// The assigned agent; default while the seat is vacant.
     pub agent: Pubkey,
     pub election: AgentElection,
+    pub governance: GovState,
     /// The wallet that fronted the account's rent.
     pub rent_payer: Pubkey,
     pub bump: u8,

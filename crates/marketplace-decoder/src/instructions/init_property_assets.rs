@@ -9,6 +9,8 @@ use carbon_core::deserialize::CarbonDeserialize;
 #[derive(Debug, Clone, borsh::BorshSerialize, CarbonDeserialize, PartialEq)]
 pub struct InitPropertyAssets {
     pub listing_id: u64,
+    pub name: String,
+    pub uri: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

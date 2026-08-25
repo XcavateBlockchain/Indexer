@@ -1,9 +1,9 @@
 //! The full roster of account-state tables and the generic slot-guarded soft close.
 //!
 //! Every state table shares the exact same close shape (`UPDATE <t> SET slot = $2,
-//! closed_at_slot = $2 WHERE pubkey = $1 AND slot < $2`), so with 24 tables across four
+//! closed_at_slot = $2 WHERE pubkey = $1 AND slot < $2`), so with 31 tables across four
 //! programs the close is ONE dynamically-built statement over an enum-constrained table name
-//! rather than 24 copies of a compile-checked macro call. The table name can only come from
+//! rather than 31 copies of a compile-checked macro call. The table name can only come from
 //! [`StateTable`], so nothing user-controlled ever reaches the SQL string; schema drift
 //! (a table missing the shared columns) is caught by `db::tests`, which exercises every
 //! [`StateTable::ALL`] entry against the migrated schema.
@@ -15,8 +15,8 @@ use sqlx::postgres::PgQueryResult;
 use sqlx::PgExecutor;
 
 /// Every account-state table, across all four programs. The whitelist's three (0002) keep
-/// their legacy unprefixed names; the sibling programs' tables (0008..0010) are
-/// program-prefixed.
+/// their legacy unprefixed names; the sibling programs' tables (0008..0010, extended by
+/// 0012 for the 2026-08 redeploy) are program-prefixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateTable {
     // xcavate_whitelist (migrations/0002)
@@ -30,22 +30,29 @@ pub enum StateTable {
     RegionsRegionProposal,
     RegionsRegionState,
     RegionsVoteRecord,
-    // marketplace (migrations/0009)
+    // marketplace (migrations/0009 + 0012)
     MarketplaceConfig,
     MarketplaceInvestorPosition,
     MarketplaceLawyer,
     MarketplaceLawyerCandidacy,
     MarketplaceLawyerVote,
     MarketplaceListing,
+    MarketplaceOffer,
     MarketplacePropertyAsset,
     MarketplaceReservation,
     MarketplaceShareHolding,
-    // property (migrations/0010)
+    MarketplaceShareListing,
+    // property (migrations/0010 + 0012)
     PropertyConfig,
     PropertyAgentCandidacy,
     PropertyAgentVote,
+    PropertyChallenge,
+    PropertyGovVote,
+    PropertyIncome,
+    PropertyIncomeCheckpoint,
     PropertyLettingAgent,
     PropertyLetting,
+    PropertyProposal,
     PropertyResignationNotice,
 }
 
@@ -66,14 +73,21 @@ impl StateTable {
         StateTable::MarketplaceLawyerCandidacy,
         StateTable::MarketplaceLawyerVote,
         StateTable::MarketplaceListing,
+        StateTable::MarketplaceOffer,
         StateTable::MarketplacePropertyAsset,
         StateTable::MarketplaceReservation,
         StateTable::MarketplaceShareHolding,
+        StateTable::MarketplaceShareListing,
         StateTable::PropertyConfig,
         StateTable::PropertyAgentCandidacy,
         StateTable::PropertyAgentVote,
+        StateTable::PropertyChallenge,
+        StateTable::PropertyGovVote,
+        StateTable::PropertyIncome,
+        StateTable::PropertyIncomeCheckpoint,
         StateTable::PropertyLettingAgent,
         StateTable::PropertyLetting,
+        StateTable::PropertyProposal,
         StateTable::PropertyResignationNotice,
     ];
 
@@ -94,14 +108,21 @@ impl StateTable {
             StateTable::MarketplaceLawyerCandidacy => "marketplace_lawyer_candidacy",
             StateTable::MarketplaceLawyerVote => "marketplace_lawyer_vote",
             StateTable::MarketplaceListing => "marketplace_listing",
+            StateTable::MarketplaceOffer => "marketplace_offer",
             StateTable::MarketplacePropertyAsset => "marketplace_property_asset",
             StateTable::MarketplaceReservation => "marketplace_reservation",
             StateTable::MarketplaceShareHolding => "marketplace_share_holding",
+            StateTable::MarketplaceShareListing => "marketplace_share_listing",
             StateTable::PropertyConfig => "property_config",
             StateTable::PropertyAgentCandidacy => "property_agent_candidacy",
             StateTable::PropertyAgentVote => "property_agent_vote",
+            StateTable::PropertyChallenge => "property_challenge",
+            StateTable::PropertyGovVote => "property_gov_vote",
+            StateTable::PropertyIncome => "property_income",
+            StateTable::PropertyIncomeCheckpoint => "property_income_checkpoint",
             StateTable::PropertyLettingAgent => "property_letting_agent",
             StateTable::PropertyLetting => "property_letting",
+            StateTable::PropertyProposal => "property_proposal",
             StateTable::PropertyResignationNotice => "property_resignation_notice",
         }
     }

@@ -12,6 +12,13 @@ pub struct ConfigParamsGraphQL {
     pub agent_voting_time: I64,
     pub min_voting_quorum_bps: i32,
     pub agent_notice_period: I64,
+    pub proposal_voting_time: I64,
+    pub low_proposal: U64,
+    pub high_proposal: U64,
+    pub high_threshold_bps: i32,
+    pub auto_approval_cooldown: I64,
+    pub challenge_deposit: U64,
+    pub agent_slash_amount: U64,
 }
 
 impl From<crate::types::ConfigParams> for ConfigParamsGraphQL {
@@ -23,6 +30,13 @@ impl From<crate::types::ConfigParams> for ConfigParamsGraphQL {
             agent_voting_time: carbon_core::graphql::primitives::I64(original.agent_voting_time),
             min_voting_quorum_bps: original.min_voting_quorum_bps as i32,
             agent_notice_period: carbon_core::graphql::primitives::I64(original.agent_notice_period),
+            proposal_voting_time: carbon_core::graphql::primitives::I64(original.proposal_voting_time),
+            low_proposal: carbon_core::graphql::primitives::U64(original.low_proposal),
+            high_proposal: carbon_core::graphql::primitives::U64(original.high_proposal),
+            high_threshold_bps: original.high_threshold_bps as i32,
+            auto_approval_cooldown: carbon_core::graphql::primitives::I64(original.auto_approval_cooldown),
+            challenge_deposit: carbon_core::graphql::primitives::U64(original.challenge_deposit),
+            agent_slash_amount: carbon_core::graphql::primitives::U64(original.agent_slash_amount),
         }
     }
 }

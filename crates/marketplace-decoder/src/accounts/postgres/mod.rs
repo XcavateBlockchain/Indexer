@@ -5,9 +5,11 @@ pub mod lawyer_row;
 pub mod lawyer_candidacy_row;
 pub mod lawyer_vote_row;
 pub mod listing_row;
+pub mod offer_row;
 pub mod property_asset_row;
 pub mod reservation_row;
 pub mod share_holding_row;
+pub mod share_listing_row;
 
 pub use self::config_row::*;
 pub use self::investor_position_row::*;
@@ -15,9 +17,11 @@ pub use self::lawyer_row::*;
 pub use self::lawyer_candidacy_row::*;
 pub use self::lawyer_vote_row::*;
 pub use self::listing_row::*;
+pub use self::offer_row::*;
 pub use self::property_asset_row::*;
 pub use self::reservation_row::*;
 pub use self::share_holding_row::*;
+pub use self::share_listing_row::*;
 
 use super::MarketplaceAccount;
 
@@ -40,9 +44,11 @@ impl sqlx_migrator::Migration<sqlx::Postgres> for MarketplaceAccountsMigration {
             Box::new(LawyerCandidacyMigrationOperation),
             Box::new(LawyerVoteMigrationOperation),
             Box::new(ListingMigrationOperation),
+            Box::new(OfferMigrationOperation),
             Box::new(PropertyAssetMigrationOperation),
             Box::new(ReservationMigrationOperation),
             Box::new(ShareHoldingMigrationOperation),
+            Box::new(ShareListingMigrationOperation),
         ]
     }
 
@@ -95,6 +101,11 @@ impl carbon_core::postgres::operations::Insert for MarketplaceAccountWithMetadat
                 row.insert(pool).await?;
                 Ok(())
             }
+            MarketplaceAccount::Offer(account) => {
+                let row = offer_row::OfferRow::from_parts(*account.clone(), metadata.clone());
+                row.insert(pool).await?;
+                Ok(())
+            }
             MarketplaceAccount::PropertyAsset(account) => {
                 let row = property_asset_row::PropertyAssetRow::from_parts(*account.clone(), metadata.clone());
                 row.insert(pool).await?;
@@ -107,6 +118,11 @@ impl carbon_core::postgres::operations::Insert for MarketplaceAccountWithMetadat
             }
             MarketplaceAccount::ShareHolding(account) => {
                 let row = share_holding_row::ShareHoldingRow::from_parts(*account.clone(), metadata.clone());
+                row.insert(pool).await?;
+                Ok(())
+            }
+            MarketplaceAccount::ShareListing(account) => {
+                let row = share_listing_row::ShareListingRow::from_parts(*account.clone(), metadata.clone());
                 row.insert(pool).await?;
                 Ok(())
             }
@@ -149,6 +165,11 @@ impl carbon_core::postgres::operations::Upsert for MarketplaceAccountWithMetadat
                 row.upsert(pool).await?;
                 Ok(())
             }
+            MarketplaceAccount::Offer(account) => {
+                let row = offer_row::OfferRow::from_parts(*account.clone(), metadata.clone());
+                row.upsert(pool).await?;
+                Ok(())
+            }
             MarketplaceAccount::PropertyAsset(account) => {
                 let row = property_asset_row::PropertyAssetRow::from_parts(*account.clone(), metadata.clone());
                 row.upsert(pool).await?;
@@ -161,6 +182,11 @@ impl carbon_core::postgres::operations::Upsert for MarketplaceAccountWithMetadat
             }
             MarketplaceAccount::ShareHolding(account) => {
                 let row = share_holding_row::ShareHoldingRow::from_parts(*account.clone(), metadata.clone());
+                row.upsert(pool).await?;
+                Ok(())
+            }
+            MarketplaceAccount::ShareListing(account) => {
+                let row = share_listing_row::ShareListingRow::from_parts(*account.clone(), metadata.clone());
                 row.upsert(pool).await?;
                 Ok(())
             }

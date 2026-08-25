@@ -50,6 +50,8 @@ pub struct Config {
     pub min_voting_quorum_bps: u16,
     /// Monotonic id for the next listing.
     pub next_listing_id: u64,
+    /// Monotonic id for the next secondary share listing.
+    pub next_share_listing_id: u64,
     pub bump: u8,
 }
 

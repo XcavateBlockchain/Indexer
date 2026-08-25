@@ -76,6 +76,9 @@ pub struct Listing {
     /// `close_case` clears the assignment before the fees settle.
     pub spv_costs_due: u64,
     pub spv_costs_payee: Pubkey,
+    /// Investor fees collected so far, at `PRICE_DECIMALS`; caps the SPV
+    /// lawyer's charge without trusting the current share price.
+    pub collected_fee_quote: u64,
     /// What each payment mint collected across the sale, split the way
     /// settlement pays it out. Written by every claim and direct buy.
     pub collected: Vec<CollectedPerMint>,

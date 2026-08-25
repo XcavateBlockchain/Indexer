@@ -1,0 +1,98 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, asset_id, offeror,\n               share_price, amount, payment_mint, held, nonce, rent_payer\n        FROM marketplace_offer\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR offeror = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $4 OFFSET $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "listing_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "offeror",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "share_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "payment_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 10,
+        "name": "held",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "nonce",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "rent_payer",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "383ee92d83f3517a534dc16576ee1c0194dc774a8c9aec4ab579fde80aadcd79"
+}

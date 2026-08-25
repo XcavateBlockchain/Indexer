@@ -4,6 +4,7 @@ use carbon_core::account_utils::next_account;
 use carbon_core::borsh;
 use carbon_core::deserialize::ArrangeAccounts;
 use carbon_core::deserialize::CarbonDeserialize;
+use crate::types::LockReason;
 use solana_pubkey::Pubkey;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -11,6 +12,7 @@ use solana_pubkey::Pubkey;
 pub struct UnlockShares {
     pub asset_id: u64,
     pub owner: Pubkey,
+    pub reason: LockReason,
     pub amount: u32,
 }
 

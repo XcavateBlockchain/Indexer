@@ -28,11 +28,20 @@ pub enum CpiEvent {
     LegalTimeoutSharesWithdrawn(events::legal_timeout_shares_withdrawn::LegalTimeoutSharesWithdrawnEvent),
     ListingDepositWithdrawn(events::listing_deposit_withdrawn::ListingDepositWithdrawnEvent),
     ObjectUpdated(events::object_updated::ObjectUpdatedEvent),
+    OfferAccepted(events::offer_accepted::OfferAcceptedEvent),
+    OfferCancelled(events::offer_cancelled::OfferCancelledEvent),
+    OfferMade(events::offer_made::OfferMadeEvent),
+    OfferRejected(events::offer_rejected::OfferRejectedEvent),
     PropertyAssetsInitialized(events::property_assets_initialized::PropertyAssetsInitializedEvent),
     PropertyListed(events::property_listed::PropertyListedEvent),
     PropertySharesBought(events::property_shares_bought::PropertySharesBoughtEvent),
+    PropertySharesSent(events::property_shares_sent::PropertySharesSentEvent),
+    RelistedSharesBought(events::relisted_shares_bought::RelistedSharesBoughtEvent),
     ReservationReleased(events::reservation_released::ReservationReleasedEvent),
+    ShareHoldingClosed(events::share_holding_closed::ShareHoldingClosedEvent),
     SharesClaimed(events::shares_claimed::SharesClaimedEvent),
+    SharesDelisted(events::shares_delisted::SharesDelistedEvent),
+    SharesRelisted(events::shares_relisted::SharesRelistedEvent),
     SharesReserved(events::shares_reserved::SharesReservedEvent),
     SharesUnreserved(events::shares_unreserved::SharesUnreservedEvent),
     SilentVerdictResolved(events::silent_verdict_resolved::SilentVerdictResolvedEvent),
@@ -126,6 +135,18 @@ impl CpiEvent {
                 if let Some(decoded) = events::object_updated::ObjectUpdatedEvent::decode(event_data) {
             return Some(CpiEvent::ObjectUpdated(decoded));
         }
+                if let Some(decoded) = events::offer_accepted::OfferAcceptedEvent::decode(event_data) {
+            return Some(CpiEvent::OfferAccepted(decoded));
+        }
+                if let Some(decoded) = events::offer_cancelled::OfferCancelledEvent::decode(event_data) {
+            return Some(CpiEvent::OfferCancelled(decoded));
+        }
+                if let Some(decoded) = events::offer_made::OfferMadeEvent::decode(event_data) {
+            return Some(CpiEvent::OfferMade(decoded));
+        }
+                if let Some(decoded) = events::offer_rejected::OfferRejectedEvent::decode(event_data) {
+            return Some(CpiEvent::OfferRejected(decoded));
+        }
                 if let Some(decoded) = events::property_assets_initialized::PropertyAssetsInitializedEvent::decode(event_data) {
             return Some(CpiEvent::PropertyAssetsInitialized(decoded));
         }
@@ -135,11 +156,26 @@ impl CpiEvent {
                 if let Some(decoded) = events::property_shares_bought::PropertySharesBoughtEvent::decode(event_data) {
             return Some(CpiEvent::PropertySharesBought(decoded));
         }
+                if let Some(decoded) = events::property_shares_sent::PropertySharesSentEvent::decode(event_data) {
+            return Some(CpiEvent::PropertySharesSent(decoded));
+        }
+                if let Some(decoded) = events::relisted_shares_bought::RelistedSharesBoughtEvent::decode(event_data) {
+            return Some(CpiEvent::RelistedSharesBought(decoded));
+        }
                 if let Some(decoded) = events::reservation_released::ReservationReleasedEvent::decode(event_data) {
             return Some(CpiEvent::ReservationReleased(decoded));
         }
+                if let Some(decoded) = events::share_holding_closed::ShareHoldingClosedEvent::decode(event_data) {
+            return Some(CpiEvent::ShareHoldingClosed(decoded));
+        }
                 if let Some(decoded) = events::shares_claimed::SharesClaimedEvent::decode(event_data) {
             return Some(CpiEvent::SharesClaimed(decoded));
+        }
+                if let Some(decoded) = events::shares_delisted::SharesDelistedEvent::decode(event_data) {
+            return Some(CpiEvent::SharesDelisted(decoded));
+        }
+                if let Some(decoded) = events::shares_relisted::SharesRelistedEvent::decode(event_data) {
+            return Some(CpiEvent::SharesRelisted(decoded));
         }
                 if let Some(decoded) = events::shares_reserved::SharesReservedEvent::decode(event_data) {
             return Some(CpiEvent::SharesReserved(decoded));

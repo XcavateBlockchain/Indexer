@@ -8,6 +8,8 @@ pub struct InitPropertyAssetsRow {
     #[sqlx(flatten)]
     pub instruction_metadata: InstructionRowMetadata,
     pub listing_id: U64,
+    pub name: String,
+    pub uri: String,
 }
 
 impl InitPropertyAssetsRow {
@@ -15,6 +17,8 @@ impl InitPropertyAssetsRow {
         Self {
             instruction_metadata: metadata.into(),
             listing_id: source.listing_id.into(),
+            name: source.name.into(),
+            uri: source.uri.into(),
         }
     }
 }
@@ -24,6 +28,8 @@ impl TryFrom<InitPropertyAssetsRow> for crate::instructions::init_property_asset
     fn try_from(source: InitPropertyAssetsRow) -> Result<Self, Self::Error> {
         Ok(Self {
             listing_id: *source.listing_id,
+            name: source.name.into(),
+            uri: source.uri.into(),
         })
     }
 }
@@ -40,6 +46,8 @@ impl carbon_core::postgres::operations::Table for crate::instructions::init_prop
             "__stack_height",
             "__slot",
             "listing_id",
+            "name",
+            "uri",
         ]
     }
 }
@@ -50,11 +58,15 @@ impl carbon_core::postgres::operations::Insert for InitPropertyAssetsRow {
         sqlx::query(r#"
             INSERT INTO init_property_assets_instruction (
                 "listing_id",
+                "name",
+                "uri",
                 __signature, __instruction_index, __stack_height, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5
+                $1, $2, $3, $4, $5, $6, $7
             )"#)
         .bind(self.listing_id.clone())
+        .bind(self.name.clone())
+        .bind(self.uri.clone())
         .bind(self.instruction_metadata.signature.clone())
         .bind(self.instruction_metadata.instruction_index.clone())
         .bind(self.instruction_metadata.stack_height.clone())
@@ -70,18 +82,24 @@ impl carbon_core::postgres::operations::Upsert for InitPropertyAssetsRow {
     async fn upsert(&self, pool: &sqlx::PgPool) -> carbon_core::error::CarbonResult<()> {
         sqlx::query(r#"INSERT INTO init_property_assets_instruction (
                 "listing_id",
+                "name",
+                "uri",
                 __signature, __instruction_index, __stack_height, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5
+                $1, $2, $3, $4, $5, $6, $7
             ) ON CONFLICT (
                 __signature, __instruction_index, __stack_height
             ) DO UPDATE SET
                 "listing_id" = EXCLUDED."listing_id",
+                "name" = EXCLUDED."name",
+                "uri" = EXCLUDED."uri",
                 __instruction_index = EXCLUDED.__instruction_index,
                 __stack_height = EXCLUDED.__stack_height,
                 __slot = EXCLUDED.__slot
             "#)
         .bind(self.listing_id.clone())
+        .bind(self.name.clone())
+        .bind(self.uri.clone())
         .bind(self.instruction_metadata.signature.clone())
         .bind(self.instruction_metadata.instruction_index.clone())
         .bind(self.instruction_metadata.stack_height.clone())
@@ -134,6 +152,8 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for InitPropertyAssetsMigrationOpe
         sqlx::query(r#"CREATE TABLE IF NOT EXISTS init_property_assets_instruction (
                 -- Instruction data
                 "listing_id" NUMERIC(20) NOT NULL,
+                "name" TEXT NOT NULL,
+                "uri" TEXT NOT NULL,
                 -- Instruction metadata
                 __signature TEXT NOT NULL,
                 __instruction_index BIGINT NOT NULL,

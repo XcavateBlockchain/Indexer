@@ -42,6 +42,7 @@ pub struct ListingRow {
     pub developer_engaged: bool,
     pub spv_costs_due: U64,
     pub spv_costs_payee: Pubkey,
+    pub collected_fee_quote: U64,
     pub collected: sqlx::types::Json<Vec<CollectedPerMint>>,
     pub spv_election: sqlx::types::Json<SpvElection>,
     pub status: sqlx::types::Json<ListingStatus>,
@@ -79,6 +80,7 @@ impl ListingRow {
             developer_engaged: source.developer_engaged.into(),
             spv_costs_due: source.spv_costs_due.into(),
             spv_costs_payee: source.spv_costs_payee.into(),
+            collected_fee_quote: source.collected_fee_quote.into(),
             collected: sqlx::types::Json(source.collected.into_iter().map(|element| element.into()).collect()),
             spv_election: sqlx::types::Json(source.spv_election.into()),
             status: sqlx::types::Json(source.status.into()),
@@ -118,6 +120,7 @@ impl TryFrom<ListingRow> for crate::accounts::listing::Listing {
             developer_engaged: source.developer_engaged.into(),
             spv_costs_due: *source.spv_costs_due,
             spv_costs_payee: *source.spv_costs_payee,
+            collected_fee_quote: *source.collected_fee_quote,
             collected: source.collected.0,
             spv_election: source.spv_election.0,
             status: source.status.0,
@@ -162,6 +165,7 @@ impl carbon_core::postgres::operations::Table for crate::accounts::listing::List
             "developer_engaged",
             "spv_costs_due",
             "spv_costs_payee",
+            "collected_fee_quote",
             "collected",
             "spv_election",
             "status",
@@ -202,13 +206,14 @@ impl carbon_core::postgres::operations::Insert for ListingRow {
                 "developer_engaged",
                 "spv_costs_due",
                 "spv_costs_payee",
+                "collected_fee_quote",
                 "collected",
                 "spv_election",
                 "status",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34
             )"#)
         .bind(self.listing_id.clone())
         .bind(self.developer.clone())
@@ -237,6 +242,7 @@ impl carbon_core::postgres::operations::Insert for ListingRow {
         .bind(self.developer_engaged.clone())
         .bind(self.spv_costs_due.clone())
         .bind(self.spv_costs_payee.clone())
+        .bind(self.collected_fee_quote.clone())
         .bind(self.collected.clone())
         .bind(self.spv_election.clone())
         .bind(self.status.clone())
@@ -280,13 +286,14 @@ impl carbon_core::postgres::operations::Upsert for ListingRow {
                 "developer_engaged",
                 "spv_costs_due",
                 "spv_costs_payee",
+                "collected_fee_quote",
                 "collected",
                 "spv_election",
                 "status",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34
             ) ON CONFLICT (
                 __pubkey
             ) DO UPDATE SET
@@ -317,6 +324,7 @@ impl carbon_core::postgres::operations::Upsert for ListingRow {
                 "developer_engaged" = EXCLUDED."developer_engaged",
                 "spv_costs_due" = EXCLUDED."spv_costs_due",
                 "spv_costs_payee" = EXCLUDED."spv_costs_payee",
+                "collected_fee_quote" = EXCLUDED."collected_fee_quote",
                 "collected" = EXCLUDED."collected",
                 "spv_election" = EXCLUDED."spv_election",
                 "status" = EXCLUDED."status",
@@ -350,6 +358,7 @@ impl carbon_core::postgres::operations::Upsert for ListingRow {
         .bind(self.developer_engaged.clone())
         .bind(self.spv_costs_due.clone())
         .bind(self.spv_costs_payee.clone())
+        .bind(self.collected_fee_quote.clone())
         .bind(self.collected.clone())
         .bind(self.spv_election.clone())
         .bind(self.status.clone())
@@ -426,6 +435,7 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for ListingMigrationOperation {
                 "developer_engaged" BOOLEAN NOT NULL,
                 "spv_costs_due" NUMERIC(20) NOT NULL,
                 "spv_costs_payee" BYTEA NOT NULL,
+                "collected_fee_quote" NUMERIC(20) NOT NULL,
                 "collected" JSONB NOT NULL,
                 "spv_election" JSONB NOT NULL,
                 "status" JSONB NOT NULL,

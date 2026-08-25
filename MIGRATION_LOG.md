@@ -756,3 +756,81 @@ design in `docs/agentic-maintenance.md`; procedures in `agent/skills/`, entry po
   upstream `main@5927362` (exit 20, see Findings).
 - `scripts/lint-migrations.sh` exercised on clean, destructive, marker-exempted and
   misnumbered fixtures.
+
+## Protocol redeploy at new addresses (ADR-26) — 2026-08-25
+
+The owner redeployed all four programs to new devnet addresses (bytecode = upstream
+`main@5927362`, the breaking state §7 of docs/agentic-maintenance.md had been watching) and
+declared the old deployments abandoned. Clean swap per ADR-26 — no versioned decoders, the
+production database is rebuilt from empty (RUNBOOK "Devnet ledger reset").
+
+Recon (devnet RPC, 2026-08-25; deploy slot = oldest `getSignaturesForAddress` entry — this
+table supersedes §3.4's for the live deployment):
+
+| Program | Address | Deploy slot | Signatures at recon |
+|---|---|---|---|
+| xcavate_whitelist | `7TrzjKpdrEhnfhxuw8tWdH1sjxadazscsG5HXCDPLmaY` | 487427394 | 13 |
+| regions | `5iupkzVtWxee48UXh3s615V9sXXuYjsSr61VPuduXdPc` | 487427494 | 8 |
+| marketplace | `dj9Q3CpHvDHwexCbkgJ5APDx4JsTxPssNebkvP15g1T` | 487427626 | 8 |
+| property | `deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq` | 487427732 | 2 |
+
+### What was built
+
+* **Address swap (ADR-19/26)**: `addresses.json` (programs, deploy_slots, configs, region),
+  `crates/indexer/src/programs.rs` (slots + boundary stamps + table rosters),
+  `crates/api/src/graphql/enums.rs` program-id mirror, README table, Grafana floor
+  threshold.
+* **Decoders regenerated (ADR-12)**: all four crates from the new IDLs with carbon-cli
+  0.12.0, generated into clean dirs and swapped wholesale (the in-place generator leaves
+  stale files — property's old `Config` account was renamed `property::state::Config`
+  upstream, generating `PropertyStateConfig` and orphaning `config.rs`). `carbon-core` pin
+  unchanged at 0.12.0; `verify-decoder-purity.sh` pristine for all four.
+* **Schema (migration 0012)**: seven new state tables — `marketplace_share_listing`,
+  `marketplace_offer`, `property_proposal`, `property_challenge`, `property_gov_vote`,
+  `property_income`, `property_income_checkpoint` — plus reshapes: marketplace config
+  (+`next_share_listing_id`), listing (+`collected_fee_quote`), property_asset
+  (`core_asset` → `name`/`metadata_uri`), share_holding (`locked_amount` → four
+  per-`LockReason` columns + `listed`), property config (+7 governance params),
+  property_letting (+6 flattened `GovState` columns). `DROP COLUMN` under lint-allow;
+  correctness argument in the migration header.
+* **Mapping**: 9 new marketplace + 12 new property instruction arms; new close table rows
+  read from the pinned source — `accept_offer` (Offer@10 + CONDITIONAL ShareListing@6),
+  `reject_offer` (Offer@4), `cancel_offer` (Offer@2), `buy_relisted_shares` (CONDITIONAL
+  ShareListing@6), `delist_shares` (ShareListing@2), `close_share_holding`
+  (ShareHolding@4); property `finalize_proposal` (Proposal@4), `finalize_challenge`
+  (Challenge@5, optional `agent_entry` AFTER it), `unlock_proposal_votes` /
+  `unlock_challenge_votes` (GovVote@4), `close_income_checkpoint` (IncomeCheckpoint@2).
+  Two new batcher-side conditional closes (`db::marketplace::close_share_listing_if_*`),
+  following the letting-agent precedent.
+* **API**: entities/resolvers/QueryRoot fields for the seven new tables, `GovVoteChoice`
+  enum, reshaped entity fields; `.sqlx` caches regenerated per crate.
+* **Fixtures**: integration fixtures recaptured from the new whitelist deployment (same
+  wallets; role fixture is again lawyer2's Lawyer role, tx
+  `47o8ja6JZ3…J8nn` at slot 487427944); synthetic-fixture slots moved above the new floors.
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| `propose` closes its own PDA sometimes, and needs NO close op | The auto-approval path (`amount <= config.low_proposal`) creates and closes the Proposal inside one instruction; the post-transaction state never matches the owner-scoped filter, so no row is ever written and there is nothing to close — unlike the two-transaction same-slot tie `db::close` documents. Asserted by `propose_closes_nothing_despite_the_auto_approval_path`. |
+| Two conditional runtime closes with different evidence | `buy_relisted_shares` carries the bought amount in its own args; `accept_offer` sells the OFFER's amount, an account fact — its close op carries the offer pubkey and the batcher reads the amount from the stored offer row (soft-closed in the same batch, columns still readable). |
+| GovVote has no kind discriminator | Proposal votes and challenge votes are one account type behind two seed prefixes; rows/API deliberately carry no kind column — consumers join `id` against proposals/challenges. |
+| u128 reaches the schema for the first time | `IncomeStream.per_share` / `CheckpointEntry.per_share` are u128; stored in JSONB as decimal STRINGS (serde_json's number type cannot carry the range). |
+| ADR-10 event audit (per-upgrade check) | Of the 22 new events, three payloads are not exactly reconstructible later: `IncomeClaimed.amount`, `ChallengeFinalized.slashed`, `IncomeDistributed.per_share_gain` (exact value lost to the dust carry). Flagged in ADR-26; events stay ignored. |
+| The volume wipe abandons ADR-21 | `pgdata` also holds the SubQuery rollback schema; the reset procedure now says so (RUNBOOK). The old programs the rollback stack pointed at no longer exist, so this invokes ADR-21's natural-cleanup clause. |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean; per-crate `cargo sqlx prepare
+  --check` clean against the migrated 54329 Postgres.
+* `cargo test --workspace --locked`: 160 passed, 0 failed (30 api + 130 indexer, including
+  the new conditional-close SQL tests and close-position tests).
+* `scripts/lint-migrations.sh` OK (0012's `DROP COLUMN` under its lint-allow marker).
+* `scripts/agent/verify-decoder-purity.sh`: pristine ×4.
+* `scripts/agent/check-program-upgrades.py`: exit 0, all four `unchanged (still the
+  version-1 deploy)` at the new slots.
+* `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 32 instructions, 4 snapshots,
+  4 deploy boundaries, 0 chain upgrades** — full rebuild from the public devnet RPC against
+  the new deployments, zero undecodable accounts.

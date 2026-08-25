@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO property_config (pubkey, slot, lamports, closed_at_slot, authority,\n            pending_authority, xcav_mint, treasury, rent_collector, agent_deposit,\n            agent_voting_time, min_voting_quorum_bps, agent_notice_period,\n            proposal_voting_time, low_proposal, high_proposal, high_threshold_bps,\n            auto_approval_cooldown, challenge_deposit, agent_slash_amount, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,\n                $17, $18, $19, $20)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot                   = EXCLUDED.slot,\n            lamports               = EXCLUDED.lamports,\n            closed_at_slot         = EXCLUDED.closed_at_slot,\n            authority              = EXCLUDED.authority,\n            pending_authority      = EXCLUDED.pending_authority,\n            xcav_mint              = EXCLUDED.xcav_mint,\n            treasury               = EXCLUDED.treasury,\n            rent_collector         = EXCLUDED.rent_collector,\n            agent_deposit          = EXCLUDED.agent_deposit,\n            agent_voting_time      = EXCLUDED.agent_voting_time,\n            min_voting_quorum_bps  = EXCLUDED.min_voting_quorum_bps,\n            agent_notice_period    = EXCLUDED.agent_notice_period,\n            proposal_voting_time   = EXCLUDED.proposal_voting_time,\n            low_proposal           = EXCLUDED.low_proposal,\n            high_proposal          = EXCLUDED.high_proposal,\n            high_threshold_bps     = EXCLUDED.high_threshold_bps,\n            auto_approval_cooldown = EXCLUDED.auto_approval_cooldown,\n            challenge_deposit      = EXCLUDED.challenge_deposit,\n            agent_slash_amount     = EXCLUDED.agent_slash_amount,\n            bump                   = EXCLUDED.bump\n        WHERE property_config.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0235d903c4d864f5f0dc849f110b395cb210789a31b46c1fb4596f53741c8679"
+}
