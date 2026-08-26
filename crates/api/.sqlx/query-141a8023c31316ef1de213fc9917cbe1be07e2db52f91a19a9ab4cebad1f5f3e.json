@@ -1,0 +1,310 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT pubkey, asset_id, metadata_uri, fetched_at, attempts, last_error, raw,\n                   property_id, property_name, property_type, status, tenure, property_description,\n                   planning_code, building_control_code, user_pubkey, company_id, company_name,\n                   company_logo, company_wallet_address, created_at, updated_at,\n                   address_street, address_town_city, address_flat_or_unit, address_post_code,\n                   address_local_authority, address_region, address_location,\n                   area, quality, outdoor_space, number_of_bedrooms, number_of_bathrooms,\n                   construction_date, off_street_parking,\n                   property_price, number_of_shares, share_price, estimated_rental_income,\n                   annual_service_charge, stamp_duty_tax, stamp_duty_paid,\n                   annual_service_charge_paid,\n                   floor_plan, map_url, sales_agreement, other_documents, property_images\n            FROM marketplace_property_metadata\n            WHERE pubkey = ANY($1)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "metadata_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "fetched_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_error",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "raw",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "property_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "property_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "property_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "tenure",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "property_description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "planning_code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "building_control_code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "user_pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 16,
+        "name": "company_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 17,
+        "name": "company_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 18,
+        "name": "company_logo",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 19,
+        "name": "company_wallet_address",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 20,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 21,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 22,
+        "name": "address_street",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 23,
+        "name": "address_town_city",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 24,
+        "name": "address_flat_or_unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 25,
+        "name": "address_post_code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 26,
+        "name": "address_local_authority",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 27,
+        "name": "address_region",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 28,
+        "name": "address_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 29,
+        "name": "area",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 30,
+        "name": "quality",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 31,
+        "name": "outdoor_space",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 32,
+        "name": "number_of_bedrooms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 33,
+        "name": "number_of_bathrooms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 34,
+        "name": "construction_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 35,
+        "name": "off_street_parking",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 36,
+        "name": "property_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 37,
+        "name": "number_of_shares",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 38,
+        "name": "share_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 39,
+        "name": "estimated_rental_income",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 40,
+        "name": "annual_service_charge",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 41,
+        "name": "stamp_duty_tax",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 42,
+        "name": "stamp_duty_paid",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 43,
+        "name": "annual_service_charge_paid",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 44,
+        "name": "floor_plan",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 45,
+        "name": "map_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 46,
+        "name": "sales_agreement",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 47,
+        "name": "other_documents",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 48,
+        "name": "property_images",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "ByteaArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "141a8023c31316ef1de213fc9917cbe1be07e2db52f91a19a9ab4cebad1f5f3e"
+}

@@ -751,3 +751,51 @@ confirming slot. A devnet reset wipes `webhook_events` with the rest of the volu
 a second outbound network surface beyond ADR-27's (same client, same guard) and one more
 table outside the close machinery; mainnet promotion (agentic-maintenance §8) inherits
 the design unchanged.
+
+## ADR-29: Fetched property metadata is nested under `propertyAssets` (one query), with the root `propertyMetadata` connection kept
+
+**Context.** ADR-27 indexed the operator-hosted metadata document into the derived table
+`marketplace_property_metadata` and surfaced it to the API only as a standalone
+`propertyMetadata` connection (filterable by `assetId`). The practical shape of that
+surface is two queries: a consumer that wants "property assets, each with its document"
+must run `propertyAssets` and `propertyMetadata` separately and join client-side on the
+asset PDA / `assetId` — ADR-27's finding "consumers join on `pubkey`" is this, stated up
+front. The index's front-end consumers want asset + document answered in a single
+GraphQL query.
+
+**Decision.** Reuse the existing `PropertyMetadata` type NESTED under `PropertyAsset` as
+`metadata` (nullable — `null` while the enricher has no row for the asset's PDA, i.e. the
+fetch is pending or still failing). Implementation: the `property_assets` resolver keeps
+its existing asset-page query byte-identical, then issues ONE extra keyed lookup —
+`SELECT <the same 50 columns> FROM marketplace_property_metadata WHERE pubkey = ANY($1)`
+over the page's PDA pubkeys (the derived table is 1:1 on the asset PDA's PK, so at most
+one row per node; skipped on an empty page) — and attaches each row to its asset. The
+three deliberate choices: (1) a keyed `ANY(...)` lookup, NOT a `LEFT JOIN` inside the
+asset query — the API layer is uniformly single-table `query!` resolvers (no `JOIN`
+anywhere in `crates/api`), the derived table is outside the mirror contract by design
+(ADR-27), and keeping the asset query unchanged preserves its sqlx provenance (the cached
+query is untouched; exactly one new query enters `.sqlx`); (2) the root `propertyMetadata`
+connection is kept unchanged — it is still the document-first access (and the RUNBOOK's
+"missing/stale metadata" flows query it), while the nested field is the asset-first
+access; (3) the 50-column row→type decomposition lives in ONE module-local
+`macro_rules!` (`property_metadata_from_row!`) used by both metadata queries: the
+`query!` macro compile-checks each query's SQL (a renamed or mistyped column fails
+`cargo sqlx prepare --check` per site) but binds each query SITE to its own private
+`Record` row type that implements nothing shareable (no `sqlx::Row`, no `FromRow`), so a
+plain shared function cannot name the row — the macro expands the decomposition
+textually against either row type, keeping each site's full per-field compile-time
+binding. No migration, no indexer change, no fetcher change — pure API surface.
+
+**Consequences.** `propertyAssets { nodes { ... metadata { ... } } }` now answers asset +
+document in one query; `metadata` is `null` until the first successful fetch (the on-chain
+`metadataUri` remains readable throughout, so a pending fetch is visible, not an error).
+Cost: one extra PK-keyed lookup per `propertyAssets` page (≤100 keys — `clamp_first`
+cap; the table is small and PK-indexed), and the fetch runs even when the client does not
+select `metadata` (juniper resolvers here are not selection-aware; at this data volume the
+wasted lookup is cheaper than the machinery). The schema change is additive (new nullable
+field on an existing type; every existing query still parses and answers); the DoS guards
+are unaffected (nesting adds one field level under an existing field — well inside
+`MAX_DEPTH = 8`, and complexity counts document fields, not result rows). The redundant-
+looking `metadata { id assetId metadataUri }` inside the nesting is deliberate: one
+canonical `PropertyMetadata` type serves both placements, no shadow type. Mainnet
+promotion (agentic-maintenance §8) inherits the surface unchanged.

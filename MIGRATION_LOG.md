@@ -974,3 +974,80 @@ batched pipeline, delivery by a separate retrying background loop (ADR-28).
   the :54329 dev test DB recorded exactly 4 `webhook_events` rows -- one per historical
   `init_property_assets`, `event_id` = `property_asset_registered:<asset PDA>`, all
   undelivered (no `WEBHOOK_URL` is configured there).
+
+## Nested property metadata under `propertyAssets` (ADR-29) — 2026-08-26
+
+ADR-27's `propertyMetadata` was only reachable as a standalone connection, so a consumer
+wanting "assets, each with its document" had to run two GraphQL queries and join them
+client-side on the asset PDA. This change nests the same `PropertyMetadata` type under
+`PropertyAsset` (`metadata`, nullable), so asset + document answer in a single query
+(ADR-29).
+
+### What was built
+
+* **GraphQL schema (additive)**: `PropertyAsset.metadata: PropertyMetadata` — the SAME
+  type the root `propertyMetadata` connection returns (reused, not shadowed); `null`
+  while the enricher has no row for the asset's PDA (fetch pending or still failing —
+  the on-chain `metadataUri` stays readable throughout). The root `propertyMetadata`
+  connection is unchanged: it remains the document-first access and the RUNBOOK's
+  "missing/stale metadata" flows still query it.
+* **Resolver** (`property_assets`, `crates/api/src/graphql/programs/marketplace.rs`): the
+  asset-page query is BYTE-IDENTICAL (its sqlx cache entry is untouched); after it, one
+  keyed lookup — `SELECT <the same 50 columns> FROM marketplace_property_metadata WHERE
+  pubkey = ANY($1)` over the page's PDA pubkeys, skipped on an empty page — attaches each
+  derived row to its asset (at most one row per node: the derived table is 1:1 on the
+  asset PDA's PK). `totalCount` still counts assets only. Deliberately NOT a `LEFT JOIN`
+  in the asset query: the API layer is uniformly single-table `query!` resolvers (no
+  `JOIN` anywhere in `crates/api`), and the derived table is outside the mirror contract
+  by design (ADR-27).
+* **Shared mapping**: the 50-column row→`PropertyMetadata` decomposition (incl. the
+  "nested object surfaces only when at least one field is non-null" rule) moved into ONE
+  module-local `macro_rules!` (`property_metadata_from_row!`) used by BOTH metadata
+  queries — `query!` binds each query site to its own private `Record` row type
+  (implements no `sqlx::Row` / `FromRow`), so a plain shared function cannot name the
+  row and a `try_get`-by-name helper cannot typecheck; the macro expands the
+  decomposition textually against either row type, keeping each site fully
+  compile-checked. The root `property_metadata` resolver's inline mapping was replaced
+  by the macro (no behavior change).
+* **sqlx cache**: exactly ONE new `crates/api/.sqlx` entry (the `ANY(...)` lookup); the
+  asset query's cached entry is untouched (provenance preserved).
+* **Docs**: ADR-29 (`DECISIONS.md`); `propertyAssets`/`PropertyAsset` doc comments note
+  the nested field and its `null` semantics.
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| `metadata` is `null`, not an error | A pending/failing fetch surfaces as `metadata: null` while the on-chain `metadataUri` is readable — consumers can distinguish "not fetched yet" from "no metadata". |
+| Fetch runs even if not selected | juniper resolvers here are not selection-aware; a page whose client does not select `metadata` still pays the ≤100-key PK lookup. At this data volume the wasted lookup is cheaper than the machinery (documented in ADR-29). |
+| Redundant identity inside the nesting | `metadata { id assetId metadataUri }` repeat the parent's identity; deliberate — one canonical `PropertyMetadata` type serves both placements, no shadow type. |
+| DoS guards unaffected | Nesting adds one field level under an existing field (well inside `MAX_DEPTH = 8`); complexity counts document fields, not result rows. |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean; per-crate `cargo sqlx prepare
+  --check` clean (indexer `--lib`, api `--bin api`) — one new cached api query (the
+  `ANY(...)` lookup); the asset query's cache entry is untouched.
+* `cargo test --workspace --locked`: 179 passed, 0 failed (30 api + 149 indexer; no test
+  changes — the API surface has no DB-backed resolver tests in this repo).
+* `scripts/lint-migrations.sh`: "no migration changes vs origin/main" (this change adds
+  no migrations).
+* `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 51 instructions, 4
+  snapshots, 4 deploy boundaries, 0 chain upgrades** -- full rebuild from the public
+  devnet RPC with zero undecodable accounts; the ADR-27 fetch step pulled all 4 live
+  property documents (4 fetched, 0 pending, 0 failing).
+* End-to-end single-query proof: with the :54329 dev DB rebuilt from live devnet
+  (`indexer snapshot` + `backfill` + `fetch-metadata`), ONE GraphQL request —
+  `propertyAssets(first: 10) { nodes { assetId name metadata { propertyId propertyName
+  propertyType fetchedAt address { street townCity region } finances { propertyPrice
+  numberOfShares sharePrice } } } }` — answered all 4 assets with their documents
+  nested (no second `propertyMetadata` query needed); a live introspection of the
+  running API shows `PropertyAsset.metadata: PropertyMetadata` (nullable).
+* Environment note: the host's MSVC installs (VS18/14.51 and VS2022/14.44) are missing
+  their core CRT headers (`include/stdio.h` / `stddef.h` absent from both toolsets), so
+  any C-dependent build (ring, zstd-sys) fails out of the box — pre-existing, unrelated
+  to this change. All of the above ran with `INCLUDE`/`LIB` pointed manually at the
+  intact VS2022 compiler headers + Windows SDK 10.0.22621.0; the VS install needs a
+  repair (VS Installer → Modify → C++ build tools) for normal builds.

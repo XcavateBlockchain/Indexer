@@ -3,6 +3,8 @@
 //! and the resolver bodies `QueryRoot` delegates to. See [`super`] for the shared
 //! conventions.
 
+use std::collections::HashMap;
+
 use carbon_core::graphql::primitives::I64;
 use chrono::{DateTime, Utc};
 use juniper::{FieldResult, GraphQLObject, ID};
@@ -197,6 +199,9 @@ pub struct ListingConnection {
 
 /// The tokenised property behind one listing (`asset_id == listing_id` in current source).
 /// `name` and `metadata_uri` are empty until `init_property_assets` attaches them.
+/// `metadata` is the fetched-and-decomposed off-chain document `metadata_uri` points at
+/// (ADR-27), nested so asset and document answer in ONE query; `null` while the enricher
+/// has no row for this PDA (fetch pending or still failing).
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct PropertyAsset {
     pub id: ID,
@@ -207,6 +212,8 @@ pub struct PropertyAsset {
     pub asset_id: I64,
     pub name: String,
     pub metadata_uri: String,
+    /// The fetched-and-decomposed metadata document (ADR-27); `null` until one exists.
+    pub metadata: Option<PropertyMetadata>,
     pub share_mint: String,
     pub region_id: i32,
     pub location: String,
@@ -325,6 +332,11 @@ pub struct OfferConnection {
 // a fetch fails -- so `fetchedAt`/`raw`/the typed fields are the LAST SUCCESSFUL snapshot,
 // while `metadataUri`/`lastError`/`attempts` describe the LAST ATTEMPT (a row whose fetch
 // never succeeded has `fetchedAt = null` and all content fields `null`).
+//
+// Surfaced two ways: the root `propertyMetadata` connection (document-first access, filter
+// `assetId`) and NESTED per asset as `PropertyAsset.metadata`, so asset + document answer
+// in a single GraphQL query — `property_assets` attaches the page's rows with one extra
+// keyed lookup (`pubkey = ANY(...)` over the derived 1:1).
 // ============================================================================================
 
 /// The document's `address` object.
@@ -417,6 +429,111 @@ pub struct PropertyMetadata {
 pub struct PropertyMetadataConnection {
     pub nodes: Vec<PropertyMetadata>,
     pub total_count: i32,
+}
+
+// ============================================================================================
+// Row -> `PropertyMetadata` decomposition, SHARED by both metadata queries (the root
+// `property_metadata` connection and the per-page `ANY(...)` lookup in `property_assets`).
+// Both SELECT the identical 50-column projection of `marketplace_property_metadata`, but
+// `query!` binds each query SITE to its own private `Record` row type that implements nothing
+// shareable (no `sqlx::Row`, no `FromRow`), so a plain function cannot name the row and a
+// `try_get`-by-name helper cannot typecheck. `macro_rules!` expands the decomposition
+// textually against whichever row it is handed: each site keeps the `query!` macro's full
+// per-field compile-time binding (a renamed or mistyped column still fails `prepare --check`
+// per site), and the mapping itself lives in exactly one place.
+// The body MOVES the row's fields, so a caller that needs `r.pubkey` afterwards (the
+// `property_assets` map key) captures it first.
+// ============================================================================================
+macro_rules! property_metadata_from_row {
+    ($row:expr) => {{
+        let row = $row;
+
+        // A nested object surfaces only when the document had at least one field in it
+        // (all-null content means the document had none). The fields mix types
+        // (String / i64 / NaiveDate / bool), so each check is a plain `||` chain
+        // rather than an array of references.
+        let has_address = row.address_street.is_some()
+            || row.address_town_city.is_some()
+            || row.address_flat_or_unit.is_some()
+            || row.address_post_code.is_some()
+            || row.address_local_authority.is_some()
+            || row.address_region.is_some()
+            || row.address_location.is_some();
+        let has_attributes = row.area.is_some()
+            || row.quality.is_some()
+            || row.outdoor_space.is_some()
+            || row.number_of_bedrooms.is_some()
+            || row.number_of_bathrooms.is_some()
+            || row.construction_date.is_some()
+            || row.off_street_parking.is_some();
+        let has_finances = row.property_price.is_some()
+            || row.number_of_shares.is_some()
+            || row.share_price.is_some()
+            || row.estimated_rental_income.is_some()
+            || row.annual_service_charge.is_some()
+            || row.stamp_duty_tax.is_some()
+            || row.stamp_duty_paid.is_some()
+            || row.annual_service_charge_paid.is_some();
+
+        PropertyMetadata {
+            id: ID::new(b58(&row.pubkey)),
+            asset_id: I64(row.asset_id),
+            metadata_uri: row.metadata_uri,
+            fetched_at: row.fetched_at,
+            attempts: row.attempts,
+            last_error: row.last_error,
+            raw: row.raw.as_ref().map(json_string),
+            // Identity / description (top-level document fields).
+            property_id: row.property_id,
+            property_name: row.property_name,
+            property_type: row.property_type,
+            status: row.status,
+            tenure: row.tenure,
+            property_description: row.property_description,
+            planning_code: row.planning_code,
+            building_control_code: row.building_control_code,
+            user: row.user_pubkey.as_deref().map(b58),
+            company_id: row.company_id,
+            company_name: row.company_name,
+            company_logo: row.company_logo,
+            company_wallet_address: row.company_wallet_address.as_deref().map(b58),
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            address: has_address.then_some(PropertyMetadataAddress {
+                street: row.address_street,
+                town_city: row.address_town_city,
+                flat_or_unit: row.address_flat_or_unit,
+                post_code: row.address_post_code,
+                local_authority: row.address_local_authority,
+                region: row.address_region,
+                location: row.address_location,
+            }),
+            attributes: has_attributes.then_some(PropertyMetadataAttributes {
+                area: row.area,
+                quality: row.quality,
+                outdoor_space: row.outdoor_space,
+                number_of_bedrooms: row.number_of_bedrooms.map(I64),
+                number_of_bathrooms: row.number_of_bathrooms.map(I64),
+                construction_date: row.construction_date.map(|d| d.to_string()),
+                off_street_parking: row.off_street_parking,
+            }),
+            finances: has_finances.then_some(PropertyMetadataFinances {
+                property_price: row.property_price.map(I64),
+                number_of_shares: row.number_of_shares.map(I64),
+                share_price: row.share_price.map(I64),
+                estimated_rental_income: row.estimated_rental_income.map(I64),
+                annual_service_charge: row.annual_service_charge.map(I64),
+                stamp_duty_tax: row.stamp_duty_tax.map(I64),
+                is_stamp_duty_paid: row.stamp_duty_paid,
+                is_annual_service_charge_paid: row.annual_service_charge_paid,
+            }),
+            floor_plan: row.floor_plan,
+            map_url: row.map_url,
+            sales_agreement: row.sales_agreement,
+            other_documents: row.other_documents.as_ref().map(json_string),
+            property_images: row.property_images.as_ref().map(json_string),
+        }
+    }};
 }
 
 // --- resolver bodies ------------------------------------------------------------------------
@@ -942,6 +1059,41 @@ pub async fn property_assets(
     .await?
     .unwrap_or(0);
 
+    // Attach the fetched metadata document (ADR-27) so asset + document answer in ONE
+    // GraphQL query: one keyed lookup over the derived 1:1 (at most one metadata row per
+    // page node) instead of a second client-side round trip. Skipped on an empty page.
+    let pubkeys: Vec<Vec<u8>> = rows.iter().map(|r| r.pubkey.clone()).collect();
+    let mut metadata_by_pubkey: HashMap<Vec<u8>, PropertyMetadata> = HashMap::new();
+    if !pubkeys.is_empty() {
+        let mrows = sqlx::query!(
+            r#"
+            SELECT pubkey, asset_id, metadata_uri, fetched_at, attempts, last_error, raw,
+                   property_id, property_name, property_type, status, tenure, property_description,
+                   planning_code, building_control_code, user_pubkey, company_id, company_name,
+                   company_logo, company_wallet_address, created_at, updated_at,
+                   address_street, address_town_city, address_flat_or_unit, address_post_code,
+                   address_local_authority, address_region, address_location,
+                   area, quality, outdoor_space, number_of_bedrooms, number_of_bathrooms,
+                   construction_date, off_street_parking,
+                   property_price, number_of_shares, share_price, estimated_rental_income,
+                   annual_service_charge, stamp_duty_tax, stamp_duty_paid,
+                   annual_service_charge_paid,
+                   floor_plan, map_url, sales_agreement, other_documents, property_images
+            FROM marketplace_property_metadata
+            WHERE pubkey = ANY($1)
+            "#,
+            pubkeys.as_slice(),
+        )
+        .fetch_all(&context.pool)
+        .await?;
+        for r in mrows {
+            // The macro body moves the row's fields, so capture the map key first.
+            let key = r.pubkey.clone();
+            let metadata = property_metadata_from_row!(r);
+            metadata_by_pubkey.insert(key, metadata);
+        }
+    }
+
     Ok(PropertyAssetConnection {
         nodes: rows
             .into_iter()
@@ -954,6 +1106,9 @@ pub async fn property_assets(
                 asset_id: I64(r.asset_id),
                 name: r.name,
                 metadata_uri: r.metadata_uri,
+                // The page's pubkeys are unique (table PK) and so are the metadata rows', so
+                // each lookup is consumed exactly once.
+                metadata: metadata_by_pubkey.remove(&r.pubkey),
                 share_mint: b58(&r.share_mint),
                 region_id: r.region_id,
                 location: utf8_lossy(&r.location),
@@ -1309,92 +1464,7 @@ pub async fn property_metadata(
 
     let nodes = rows
         .into_iter()
-        .map(|r| {
-            // A nested object surfaces only when the document had at least one field in it
-            // (all-null content means the document had none). The fields mix types
-            // (String / i64 / NaiveDate / bool), so each check is a plain `||` chain
-            // rather than an array of references.
-            let has_address = r.address_street.is_some()
-                || r.address_town_city.is_some()
-                || r.address_flat_or_unit.is_some()
-                || r.address_post_code.is_some()
-                || r.address_local_authority.is_some()
-                || r.address_region.is_some()
-                || r.address_location.is_some();
-            let has_attributes = r.area.is_some()
-                || r.quality.is_some()
-                || r.outdoor_space.is_some()
-                || r.number_of_bedrooms.is_some()
-                || r.number_of_bathrooms.is_some()
-                || r.construction_date.is_some()
-                || r.off_street_parking.is_some();
-            let has_finances = r.property_price.is_some()
-                || r.number_of_shares.is_some()
-                || r.share_price.is_some()
-                || r.estimated_rental_income.is_some()
-                || r.annual_service_charge.is_some()
-                || r.stamp_duty_tax.is_some()
-                || r.stamp_duty_paid.is_some()
-                || r.annual_service_charge_paid.is_some();
-
-            PropertyMetadata {
-                id: ID::new(b58(&r.pubkey)),
-                asset_id: I64(r.asset_id),
-                metadata_uri: r.metadata_uri,
-                fetched_at: r.fetched_at,
-                attempts: r.attempts,
-                last_error: r.last_error,
-                raw: r.raw.as_ref().map(json_string),
-                property_id: r.property_id,
-                property_name: r.property_name,
-                property_type: r.property_type,
-                status: r.status,
-                tenure: r.tenure,
-                property_description: r.property_description,
-                planning_code: r.planning_code,
-                building_control_code: r.building_control_code,
-                user: r.user_pubkey.as_deref().map(b58),
-                company_id: r.company_id,
-                company_name: r.company_name,
-                company_logo: r.company_logo,
-                company_wallet_address: r.company_wallet_address.as_deref().map(b58),
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-                address: has_address.then_some(PropertyMetadataAddress {
-                    street: r.address_street,
-                    town_city: r.address_town_city,
-                    flat_or_unit: r.address_flat_or_unit,
-                    post_code: r.address_post_code,
-                    local_authority: r.address_local_authority,
-                    region: r.address_region,
-                    location: r.address_location,
-                }),
-                attributes: has_attributes.then_some(PropertyMetadataAttributes {
-                    area: r.area,
-                    quality: r.quality,
-                    outdoor_space: r.outdoor_space,
-                    number_of_bedrooms: r.number_of_bedrooms.map(I64),
-                    number_of_bathrooms: r.number_of_bathrooms.map(I64),
-                    construction_date: r.construction_date.map(|d| d.to_string()),
-                    off_street_parking: r.off_street_parking,
-                }),
-                finances: has_finances.then_some(PropertyMetadataFinances {
-                    property_price: r.property_price.map(I64),
-                    number_of_shares: r.number_of_shares.map(I64),
-                    share_price: r.share_price.map(I64),
-                    estimated_rental_income: r.estimated_rental_income.map(I64),
-                    annual_service_charge: r.annual_service_charge.map(I64),
-                    stamp_duty_tax: r.stamp_duty_tax.map(I64),
-                    is_stamp_duty_paid: r.stamp_duty_paid,
-                    is_annual_service_charge_paid: r.annual_service_charge_paid,
-                }),
-                floor_plan: r.floor_plan,
-                map_url: r.map_url,
-                sales_agreement: r.sales_agreement,
-                other_documents: r.other_documents.as_ref().map(json_string),
-                property_images: r.property_images.as_ref().map(json_string),
-            }
-        })
+        .map(|r| property_metadata_from_row!(r))
         .collect();
 
     Ok(PropertyMetadataConnection {

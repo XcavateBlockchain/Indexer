@@ -653,7 +653,10 @@ impl QueryRoot {
         programs::marketplace::lawyer_votes(context, listing_id, voter, active, first, offset).await
     }
 
-    /// Tokenised property assets backing listings.
+    /// Tokenised property assets backing listings. Each node nests the fetched-and-
+    /// decomposed off-chain metadata document (`metadata`, ADR-27) when the enricher has
+    /// one for the asset's PDA — asset + document in a single query (`metadata` is
+    /// `null` while the fetch is pending or failing).
     async fn property_assets(
         context: &GraphQLContext,
         asset_id: Option<I64>,
