@@ -638,3 +638,58 @@ new event payloads are not exactly reconstructible after the fact (`IncomeClaime
 `ChallengeFinalized.slashed`, `IncomeDistributed.per_share_gain` — dust carry) — ADR-10
 stays in force, with that revisit noted for the property program if consumers ever need
 those exact figures.
+
+## ADR-27: Off-chain property metadata is fetched by a background enricher into a derived table
+
+**Context.** The 2026-08-25 redeploy replaced the `PropertyAsset`'s Core-asset NFT deed with
+on-account `name` + `metadata_uri` (migration 0012): the URI points at an off-chain JSON
+document hosted by the protocol team (property description, address, attributes, finances,
+document and image links). The indexer stored only the URI string — none of the decomposed
+content. That content is off-chain and mutable: unlike every other table in this repo it
+cannot be rebuilt from a `getProgramAccounts` snapshot, cannot be slot-guarded, and cannot
+be soft-closed — the on-chain account names the URI; the document is the operator's
+off-chain claim. Fetching it inline in the account pipeline was rejected: a network call on
+the write path couples ingestion of all four programs to the availability of an object
+storage bucket, and the batcher's forever-retry on a deterministic failure (the write-
+migration skill's stall trap) would stall everything on one dead URI.
+
+**Decision.** A new DERIVED table `marketplace_property_metadata` (migration 0013) holds
+one row per `PropertyAsset` PDA: the URI last attempted, the last successfully fetched
+document verbatim (`raw` JSONB — the ground truth) decomposed into typed columns (the
+nested `address` / `attributes` / `finances` objects flattened per 0010's convention — the
+`address` fields under an `address_` prefix, the `attributes` / `finances` fields flat;
+`propertyImages` / `otherDocuments` as JSONB lists of URL strings in the shape the indexer
+constructs; the base58 wallet addresses `user_pubkey` / `companyWalletAddress` as BYTEA per
+the pubkey convention), plus fetch state: `fetched_at` (snapshot time), `attempts`
+(consecutive failures for the current URI), `next_attempt_at` (backoff deadline) and
+`last_error`. A background task (`crates/indexer/src/metadata.rs`, spawned by `run`
+next to the reconciliation supervisor; `METADATA_FETCH_INTERVAL`, default 30 s) each
+cycle selects the work set — open assets with a non-empty `metadata_uri` that have no row, whose row points
+at a different URI, or whose last attempt failed past its backoff — fetches over HTTP(S)
+(reqwest + rustls; http/https schemes only, non-global IP-literal hosts and `localhost`
+rejected as an SSRF guard, 2 MiB body cap) and upserts through `db::property_metadata`.
+Parsing is LENIENT PER FIELD: a document that is not a JSON object fails the fetch, but a
+mis-typed or missing field stores NULL in its column while the rest of the document is
+still indexed and the whole document remains in `raw` — no information is ever lost and a
+bad field can never wedge the loop. Failures record backoff on the row (30 s, doubling,
+1 h cap) and never pass through the batcher, so a dead URI degrades to a lagging,
+retried-and-logged column, never to a stalled pipeline. The same cycle is exposed as the
+one-shot `indexer fetch-metadata` subcommand (run by hand against a production
+`DATABASE_URL`, like `snapshot` / `backfill`). The API serves the table as a
+`propertyMetadata` connection (filter: `assetId`); a fetch is a point-in-time SNAPSHOT —
+content served under an unchanged URI is re-fetched only when the on-chain URI changes or
+a fetch fails, and `fetched_at` is the provenance.
+
+**Consequences.** The table is the repo's first non-mirror table: it is deliberately
+excluded from `StateTable` / `ProgramSpec.tables` and from all close/sweep machinery
+(there is nothing on-chain to close it), and ADR-2's drop-and-rebuild contract does not
+apply to it — the rest of the schema's invariants are untouched. Off-chain claims are
+indexed with provenance (URI + `raw` + `fetched_at`) but carry no on-chain guarantee; the
+indexer validates shape, not truth. The cost is one new external dependency
+(reqwest, rustls-only TLS — matching sqlx's `runtime-tokio-rustls`) and a new network
+failure surface, quarantined to one loop with per-row backoff and two metrics
+(`property_metadata_fetched_total{result}`, `property_metadata_pending`); a devnet reset
+wipes the table with the rest of the volume. DNS-name SSRF (a hostname resolving to a
+private IP) is a documented, accepted limitation on devnet, where the URIs come from the
+protocol team's own deployments. Mainnet promotion (agentic-maintenance §8) inherits the
+design unchanged.

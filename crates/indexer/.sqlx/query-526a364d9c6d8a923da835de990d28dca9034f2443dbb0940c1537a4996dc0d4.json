@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*)\n        FROM marketplace_property_asset a\n        LEFT JOIN marketplace_property_metadata m ON m.pubkey = a.pubkey\n        WHERE a.closed_at_slot IS NULL\n          AND a.metadata_uri <> ''\n          AND (\n                m.pubkey IS NULL\n             OR m.metadata_uri <> a.metadata_uri\n             OR (m.last_error IS NOT NULL\n                 AND (m.next_attempt_at IS NULL OR m.next_attempt_at <= now()))\n          )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "526a364d9c6d8a923da835de990d28dca9034f2443dbb0940c1537a4996dc0d4"
+}

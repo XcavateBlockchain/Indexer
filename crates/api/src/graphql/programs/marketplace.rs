@@ -4,6 +4,7 @@
 //! conventions.
 
 use carbon_core::graphql::primitives::I64;
+use chrono::{DateTime, Utc};
 use juniper::{FieldResult, GraphQLObject, ID};
 
 use super::{b58, hex_string, json_string, parse_b58, total_count_i32, utf8_lossy};
@@ -313,6 +314,108 @@ pub struct Offer {
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct OfferConnection {
     pub nodes: Vec<Offer>,
+    pub total_count: i32,
+}
+
+// ============================================================================================
+// Off-chain property metadata (migrations/0013, ADR-27). A DERIVED table, not an account
+// mirror: the background enricher downloads the JSON document each `PropertyAsset`'s
+// `metadata_uri` points at and decomposes it here. One row per asset PDA; `fetchedAt` is the
+// snapshot's provenance and the document is re-fetched only when the on-chain URI changes or
+// a fetch fails -- so `fetchedAt`/`raw`/the typed fields are the LAST SUCCESSFUL snapshot,
+// while `metadataUri`/`lastError`/`attempts` describe the LAST ATTEMPT (a row whose fetch
+// never succeeded has `fetchedAt = null` and all content fields `null`).
+// ============================================================================================
+
+/// The document's `address` object.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct PropertyMetadataAddress {
+    pub street: Option<String>,
+    pub town_city: Option<String>,
+    pub flat_or_unit: Option<String>,
+    pub post_code: Option<String>,
+    pub local_authority: Option<String>,
+    pub region: Option<String>,
+    pub location: Option<String>,
+}
+
+/// The document's `attributes` object.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct PropertyMetadataAttributes {
+    pub area: Option<String>,
+    pub quality: Option<String>,
+    pub outdoor_space: Option<String>,
+    pub number_of_bedrooms: Option<I64>,
+    pub number_of_bathrooms: Option<I64>,
+    /// The document's `YYYY-MM-DD` date, as stored.
+    pub construction_date: Option<String>,
+    pub off_street_parking: Option<String>,
+}
+
+/// The document's `finances` object.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct PropertyMetadataFinances {
+    pub property_price: Option<I64>,
+    pub number_of_shares: Option<I64>,
+    pub share_price: Option<I64>,
+    pub estimated_rental_income: Option<I64>,
+    pub annual_service_charge: Option<I64>,
+    pub stamp_duty_tax: Option<I64>,
+    pub is_stamp_duty_paid: Option<bool>,
+    pub is_annual_service_charge_paid: Option<bool>,
+}
+
+/// One fetched-and-decomposed metadata document. Wallets are base58; `raw` /
+/// `otherDocuments` / `propertyImages` are raw JSON (juniper has no JSON scalar); the nested
+/// objects are present only when the document had at least one field in them.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct PropertyMetadata {
+    pub id: ID,
+    pub asset_id: I64,
+    /// The URI the last attempt targeted.
+    pub metadata_uri: String,
+    /// When the last successful snapshot was fetched; `null` until one exists.
+    pub fetched_at: Option<DateTime<Utc>>,
+    /// Consecutive failures for `metadata_uri` (reset to 0 by a success).
+    pub attempts: i32,
+    /// The last failure's message; `null` when the row's state is a success.
+    pub last_error: Option<String>,
+    /// The whole document verbatim -- the ground truth the typed fields are derived from;
+    /// `null` until the first successful fetch.
+    pub raw: Option<String>,
+    // Identity / description (top-level document fields).
+    pub property_id: Option<String>,
+    pub property_name: Option<String>,
+    pub property_type: Option<String>,
+    pub status: Option<String>,
+    pub tenure: Option<String>,
+    pub property_description: Option<String>,
+    pub planning_code: Option<String>,
+    pub building_control_code: Option<String>,
+    pub user: Option<String>,
+    pub company_id: Option<String>,
+    pub company_name: Option<String>,
+    pub company_logo: Option<String>,
+    pub company_wallet_address: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    // The document's nested objects.
+    pub address: Option<PropertyMetadataAddress>,
+    pub attributes: Option<PropertyMetadataAttributes>,
+    pub finances: Option<PropertyMetadataFinances>,
+    // Documents / media (top-level).
+    pub floor_plan: Option<String>,
+    pub map_url: Option<String>,
+    pub sales_agreement: Option<String>,
+    /// Raw JSON array of URL strings.
+    pub other_documents: Option<String>,
+    /// Raw JSON array of URL strings.
+    pub property_images: Option<String>,
+}
+
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct PropertyMetadataConnection {
+    pub nodes: Vec<PropertyMetadata>,
     pub total_count: i32,
 }
 
@@ -1150,6 +1253,152 @@ pub async fn offers(
                 rent_payer: b58(&r.rent_payer),
             })
             .collect(),
+        total_count: total_count_i32(total),
+    })
+}
+
+/// Fetched and decomposed off-chain property metadata (ADR-27). `fetchedAt DESC NULLS LAST,
+/// pubkey ASC`: newest snapshots first, rows that never fetched successfully (fetch state
+/// only) last, stable tiebreak within a snapshot time.
+pub async fn property_metadata(
+    context: &GraphQLContext,
+    asset_id: Option<I64>,
+    first: Option<i32>,
+    offset: Option<i32>,
+) -> FieldResult<PropertyMetadataConnection> {
+    let limit = clamp_first(first);
+    let skip = clamp_offset(offset);
+    let asset_id = asset_id.map(|v| v.0);
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT pubkey, asset_id, metadata_uri, fetched_at, attempts, last_error, raw,
+               property_id, property_name, property_type, status, tenure, property_description,
+               planning_code, building_control_code, user_pubkey, company_id, company_name,
+               company_logo, company_wallet_address, created_at, updated_at,
+               address_street, address_town_city, address_flat_or_unit, address_post_code,
+               address_local_authority, address_region, address_location,
+               area, quality, outdoor_space, number_of_bedrooms, number_of_bathrooms,
+               construction_date, off_street_parking,
+               property_price, number_of_shares, share_price, estimated_rental_income,
+               annual_service_charge, stamp_duty_tax, stamp_duty_paid,
+               annual_service_charge_paid,
+               floor_plan, map_url, sales_agreement, other_documents, property_images
+        FROM marketplace_property_metadata
+        WHERE ($1::bigint IS NULL OR asset_id = $1)
+        ORDER BY fetched_at DESC NULLS LAST, pubkey ASC
+        LIMIT $2 OFFSET $3
+        "#,
+        asset_id,
+        limit,
+        skip,
+    )
+    .fetch_all(&context.pool)
+    .await?;
+
+    let total = sqlx::query_scalar!(
+        r#"
+        SELECT count(*) FROM marketplace_property_metadata
+        WHERE ($1::bigint IS NULL OR asset_id = $1)
+        "#,
+        asset_id,
+    )
+    .fetch_one(&context.pool)
+    .await?
+    .unwrap_or(0);
+
+    let nodes = rows
+        .into_iter()
+        .map(|r| {
+            // A nested object surfaces only when the document had at least one field in it
+            // (all-null content means the document had none). The fields mix types
+            // (String / i64 / NaiveDate / bool), so each check is a plain `||` chain
+            // rather than an array of references.
+            let has_address = r.address_street.is_some()
+                || r.address_town_city.is_some()
+                || r.address_flat_or_unit.is_some()
+                || r.address_post_code.is_some()
+                || r.address_local_authority.is_some()
+                || r.address_region.is_some()
+                || r.address_location.is_some();
+            let has_attributes = r.area.is_some()
+                || r.quality.is_some()
+                || r.outdoor_space.is_some()
+                || r.number_of_bedrooms.is_some()
+                || r.number_of_bathrooms.is_some()
+                || r.construction_date.is_some()
+                || r.off_street_parking.is_some();
+            let has_finances = r.property_price.is_some()
+                || r.number_of_shares.is_some()
+                || r.share_price.is_some()
+                || r.estimated_rental_income.is_some()
+                || r.annual_service_charge.is_some()
+                || r.stamp_duty_tax.is_some()
+                || r.stamp_duty_paid.is_some()
+                || r.annual_service_charge_paid.is_some();
+
+            PropertyMetadata {
+                id: ID::new(b58(&r.pubkey)),
+                asset_id: I64(r.asset_id),
+                metadata_uri: r.metadata_uri,
+                fetched_at: r.fetched_at,
+                attempts: r.attempts,
+                last_error: r.last_error,
+                raw: r.raw.as_ref().map(json_string),
+                property_id: r.property_id,
+                property_name: r.property_name,
+                property_type: r.property_type,
+                status: r.status,
+                tenure: r.tenure,
+                property_description: r.property_description,
+                planning_code: r.planning_code,
+                building_control_code: r.building_control_code,
+                user: r.user_pubkey.as_deref().map(b58),
+                company_id: r.company_id,
+                company_name: r.company_name,
+                company_logo: r.company_logo,
+                company_wallet_address: r.company_wallet_address.as_deref().map(b58),
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+                address: has_address.then_some(PropertyMetadataAddress {
+                    street: r.address_street,
+                    town_city: r.address_town_city,
+                    flat_or_unit: r.address_flat_or_unit,
+                    post_code: r.address_post_code,
+                    local_authority: r.address_local_authority,
+                    region: r.address_region,
+                    location: r.address_location,
+                }),
+                attributes: has_attributes.then_some(PropertyMetadataAttributes {
+                    area: r.area,
+                    quality: r.quality,
+                    outdoor_space: r.outdoor_space,
+                    number_of_bedrooms: r.number_of_bedrooms.map(I64),
+                    number_of_bathrooms: r.number_of_bathrooms.map(I64),
+                    construction_date: r.construction_date.map(|d| d.to_string()),
+                    off_street_parking: r.off_street_parking,
+                }),
+                finances: has_finances.then_some(PropertyMetadataFinances {
+                    property_price: r.property_price.map(I64),
+                    number_of_shares: r.number_of_shares.map(I64),
+                    share_price: r.share_price.map(I64),
+                    estimated_rental_income: r.estimated_rental_income.map(I64),
+                    annual_service_charge: r.annual_service_charge.map(I64),
+                    stamp_duty_tax: r.stamp_duty_tax.map(I64),
+                    is_stamp_duty_paid: r.stamp_duty_paid,
+                    is_annual_service_charge_paid: r.annual_service_charge_paid,
+                }),
+                floor_plan: r.floor_plan,
+                map_url: r.map_url,
+                sales_agreement: r.sales_agreement,
+                other_documents: r.other_documents.as_ref().map(json_string),
+                property_images: r.property_images.as_ref().map(json_string),
+            }
+        })
+        .collect();
+
+    Ok(PropertyMetadataConnection {
+        nodes,
         total_count: total_count_i32(total),
     })
 }

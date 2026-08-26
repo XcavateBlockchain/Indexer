@@ -16,6 +16,7 @@
 //! | [`snapshot`] | The one-shot `getProgramAccounts` state snapshot. |
 //! | [`backfill`] | The resumable history walk down to `backfill_floor_slot`. |
 //! | [`reconcile`] | The periodic supervisor: the only writer of `last_contiguous_slot`. |
+//! | [`metadata`] | The off-chain property-metadata fetcher (ADR-27): the `metadata_uri` -> decomposed `marketplace_property_metadata` loop. |
 //! | [`sync_frontier`] | The contiguity contract governing `sync_state.last_contiguous_slot`. |
 //! | [`metrics`] | `carbon_core::metrics::Metrics` on Prometheus + the `/metrics` listener. |
 //! | [`grpc_smoke`] | The `smoke-grpc` check, reused as `run`'s startup subscribe gate. |
@@ -36,6 +37,7 @@ pub mod crawl;
 pub mod db;
 pub mod grpc_smoke;
 pub mod mapping;
+pub mod metadata;
 pub mod metrics;
 pub mod pipeline;
 pub mod processors;

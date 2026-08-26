@@ -29,6 +29,13 @@ pub const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9464";
 /// bounding how long an undetected stream outage can leave `last_contiguous_slot` stale.
 pub const DEFAULT_RECONCILE_INTERVAL_SECS: u64 = 300;
 
+/// How often the property-metadata fetcher polls its work set (see [`crate::metadata`],
+/// ADR-27). 30 seconds: a work-set query is one indexed Postgres read, and a new
+/// `init_property_assets` transaction should show up in the API within a minute; the
+/// fetching itself is bounded (`metadata::CYCLE_LIMIT`) and backed off per URI, so the
+/// interval costs nothing while the work set is empty.
+pub const DEFAULT_METADATA_FETCH_INTERVAL_SECS: u64 = 30;
+
 pub struct Config {
     /// `DATABASE_URL`. Required by every subcommand that writes rows; `smoke-grpc` never
     /// touches Postgres, so it is validated at use (see [`Config::require_database_url`])
@@ -50,6 +57,9 @@ pub struct Config {
     pub metrics_addr: SocketAddr,
     /// `RECONCILE_INTERVAL` (seconds), default [`DEFAULT_RECONCILE_INTERVAL_SECS`].
     pub reconcile_interval: Duration,
+    /// `METADATA_FETCH_INTERVAL` (seconds), default
+    /// [`DEFAULT_METADATA_FETCH_INTERVAL_SECS`].
+    pub metadata_fetch_interval: Duration,
 }
 
 impl Config {
@@ -106,6 +116,22 @@ impl Config {
             Err(_) => DEFAULT_RECONCILE_INTERVAL_SECS,
         };
 
+        let metadata_fetch_interval_secs = match std::env::var("METADATA_FETCH_INTERVAL") {
+            Ok(s) => s
+                .parse::<u64>()
+                .with_context(|| format!("METADATA_FETCH_INTERVAL is not a u64 (seconds): {s}"))
+                .and_then(|v| {
+                    if v == 0 {
+                        Err(anyhow!(
+                            "METADATA_FETCH_INTERVAL must be greater than 0 seconds"
+                        ))
+                    } else {
+                        Ok(v)
+                    }
+                })?,
+            Err(_) => DEFAULT_METADATA_FETCH_INTERVAL_SECS,
+        };
+
         Ok(Self {
             database_url,
             alchemy_api_key,
@@ -119,6 +145,7 @@ impl Config {
             programs,
             metrics_addr,
             reconcile_interval: Duration::from_secs(reconcile_interval_secs),
+            metadata_fetch_interval: Duration::from_secs(metadata_fetch_interval_secs),
         })
     }
 
@@ -184,6 +211,7 @@ impl fmt::Debug for Config {
             )
             .field("metrics_addr", &self.metrics_addr)
             .field("reconcile_interval", &self.reconcile_interval)
+            .field("metadata_fetch_interval", &self.metadata_fetch_interval)
             .finish()
     }
 }

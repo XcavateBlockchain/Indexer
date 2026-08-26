@@ -20,6 +20,7 @@ pub mod instructions;
 pub mod marketplace;
 pub mod models;
 pub mod property;
+pub mod property_metadata;
 pub mod regions;
 pub mod sync_state;
 pub mod upgrades;

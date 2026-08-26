@@ -63,6 +63,11 @@ env_logger = "0.11"
 bs58 = "0.5"
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"
+# Off-chain property metadata fetch (ADR-27). default-features OFF: the default
+# `default-tls` pulls native-tls (OpenSSL) into the Linux container build; rustls matches
+# sqlx's `runtime-tokio-rustls` and is already in the graph. `stream` gives the bounded
+# response-body read (the 2 MiB cap in `metadata::fetch_document`).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 # `http-listener` gives the /metrics HTTP endpoint; `push-gateway` (a default feature) is
 # turned off because it drags in aws-lc-rs, which needs cmake+nasm to build on Windows.
 metrics = "0.24"

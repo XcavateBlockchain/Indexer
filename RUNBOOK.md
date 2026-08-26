@@ -206,6 +206,44 @@ The pre-migration stack is preserved, inert, specifically for this — see
 in CI-adjacent testing — Task 7's exit verification) so you can sanity-check the rollback
 file itself before an actual incident, without starting it.
 
+## Property metadata is missing, stale, or not updating
+
+`marketplace_property_asset.metadata_uri` (the redeploy, migration 0012) points at an
+off-chain JSON document. The indexer's background fetcher (`ADR-27`,
+`crates/indexer/src/metadata.rs`) downloads and decomposes it into the derived table
+`marketplace_property_metadata` (migration 0013) — one row per asset PDA, the document
+stored verbatim in `raw` plus flattened typed columns. It is deliberately NOT part of the
+account pipeline: a dead or slow object-storage URI degrades to a lagging, retried-and-
+logged row, never to a stalled ingest.
+
+**It is a point-in-time snapshot.** A fetch happens when an asset has no row, its stored
+row points at a different URI (the on-chain `metadata_uri` changed), or its last attempt
+failed past its backoff deadline. Editing the document *under an unchanged URI* does NOT
+trigger a re-fetch — `fetched_at` is the provenance of what is stored. If you need a fresh
+snapshot of an unchanged URI, re-run the one-shot below (it re-fetches the whole work set)
+or, to force one specific asset, `UPDATE marketplace_property_metadata SET last_error =
+'manual re-fetch', next_attempt_at = now() WHERE pubkey = <asset PDA bytes>`.
+
+**Fetch by hand** (one cycle — the same job the loop does each interval; idempotent, no
+RPC endpoint or API key, only `DATABASE_URL` + outbound HTTPS):
+
+```bash
+docker compose exec indexer indexer fetch-metadata
+# or, bare cargo: DATABASE_URL=... ./target/debug/indexer fetch-metadata
+```
+
+**Why a row says `last_error` / is backing off:** read `last_error` (the fetcher's own
+message: HTTP status, timeout, the SSRF guard rejecting a non-global IP literal, or the
+body not being a JSON object) and `attempts`/`next_attempt_at` (30 s doubling, 1 h cap).
+A rising `property_metadata_fetched_total{result="failure"}` with a non-zero
+`property_metadata_pending` gauge means the fetcher is losing to the network or a bad URI
+— the per-asset reason is in `last_error`. Poll interval is `METADATA_FETCH_INTERVAL`
+(default 30 s; the loop only runs when the `marketplace` program is in `PROGRAMS`).
+
+**Devnet volume wipe:** dropping `pgdata` wipes `marketplace_property_metadata` with
+everything else; the live fetcher (or `indexer fetch-metadata`) refills it from the live
+URIs — no other step is needed.
+
 ## Alert list
 
 Defined in [`monitoring/alerts.yml`](monitoring/alerts.yml), rules only — no Alertmanager, so

@@ -1,10 +1,11 @@
 //! The indexer binary.
 //!
 //! ```text
-//! indexer run          # live gRPC stream + snapshot/backfill on startup + reconciliation
-//! indexer snapshot     # one-shot getProgramAccounts state snapshot
-//! indexer backfill     # resumable history walk down to the floor slot
-//! indexer smoke-grpc   # connectivity/auth/filter check against the Yellowstone endpoint
+//! indexer run            # live gRPC stream + snapshot/backfill on startup + reconciliation
+//! indexer snapshot       # one-shot getProgramAccounts state snapshot
+//! indexer backfill       # resumable history walk down to the floor slot
+//! indexer smoke-grpc     # connectivity/auth/filter check against the Yellowstone endpoint
+//! indexer fetch-metadata # one cycle of the off-chain property-metadata fetch (ADR-27)
 //! ```
 //!
 //! `snapshot` and `backfill` are subcommands precisely so they can be run by hand against a
@@ -28,6 +29,7 @@ use indexer::batcher;
 use indexer::block_time::BlockTimeResolver;
 use indexer::config::{redact_key, redact_url_password, Config};
 use indexer::db;
+use indexer::metadata;
 use indexer::metrics::PrometheusMetrics;
 use indexer::pipeline::{self, PipeDeps};
 use indexer::programs::ProgramSpec;
@@ -107,6 +109,12 @@ enum Command {
         #[arg(long)]
         metrics: bool,
     },
+    /// Run one cycle of the off-chain property-metadata fetch (ADR-27): every open
+    /// `marketplace_property_asset` whose `metadata_uri` has no stored (or still-backing-off)
+    /// `marketplace_property_metadata` row is fetched, decomposed, and upserted. Idempotent;
+    /// safe to re-run. No RPC endpoint or API key is needed -- only `DATABASE_URL` and
+    /// outbound HTTPS.
+    FetchMetadata,
 }
 
 #[tokio::main]
@@ -142,6 +150,7 @@ async fn main() -> Result<()> {
             .await
         }
         Command::Snapshot { program, metrics } => run_snapshot(program, metrics).await,
+        Command::FetchMetadata => run_fetch_metadata().await,
     }
 }
 
@@ -359,6 +368,20 @@ async fn run_live() -> Result<()> {
         })
     };
 
+    // The off-chain property-metadata fetcher (ADR-27): its work set is
+    // `marketplace_property_asset.metadata_uri`, so it only has work when the marketplace
+    // program is configured; with a subset `PROGRAMS` it would just poll an empty table.
+    let metadata_fetcher = if cfg.programs.iter().any(|p| p.name == "marketplace") {
+        let pool = started.pool.clone();
+        let interval = cfg.metadata_fetch_interval;
+        let shutdown = shutdown.clone();
+        Some(tokio::spawn(async move {
+            metadata::supervise(&pool, interval, shutdown).await
+        }))
+    } else {
+        None
+    };
+
     let mut backoff = RECONNECT_BACKOFF_MIN;
     while !shutdown.is_cancelled() {
         // Child token so cancelling the process cancels the datasource, but a datasource
@@ -438,6 +461,9 @@ async fn run_live() -> Result<()> {
     shutdown.cancel();
     supervisor.await.ok();
     jobs.await.ok();
+    if let Some(fetcher) = metadata_fetcher {
+        fetcher.await.ok();
+    }
 
     // Dropping the last Batcher closes the channel, which makes the flusher commit its final
     // partial batch and exit.
@@ -703,6 +729,28 @@ async fn run_snapshot(program_filter: Option<String>, serve_metrics: bool) -> Re
             }
         );
     }
+    Ok(())
+}
+
+/// One cycle of the off-chain property-metadata fetch (ADR-27), run by hand: the same job
+/// the live fetcher does each interval, as a one-shot -- like `snapshot` and `backfill`, it
+/// works against a production `DATABASE_URL` without redeploying, is idempotent, and needs
+/// no RPC endpoint or API key (only outbound HTTPS to the `metadata_uri`s).
+async fn run_fetch_metadata() -> Result<()> {
+    let started = start().await?;
+
+    let shutdown = CancellationToken::new();
+    spawn_ctrl_c_watcher(shutdown.clone());
+
+    let client = metadata::build_client();
+    let summary = metadata::cycle(&started.pool, &client, &shutdown)
+        .await
+        .context("the metadata fetch cycle failed")?;
+
+    println!(
+        "fetch-metadata complete: {} attempted, {} fetched, {} failed (backed off)",
+        summary.attempted, summary.succeeded, summary.failed
+    );
     Ok(())
 }
 

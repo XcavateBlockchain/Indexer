@@ -58,6 +58,16 @@ pub const LAST_CONTIGUOUS_SLOT: &str = "last_contiguous_slot";
 /// generated from the pre-upgrade IDL: the ProgramUpgradeDetected alert fires on it; the
 /// `program_upgrades` table is the durable record when the alert window is missed.
 pub const PROGRAM_UPGRADES_DETECTED_TOTAL: &str = "program_upgrades_detected_total";
+/// Counter: off-chain property-metadata fetch attempts by outcome (ADR-27), labelled
+/// `result` = `success` / `failure`. A rising `failure` series is the object-storage or
+/// URL-shape problem surfacing early; the durable per-asset state is `last_error` in
+/// `marketplace_property_metadata`.
+pub const PROPERTY_METADATA_FETCH_TOTAL: &str = "property_metadata_fetched_total";
+/// Gauge: the property-metadata work-set size after the last fetch cycle (ADR-27): open
+/// `PropertyAsset`s whose metadata is missing, stale, or a failure past its backoff. 0 =
+/// every asset's metadata is current; a persistently non-zero value means the fetcher is
+/// losing to the network (or a bad URI) -- the per-asset reason is `last_error`.
+pub const PROPERTY_METADATA_PENDING: &str = "property_metadata_pending";
 
 /// Installs the global recorder and starts the `GET /metrics` listener on `addr`.
 ///
@@ -126,6 +136,14 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         PROGRAM_UPGRADES_DETECTED_TOTAL,
         "Newly-recorded BPFLoaderUpgradeable upgrades of tracked programs (first observations only)"
     );
+    metrics::describe_counter!(
+        PROPERTY_METADATA_FETCH_TOTAL,
+        "Off-chain property-metadata fetch attempts by outcome (ADR-27)"
+    );
+    metrics::describe_gauge!(
+        PROPERTY_METADATA_PENDING,
+        "Property-metadata work-set size after the last fetch cycle: assets awaiting a (re)fetch"
+    );
 
     // Register every counter (and every label value it can take) at zero. Without this the
     // series simply does not exist until the first occurrence, and a Prometheus rule like
@@ -140,6 +158,12 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         }
         metrics::counter!(PROGRAM_UPGRADES_DETECTED_TOTAL, "program" => program.name).increment(0);
     }
+    for result in ["success", "failure"] {
+        metrics::counter!(PROPERTY_METADATA_FETCH_TOTAL, "result" => result).increment(0);
+    }
+    // PROPERTY_METADATA_PENDING is deliberately not pre-registered: an absent series reads as
+    // "this process has not run a fetch cycle yet" (same convention as the slot gauges),
+    // while 0 would be indistinguishable from "caught up" only after the first cycle anyway.
     for source in ["stream", "cache", "rpc", "rpc_fallback"] {
         metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(0);
     }
@@ -251,4 +275,15 @@ pub fn set_last_contiguous_slot(program: &'static str, slot: u64) {
 /// observations only, called by the batcher strictly after the row's commit).
 pub fn inc_program_upgrade_detected(program: &'static str) {
     metrics::counter!(PROGRAM_UPGRADES_DETECTED_TOTAL, "program" => program).increment(1);
+}
+
+/// One off-chain property-metadata fetch attempt (ADR-27). `result` is `success` or
+/// `failure` (low-cardinality label -- never a URI or an error message).
+pub fn inc_property_metadata_fetch(result: &'static str) {
+    metrics::counter!(PROPERTY_METADATA_FETCH_TOTAL, "result" => result).increment(1);
+}
+
+/// The property-metadata work-set size after one fetch cycle (ADR-27).
+pub fn set_property_metadata_pending(n: i64) {
+    metrics::gauge!(PROPERTY_METADATA_PENDING).set(n as f64);
 }

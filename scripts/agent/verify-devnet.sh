@@ -16,7 +16,10 @@
 #   * each program's config PDA (addresses.json ground truth) landed in its state table;
 #   * program_upgrades holds each program's seeded deploy boundary, and any 'chain' rows
 #     are surfaced for the operator to read;
-#   * program_instructions is non-empty for every program.
+#   * program_instructions is non-empty for every program;
+#   * off-chain property metadata documents are fetched (ADR-27): every live asset with a
+#     metadata_uri has at least one fetched document (>= 1, since object storage may be
+#     down); pending/failing rows are surfaced as a NOTE.
 #
 # Needs: docker, cargo, jq. Uses only the public devnet RPC (no ALCHEMY_API_KEY). The
 # throwaway Postgres container is created on VERIFY_PG_PORT (default 54331 -- deliberately
@@ -67,6 +70,10 @@ echo "== backfill =="
 DATABASE_URL="$DB_URL" cargo run --quiet -p indexer -- backfill \
     || err "indexer backfill exited non-zero"
 
+echo "== fetch-metadata (off-chain property documents, ADR-27) =="
+DATABASE_URL="$DB_URL" cargo run --quiet -p indexer -- fetch-metadata \
+    || err "indexer fetch-metadata exited non-zero"
+
 echo "== assertions =="
 programs_total="$(jq -r '.programs | length' addresses.json)"
 
@@ -91,6 +98,24 @@ print(n.to_bytes(32,'big').hex())")"
     found="$(psql_c "SELECT count(*) FROM ${config_table[$key]} WHERE pubkey = '\\x$hex'")"
     [ "$found" = "1" ] || err "$key config PDA $pda missing from ${config_table[$key]}"
 done
+
+# Every live asset with a non-empty metadata_uri must have a fetched document (ADR-27).
+# Object storage may legitimately be down, so this is a >= 1 assertion, not an exact
+# count; pending/failing rows are surfaced as a NOTE for the operator.
+assets_with_uri="$(psql_c "SELECT count(*) FROM marketplace_property_asset WHERE closed_at_slot IS NULL AND metadata_uri <> ''")"
+if [ "$assets_with_uri" != "0" ]; then
+    fetched="$(psql_c "SELECT count(*) FROM marketplace_property_metadata WHERE fetched_at IS NOT NULL")"
+    [ "$fetched" -ge 1 ] || err "$assets_with_uri live assets have a metadata_uri but no fetched documents"
+    pending="$(psql_c "SELECT count(*) FROM marketplace_property_metadata WHERE fetched_at IS NULL")"
+    failures="$(psql_c "SELECT count(*) FROM marketplace_property_metadata WHERE last_error IS NOT NULL")"
+    echo "NOTE: property metadata: $assets_with_uri live assets with URIs, $fetched fetched, $pending pending, $failures failing"
+    if [ "$failures" != "0" ]; then
+        echo "      (object storage may legitimately be down -- not a verify failure; see"
+        echo "      RUNBOOK.md 'Property metadata is missing, stale, or not updating')"
+    fi
+else
+    echo "NOTE: no live assets with a metadata_uri on devnet -- the fetch step was a no-op"
+fi
 
 # Every program produced instruction history.
 empty="$(psql_c "SELECT count(*) FROM (

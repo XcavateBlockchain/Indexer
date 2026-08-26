@@ -1404,3 +1404,251 @@ async fn upgrade_timelines_are_per_program(pool: PgPool) -> sqlx::Result<()> {
     assert_eq!(upgrades_for(&pool, other).await?.len(), 1);
     Ok(())
 }
+
+// ============================================================================================
+// Derived property metadata (migrations/0013, ADR-27): NOT slot-guarded (the fetcher is the
+// only writer and its latest fetch wins), a failure records backoff without erasing the
+// last successful snapshot, and the work-set query lists EXACTLY the assets that need a
+// (re)fetch -- the retry gate that keeps dead URIs from hot-looping.
+// ============================================================================================
+
+use super::marketplace::{upsert_property_asset, PropertyAssetRow};
+use super::property_metadata::{
+    count_pending, pending_assets, record_failure, upsert_success, PropertyMetadataRow,
+};
+
+fn property_asset(
+    pubkey: Vec<u8>,
+    slot: i64,
+    asset_id: i64,
+    metadata_uri: &str,
+) -> PropertyAssetRow {
+    PropertyAssetRow {
+        pubkey,
+        slot,
+        lamports: 1_000,
+        asset_id,
+        name: "A property".to_string(),
+        metadata_uri: metadata_uri.to_string(),
+        share_mint: pk(9),
+        region_id: 1,
+        location: "M11AE".as_bytes().to_vec(),
+        share_amount: 100,
+        spv_created: true,
+        finalized: false,
+        holder_count: 3,
+        bump: 255,
+    }
+}
+
+fn metadata_row(pubkey: Vec<u8>, asset_id: i64, metadata_uri: &str) -> PropertyMetadataRow {
+    PropertyMetadataRow {
+        pubkey,
+        asset_id,
+        metadata_uri: metadata_uri.to_string(),
+        fetched_at: bt(1),
+        raw: serde_json::json!({"propertyId": "prp_1", "status": "verified"}),
+        property_id: Some("prp_1".to_string()),
+        property_name: None,
+        property_type: None,
+        status: Some("verified".to_string()),
+        tenure: None,
+        property_description: None,
+        planning_code: None,
+        building_control_code: None,
+        user_pubkey: None,
+        company_id: None,
+        company_name: None,
+        company_logo: None,
+        company_wallet_address: None,
+        created_at: None,
+        updated_at: None,
+        address_street: None,
+        address_town_city: None,
+        address_flat_or_unit: None,
+        address_post_code: None,
+        address_local_authority: None,
+        address_region: None,
+        address_location: None,
+        area: None,
+        quality: None,
+        outdoor_space: None,
+        number_of_bedrooms: None,
+        number_of_bathrooms: None,
+        construction_date: None,
+        off_street_parking: None,
+        property_price: None,
+        number_of_shares: None,
+        share_price: None,
+        estimated_rental_income: None,
+        annual_service_charge: None,
+        stamp_duty_tax: None,
+        stamp_duty_paid: None,
+        annual_service_charge_paid: None,
+        floor_plan: None,
+        map_url: None,
+        sales_agreement: None,
+        other_documents: None,
+        property_images: None,
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_metadata_refetch_overwrites_every_column(pool: PgPool) -> sqlx::Result<()> {
+    // The `DO UPDATE SET` names EVERY column (the fetcher's latest fetch wins): a re-fetch
+    // must overwrite stale content, and an omitted column would silently keep the previous
+    // document's value.
+    let uri = "https://example.com/prop1.json";
+    let pubkey = pk(1);
+    upsert_property_asset(&pool, &property_asset(pubkey.clone(), 100, 1, uri)).await?;
+    upsert_success(&pool, &metadata_row(pubkey.clone(), 1, uri)).await?;
+
+    let mut refetched = metadata_row(pubkey.clone(), 1, uri);
+    refetched.status = None; // the new document dropped the field
+    refetched.property_name = Some("The Willows".to_string()); // and gained one
+    refetched.fetched_at = bt(2);
+    upsert_success(&pool, &refetched).await?;
+
+    let row = sqlx::query(
+        "SELECT property_name, status, property_id, fetched_at, attempts, next_attempt_at, last_error \
+         FROM marketplace_property_metadata WHERE pubkey = $1",
+    )
+    .bind(&pubkey)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        row.get::<Option<String>, _>("property_name"),
+        Some("The Willows".to_string())
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("status"),
+        None,
+        "a field the new document dropped must not keep its old value"
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("property_id"),
+        Some("prp_1".to_string())
+    );
+    assert_eq!(row.get::<DateTime<Utc>, _>("fetched_at"), bt(2));
+    assert_eq!(row.get::<i32, _>("attempts"), 0);
+    assert_eq!(row.get::<Option<DateTime<Utc>>, _>("next_attempt_at"), None);
+    assert_eq!(row.get::<Option<String>, _>("last_error"), None);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_metadata_failure_records_backoff_and_keeps_the_last_success(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    let uri = "https://example.com/prop2.json";
+    let uri_v2 = "https://example.com/prop2-v2.json";
+    let pubkey = pk(2);
+    upsert_property_asset(&pool, &property_asset(pubkey.clone(), 100, 2, uri)).await?;
+    upsert_success(&pool, &metadata_row(pubkey.clone(), 2, uri)).await?;
+
+    // First failure for the URI: a fresh chain (attempts 1), the backoff window is open,
+    // and the last successful snapshot is untouched.
+    record_failure(&pool, &pubkey, 2, uri, "HTTP 404").await?;
+    let row = sqlx::query(
+        "SELECT attempts, last_error, property_id, status, \
+              next_attempt_at > now() AND next_attempt_at <= now() + interval '2 minutes' \
+              FROM marketplace_property_metadata WHERE pubkey = $1",
+    )
+    .bind(&pubkey)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(row.get::<i32, _>("attempts"), 1);
+    assert_eq!(row.get::<String, _>("last_error"), "HTTP 404");
+    assert_eq!(
+        row.get::<Option<String>, _>("property_id"),
+        Some("prp_1".to_string())
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("status"),
+        Some("verified".to_string())
+    );
+    assert!(
+        row.get::<bool, _>(4),
+        "the 30 s backoff window must be open"
+    );
+
+    // Second failure for the SAME URI: the chain increments.
+    record_failure(&pool, &pubkey, 2, uri, "HTTP 404").await?;
+    let attempts: i32 =
+        sqlx::query_scalar("SELECT attempts FROM marketplace_property_metadata WHERE pubkey = $1")
+            .bind(&pubkey)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(attempts, 2);
+
+    // A failure for a DIFFERENT URI starts a fresh chain (attempts 1) and updates the
+    // tracked URI -- but still never erases the last successful snapshot.
+    record_failure(&pool, &pubkey, 2, uri_v2, "timed out").await?;
+    let row = sqlx::query(
+        "SELECT attempts, metadata_uri, last_error, property_id \
+                     FROM marketplace_property_metadata WHERE pubkey = $1",
+    )
+    .bind(&pubkey)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(row.get::<i32, _>("attempts"), 1);
+    assert_eq!(row.get::<String, _>("metadata_uri"), uri_v2);
+    assert_eq!(row.get::<String, _>("last_error"), "timed out");
+    assert_eq!(
+        row.get::<Option<String>, _>("property_id"),
+        Some("prp_1".to_string())
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_metadata_work_set_lists_exactly_what_needs_a_refetch(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    const U: &str = "https://example.com/prop.json";
+
+    // A: open, URI, no metadata row -> pending.
+    upsert_property_asset(&pool, &property_asset(pk(10), 100, 101, U)).await?;
+    // B: open, a successful snapshot for the same URI -> not pending (fresh).
+    upsert_property_asset(&pool, &property_asset(pk(11), 100, 102, U)).await?;
+    upsert_success(&pool, &metadata_row(pk(11), 102, U)).await?;
+    // C: open, the on-chain URI changed after the stored snapshot -> pending (stale).
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(12), 100, 103, "https://example.com/prop-v2.json"),
+    )
+    .await?;
+    upsert_success(&pool, &metadata_row(pk(12), 103, U)).await?;
+    // D: open, last attempt failed and its backoff has NOT elapsed -> not pending.
+    upsert_property_asset(&pool, &property_asset(pk(13), 100, 104, U)).await?;
+    record_failure(&pool, &pk(13), 104, U, "HTTP 500").await?;
+    // E: open, last attempt failed and its backoff HAS elapsed -> pending (retry).
+    upsert_property_asset(&pool, &property_asset(pk(14), 100, 105, U)).await?;
+    record_failure(&pool, &pk(14), 105, U, "HTTP 500").await?;
+    sqlx::query(
+        "UPDATE marketplace_property_metadata SET next_attempt_at = now() - interval '1 minute' \
+         WHERE pubkey = $1",
+    )
+    .bind(pk(14))
+    .execute(&pool)
+    .await?;
+    // F: closed asset -> not pending (the fetcher never touches closed assets).
+    upsert_property_asset(&pool, &property_asset(pk(15), 100, 106, U)).await?;
+    close_in_table(&pool, StateTable::MarketplacePropertyAsset, &pk(15), 200).await?;
+    // G: open, empty URI -> not pending (nothing to fetch).
+    upsert_property_asset(&pool, &property_asset(pk(16), 100, 107, "")).await?;
+
+    let pending = pending_assets(&pool, 50).await?;
+    let got: Vec<Vec<u8>> = pending.iter().map(|a| a.pubkey.clone()).collect();
+    assert_eq!(
+        got,
+        vec![pk(10), pk(12), pk(14)],
+        "the work set is exactly A (no row), C (stale URI), E (backoff elapsed)"
+    );
+    assert_eq!(
+        count_pending(&pool).await?,
+        3,
+        "the gauge query must agree with the work set"
+    );
+    Ok(())
+}

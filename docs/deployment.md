@@ -153,7 +153,9 @@ docker compose up -d
 History is small (indexing starts at the deploy slot), so a full reindex is quick — see
 [../RUNBOOK.md "Devnet ledger reset"](../RUNBOOK.md#devnet-ledger-reset) for the full
 procedure and what triggers it (that section also spells out what the volume drop takes
-with it).
+with it). The derived property-metadata table (ADR-27) is wiped too and refills itself:
+the live fetcher (or a one-shot `docker compose exec indexer indexer fetch-metadata`)
+re-downloads the documents from the assets' live `metadata_uri`s.
 
 Run this once right after the ADR-26 redeploy change deploys: the new binary indexes the
 new program addresses correctly even against the old volume (`sync_state` keys by program

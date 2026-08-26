@@ -834,3 +834,68 @@ table supersedes §3.4's for the live deployment):
 * `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 32 instructions, 4 snapshots,
   4 deploy boundaries, 0 chain upgrades** — full rebuild from the public devnet RPC against
   the new deployments, zero undecodable accounts.
+
+## Off-chain property metadata fetcher (ADR-27) — 2026-08-25
+
+The marketplace `PropertyAsset` account's `metadata_uri` points at an operator-hosted JSON
+document (property detail: decomposed address, decomposed attributes, finances, image and
+document URLs). ADR-26 indexed only the raw URI. This change downloads each URI and indexes
+the document verbatim plus a flattened, typed projection of it (ADR-27).
+
+### What was built
+
+* **Schema (migration 0013)**: `marketplace_property_metadata` — a derived table keyed by
+  the asset PDA `pubkey`. Deliberately NOT an account-state mirror (no slot/lamports/close
+  columns, absent from the `db::close` roster and the programs.rs table rosters): fetch
+  state (`metadata_uri` = last attempted URI, `fetched_at`, `attempts`, `next_attempt_at`
+  backoff, `last_error`), `raw JSONB` (the document verbatim), and flattened typed columns —
+  `address_*` ×7, flat `attributes` (incl. `number_of_bedrooms BIGINT`,
+  `construction_date DATE`), flat `finances` (incl. `stamp_duty_paid BOOLEAN`),
+  `user_pubkey`/`company_wallet_address BYTEA` (base58 → 32 B), `created_at`/`updated_at
+  TIMESTAMPTZ`, `floor_plan`/`map_url`/`sales_agreement TEXT`,
+  `other_documents`/`property_images JSONB` (URL-string arrays). All content columns
+  nullable; lenient per-field parsing (a field of the wrong type stores NULL, the document
+  still lands in `raw`; only a non-object top level counts as a fetch failure).
+* **Fetcher loop** (`crates/indexer/src/metadata.rs`): background task in `run_live` (spawned
+  only when `marketplace` ∈ `PROGRAMS`); one SQL work-set query per cycle (assets whose URI
+  is unknown, changed, or failed with backoff elapsed), ≤50 per cycle, sequential (object
+  storage is the shared bottleneck), `reqwest` with an SSRF guard (http/https only, private/
+  loopback/link-local ranges rejected). Failures back off in SQL (30 s doubling, 1 h cap,
+  same-URI CASE reset) and never go through the batcher. **Point-in-time snapshot
+  semantics**: a successfully fetched asset re-fetches only when its `metadata_uri`
+  changes — the indexed document is the point-in-time content of the on-chain transaction,
+  not a live feed. Interval: `METADATA_FETCH_INTERVAL` env (default 30 s).
+* **One-shot command**: `indexer fetch-metadata` — a single fetch cycle (bootstrap + ops,
+  like `snapshot`/`backfill`; no API key needed, public devnet RPC only).
+* **API**: GraphQL `propertyMetadata` connection (filter `assetId`, ordered
+  `fetched_at DESC NULLS LAST, pubkey ASC`); nested `address`/`attributes`/`finances`
+  objects resolve only when at least one field is non-null.
+* **Metrics**: `property_metadata_fetched_total{result=success|failure}`,
+  `property_metadata_pending` gauge.
+* **Docs**: RUNBOOK section "Property metadata is missing, stale, or not updating"
+  (incl. the force-re-fetch `UPDATE` and the one-shot command), `docs/deployment.md` note
+  (the derived table refills itself after a reindex from scratch), `.env.example` +
+  compose comment for `METADATA_FETCH_INTERVAL`.
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| Derived rows outlive their asset | `db::close` stamps the asset row, not the metadata row (the table is outside the close roster) — consistent with the snapshot semantics; consumers join on `pubkey` and see closure state on the asset table. |
+| The document format is off-chain contract | The operator's JSON is not on the chain, so field-level leniency is load-bearing: a wrong-typed field must not block the document, which is why parsing is per-field and failures are per-document (only a non-object top level). |
+| Wallets stored as BYTEA | The document's `userId` is a Solana wallet (identical to `companyWalletAddress` in the sample documents); stored 32 B for join parity with every other wallet column, re-encoded base58 at the API. |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean; per-crate `cargo sqlx prepare
+  --check` clean against the migrated 54329 Postgres.
+* `cargo test --workspace --locked`: 171 passed, 0 failed (30 api + 141 indexer, including
+  the new property-metadata SQL tests -- work-set selection, the failure/backoff chain, the
+  last-snapshot-kept guarantee -- and the SSRF-guard cases).
+* `scripts/lint-migrations.sh` OK (0013 is additive-only).
+* `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 41 instructions, 4 snapshots,
+  4 deploy boundaries, 0 chain upgrades** -- full rebuild from the public devnet RPC with
+  zero undecodable accounts; the new fetch step pulled every live property document
+  (4 live assets with URIs, 4 fetched, 0 pending, 0 failing).

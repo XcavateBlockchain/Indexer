@@ -666,6 +666,18 @@ impl QueryRoot {
             .await
     }
 
+    /// Fetched and decomposed off-chain metadata for property assets (ADR-27): the indexer's
+    /// background enricher downloads the JSON document each `metadataUri` points at; one row
+    /// per asset, latest snapshot first.
+    async fn property_metadata(
+        context: &GraphQLContext,
+        asset_id: Option<I64>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::PropertyMetadataConnection> {
+        programs::marketplace::property_metadata(context, asset_id, first, offset).await
+    }
+
     /// Per-token-account reservation totals.
     async fn reservations(
         context: &GraphQLContext,

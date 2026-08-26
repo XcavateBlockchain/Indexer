@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.pubkey, a.asset_id, a.metadata_uri\n        FROM marketplace_property_asset a\n        LEFT JOIN marketplace_property_metadata m ON m.pubkey = a.pubkey\n        WHERE a.closed_at_slot IS NULL\n          AND a.metadata_uri <> ''\n          AND (\n                m.pubkey IS NULL\n             OR m.metadata_uri <> a.metadata_uri\n             OR (m.last_error IS NOT NULL\n                 AND (m.next_attempt_at IS NULL OR m.next_attempt_at <= now()))\n          )\n        ORDER BY a.pubkey ASC\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "metadata_uri",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4d2f2b1a00b890b728882e8bfb423492ad50761636e43356b4e31b0d00fa5503"
+}
