@@ -218,16 +218,22 @@ pub struct Batcher {
 impl Batcher {
     /// Pushes one op, waiting if the channel is full (this is the backpressure path).
     /// Errors only once the flusher has shut down and the receiver is gone.
-    pub async fn push(&self, op: WriteOp) -> Result<(), mpsc::error::SendError<WriteOp>> {
-        self.tx.send(op).await
+    pub async fn push(&self, op: WriteOp) -> Result<(), mpsc::error::SendError<()>> {
+        self.tx
+            .send(op)
+            .await
+            .map_err(|_| mpsc::error::SendError(()))
     }
 
     pub async fn push_many(
         &self,
         ops: impl IntoIterator<Item = WriteOp>,
-    ) -> Result<(), mpsc::error::SendError<WriteOp>> {
+    ) -> Result<(), mpsc::error::SendError<()>> {
         for op in ops {
-            self.tx.send(op).await?;
+            self.tx
+                .send(op)
+                .await
+                .map_err(|_| mpsc::error::SendError(()))?;
         }
         Ok(())
     }
