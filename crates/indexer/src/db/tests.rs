@@ -1652,3 +1652,130 @@ async fn the_metadata_work_set_lists_exactly_what_needs_a_refetch(
     );
     Ok(())
 }
+
+// --- webhook events (ADR-28) ------------------------------------------------------------------
+
+// `count_pending` / `record_failure` collide with the property_metadata imports above; the
+// aliases keep the two work-set domains readable side by side.
+use super::webhooks::{
+    count_pending as count_webhook_pending, mark_delivered, pending_events, record_event,
+    record_failure as record_webhook_failure,
+};
+
+/// `record_event` is idempotent under re-walks (a backfill replays the same
+/// `init_property_assets`), and a fresh event is immediately in the delivery work set.
+#[sqlx::test(migrations = "../../migrations")]
+async fn webhook_record_is_idempotent_and_immediately_pending(pool: PgPool) -> sqlx::Result<()> {
+    let payload = &serde_json::json!({ "event": "property_asset_registered" });
+    record_event(
+        &pool,
+        "property_asset_registered:AAA",
+        "property_asset_registered",
+        payload,
+        100,
+        "sig",
+        bt(100),
+    )
+    .await?;
+
+    // The same event seen again (a backfill re-walk) must not re-record.
+    let again = record_event(
+        &pool,
+        "property_asset_registered:AAA",
+        "property_asset_registered",
+        payload,
+        100,
+        "sig",
+        bt(100),
+    )
+    .await?;
+    assert_eq!(again.rows_affected(), 0);
+
+    let pending = pending_events(&pool, 10).await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].event_id, "property_asset_registered:AAA");
+    assert_eq!(pending[0].payload["event"], "property_asset_registered");
+    assert_eq!(count_webhook_pending(&pool).await?, 1);
+    Ok(())
+}
+
+/// A failure backs the event off (30 s, doubling per consecutive failure) and hides it from
+/// the work set until the deadline; delivery is terminal with the retry state cleared; and a
+/// re-recorded event is never re-announced (at-most-once).
+#[sqlx::test(migrations = "../../migrations")]
+async fn webhook_failure_backoff_and_delivery(pool: PgPool) -> sqlx::Result<()> {
+    let payload = &serde_json::json!({ "event": "property_asset_registered" });
+    record_event(
+        &pool,
+        "property_asset_registered:BBB",
+        "property_asset_registered",
+        payload,
+        100,
+        "sig",
+        bt(100),
+    )
+    .await?;
+
+    // First failure: attempts 0 -> 1, 30 s backoff -- out of the work set for now.
+    record_webhook_failure(&pool, "property_asset_registered:BBB", "connection refused").await?;
+    assert!(
+        pending_events(&pool, 10).await?.is_empty(),
+        "in backoff after a failure"
+    );
+    assert_eq!(count_webhook_pending(&pool).await?, 0);
+    let row = sqlx::query(
+        r#"SELECT attempts, last_error,
+               (next_attempt_at > now() + interval '20 seconds'
+                AND next_attempt_at < now() + interval '40 seconds') AS backoff_30s
+           FROM webhook_events WHERE event_id = $1"#,
+    )
+    .bind("property_asset_registered:BBB")
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(row.get::<i32, _>("attempts"), 1);
+    assert_eq!(row.get::<String, _>("last_error"), "connection refused");
+    assert!(row.get::<bool, _>("backoff_30s"));
+
+    // Second failure: the backoff doubles (60 s) -- distinguishable from 30 s past 45 s.
+    record_webhook_failure(&pool, "property_asset_registered:BBB", "connection refused").await?;
+    let row = sqlx::query(
+        r#"SELECT attempts,
+               (next_attempt_at > now() + interval '45 seconds') AS backoff_60s
+           FROM webhook_events WHERE event_id = $1"#,
+    )
+    .bind("property_asset_registered:BBB")
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(row.get::<i32, _>("attempts"), 2);
+    assert!(row.get::<bool, _>("backoff_60s"));
+
+    // Delivery: terminal state with the retry columns cleared.
+    mark_delivered(&pool, "property_asset_registered:BBB").await?;
+    let row = sqlx::query(
+        r#"SELECT delivered_at IS NOT NULL AS delivered, attempts,
+               next_attempt_at IS NULL AS no_backoff, last_error IS NULL AS no_error
+           FROM webhook_events WHERE event_id = $1"#,
+    )
+    .bind("property_asset_registered:BBB")
+    .fetch_one(&pool)
+    .await?;
+    assert!(row.get::<bool, _>("delivered"));
+    assert_eq!(row.get::<i32, _>("attempts"), 0);
+    assert!(row.get::<bool, _>("no_backoff"));
+    assert!(row.get::<bool, _>("no_error"));
+
+    // A re-record after delivery stays a no-op: a delivered asset is never re-announced.
+    let again = record_event(
+        &pool,
+        "property_asset_registered:BBB",
+        "property_asset_registered",
+        payload,
+        100,
+        "sig",
+        bt(100),
+    )
+    .await?;
+    assert_eq!(again.rows_affected(), 0);
+    assert!(pending_events(&pool, 10).await?.is_empty());
+    Ok(())
+}

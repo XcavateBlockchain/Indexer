@@ -68,6 +68,16 @@ pub const PROPERTY_METADATA_FETCH_TOTAL: &str = "property_metadata_fetched_total
 /// every asset's metadata is current; a persistently non-zero value means the fetcher is
 /// losing to the network (or a bad URI) -- the per-asset reason is `last_error`.
 pub const PROPERTY_METADATA_PENDING: &str = "property_metadata_pending";
+/// Counter: outbound webhook deliveries by outcome (ADR-28), labelled `result` =
+/// `success` / `failure`. A rising `failure` series (with `webhooks_pending` climbing) is the
+/// endpoint-or-network problem surfacing early; the durable per-event state is `last_error`
+/// in `webhook_events`.
+pub const WEBHOOKS_DELIVERED_TOTAL: &str = "webhooks_delivered_total";
+/// Gauge: the webhook delivery work-set size after the last delivery cycle (ADR-28): events
+/// recorded but not yet delivered. 0 = every recorded event has been delivered; a
+/// persistently non-zero value means the loop is losing to the endpoint (or the network) --
+/// the per-event reason is `last_error` in `webhook_events`.
+pub const WEBHOOKS_PENDING: &str = "webhooks_pending";
 
 /// Installs the global recorder and starts the `GET /metrics` listener on `addr`.
 ///
@@ -144,6 +154,14 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         PROPERTY_METADATA_PENDING,
         "Property-metadata work-set size after the last fetch cycle: assets awaiting a (re)fetch"
     );
+    metrics::describe_counter!(
+        WEBHOOKS_DELIVERED_TOTAL,
+        "Outbound webhook deliveries by outcome (ADR-28)"
+    );
+    metrics::describe_gauge!(
+        WEBHOOKS_PENDING,
+        "Webhook delivery work-set size after the last cycle: events recorded but not yet delivered"
+    );
 
     // Register every counter (and every label value it can take) at zero. Without this the
     // series simply does not exist until the first occurrence, and a Prometheus rule like
@@ -160,7 +178,12 @@ pub fn install(addr: SocketAddr) -> Result<()> {
     }
     for result in ["success", "failure"] {
         metrics::counter!(PROPERTY_METADATA_FETCH_TOTAL, "result" => result).increment(0);
+        metrics::counter!(WEBHOOKS_DELIVERED_TOTAL, "result" => result).increment(0);
     }
+    // WEBHOOKS_PENDING is deliberately not pre-registered (same convention as the slot gauges
+    // and property_metadata_pending): an absent series reads as "this process has not run a
+    // delivery cycle yet" (which is exactly the case when WEBHOOK_URL is unset), while 0
+    // would be indistinguishable from "caught up".
     // PROPERTY_METADATA_PENDING is deliberately not pre-registered: an absent series reads as
     // "this process has not run a fetch cycle yet" (same convention as the slot gauges),
     // while 0 would be indistinguishable from "caught up" only after the first cycle anyway.
@@ -286,4 +309,15 @@ pub fn inc_property_metadata_fetch(result: &'static str) {
 /// The property-metadata work-set size after one fetch cycle (ADR-27).
 pub fn set_property_metadata_pending(n: i64) {
     metrics::gauge!(PROPERTY_METADATA_PENDING).set(n as f64);
+}
+
+/// One outbound webhook delivery attempt (ADR-28). `result` is `success` or `failure`
+/// (low-cardinality label -- never a URL, an event id, or an error message).
+pub fn inc_webhook_delivery(result: &'static str) {
+    metrics::counter!(WEBHOOKS_DELIVERED_TOTAL, "result" => result).increment(1);
+}
+
+/// The webhook delivery work-set size after one delivery cycle (ADR-28).
+pub fn set_webhooks_pending(n: i64) {
+    metrics::gauge!(WEBHOOKS_PENDING).set(n as f64);
 }

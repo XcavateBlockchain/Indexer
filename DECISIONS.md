@@ -693,3 +693,61 @@ wipes the table with the rest of the volume. DNS-name SSRF (a hostname resolving
 private IP) is a documented, accepted limitation on devnet, where the URIs come from the
 protocol team's own deployments. Mainnet promotion (agentic-maintenance §8) inherits the
 design unchanged.
+
+## ADR-28: Property-asset registration fires an outbound webhook through a durable, retrying queue
+
+**Context.** A consumer of the index wants to know the moment a new property asset is
+registered on-chain — when the marketplace `init_property_assets` instruction creates the
+`PropertyAsset` PDA (seeded `["property", listing_id]`): that is the first point at which
+the asset's `name`, `metadata_uri`, and share mint all exist together (the earlier
+`list_property` only opens the listing, before the asset is named). The notification
+target is an operator HTTP endpoint configured per deployment. The obvious design — a
+POST inside the batched commit — was rejected for the same reason ADR-27 rejected inline
+fetching: a network call on the write path would couple ingestion of all four programs to
+the availability of a third party, and the batcher's forever-retry on a deterministic
+failure would stall the entire pipeline on one dead endpoint. Nor can delivery be
+fire-and-forget from the live stream: backfill and reconciliation deliberately re-walk
+old ranges (ADR-15), re-emitting the same instruction, and a process restart loses any
+in-memory state — so the record must be durable and idempotent, and delivery a separate,
+restartable loop.
+
+**Decision.** Two tiers, mirroring the ADR-24 durable-record and ADR-27 retrying-loop
+split. *Detection* (in the pipeline): the marketplace mapper emits exactly one
+`WebhookEvent` for `init_property_assets` (and no other instruction) — `event_type`
+`property_asset_registered`, `event_id`
+`property_asset_registered:<base58 PropertyAsset PDA>` (account index 3; the PDA is the
+dedup key — one asset registers exactly once), and a JSON payload (`event`, `pubkey`,
+`listing_id`, `name`, `metadata_uri`, `share_mint` (account index 4), `slot`,
+`tx_signature`, `block_time`, `program`). The batcher records it as a `WriteOp` committed
+atomically with the rest of the transaction's rows into the durable table
+`webhook_events` (migration 0014) via `INSERT ... ON CONFLICT (event_id) DO NOTHING` —
+idempotent under backfill re-walks, so each asset is recorded at most once, ever. Like
+`marketplace_property_metadata`, the table is NOT an account-state mirror: no slot guard,
+no soft close, outside the `StateTable` roster. *Delivery* (out of the pipeline): a
+background supervisor (`crates/indexer/src/webhooks.rs`, spawned by `run` next to the
+metadata fetcher; `WEBHOOK_INTERVAL`, default 5 s; spawned only when `WEBHOOK_URL` is set
+**and** `marketplace` ∈ `PROGRAMS`) each cycle drains the work set — undelivered rows
+whose backoff has elapsed, ≤50 per cycle, ordered by `event_id` — POSTing each `payload`
+verbatim to `WEBHOOK_URL` (reusing the metadata fetcher's SSRF-guarded reqwest client);
+a 2xx marks the row delivered, a failure records `last_error`/`attempts` and schedules
+the next attempt with exponential backoff in SQL (30 s, doubling, 1 h cap — the ADR-27
+shape). A dead endpoint degrades to lagging, retried-and-logged rows, never to a stalled
+pipeline or a lost notification. With no `WEBHOOK_URL` the events are still recorded but
+the loop is never spawned and no external call is ever made. Metrics:
+`webhooks_delivered_total{result=success|failure}` (both labels pre-registered at zero)
+and the `webhooks_pending` gauge (work-set size after the last cycle; the series is
+absent while the loop is off); the alert is `WebhookDeliveryFailing` (alerts.yml).
+
+**Consequences.** The contract splits cleanly: *at-most-once recording* (the PDA-keyed
+`ON CONFLICT` guarantees an asset is enqueued at most once, even across backfill
+re-walks) and *at-least-once delivery* (a POST that succeeded on the server but errored
+on the wire is re-POSTed — endpoints dedupe on `pubkey`). A fresh index with the webhook
+enabled (first deploy, devnet volume wipe) records the whole historical
+`init_property_assets` set during the backfill re-walk and then flushes it at ≤50 events
+per 5 s cycle in `event_id` order (base58 PDA order, not slot order) — a one-time backlog
+an operator should expect; steady state is one event per new asset, seconds after the
+confirming slot. A devnet reset wipes `webhook_events` with the rest of the volume
+(ADR-2's drop-and-rebuild contract applies; the chain re-records the table). The cost is
+a second outbound network surface beyond ADR-27's (same client, same guard) and one more
+table outside the close machinery; mainnet promotion (agentic-maintenance §8) inherits
+the design unchanged.

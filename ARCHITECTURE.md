@@ -68,6 +68,12 @@ day-2 operations, see [RUNBOOK.md](RUNBOOK.md).
   program account, so the existing per-program filters and crawls already deliver them --
   recording every version boundary of the four programs into program_upgrades. Detection
   only: reacting to an upgrade is the maintenance loop's job (docs/agentic-maintenance.md).
+
+  One outbound notification rides the batcher (webhooks.rs, ADR-28): when a new property
+  asset is registered (marketplace init_property_assets), the batcher durably records a
+  webhook_events row in the same Postgres transaction; a background loop then POSTs the
+  payload to WEBHOOK_URL with per-event backoff. Detection is in-pipeline; delivery
+  never touches the pipeline.
 ```
 
 Both Rust binaries (`indexer`, `api`) expose Prometheus metrics on their own `/metrics`

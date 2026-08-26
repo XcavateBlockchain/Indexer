@@ -18,6 +18,7 @@
 //! | [`reconcile`] | The periodic supervisor: the only writer of `last_contiguous_slot`. |
 //! | [`metadata`] | The off-chain property-metadata fetcher (ADR-27): the `metadata_uri` -> decomposed `marketplace_property_metadata` loop. |
 //! | [`sync_frontier`] | The contiguity contract governing `sync_state.last_contiguous_slot`. |
+//! | [`webhooks`] | The outbound webhook delivery loop (ADR-28): `webhook_events` -> `POST WEBHOOK_URL`. |
 //! | [`metrics`] | `carbon_core::metrics::Metrics` on Prometheus + the `/metrics` listener. |
 //! | [`grpc_smoke`] | The `smoke-grpc` check, reused as `run`'s startup subscribe gate. |
 //! | [`upgrades`] | BPFLoaderUpgradeable upgrade detection: the version-boundary recorder. |
@@ -46,6 +47,7 @@ pub mod reconcile;
 pub mod snapshot;
 pub mod sync_frontier;
 pub mod upgrades;
+pub mod webhooks;
 
 #[cfg(test)]
 mod integration_tests;

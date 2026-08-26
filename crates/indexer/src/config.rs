@@ -36,6 +36,12 @@ pub const DEFAULT_RECONCILE_INTERVAL_SECS: u64 = 300;
 /// interval costs nothing while the work set is empty.
 pub const DEFAULT_METADATA_FETCH_INTERVAL_SECS: u64 = 30;
 
+/// How often the webhook delivery loop drains its work set (see [`crate::webhooks`], ADR-28).
+/// 5 seconds: a property-asset registration should reach the endpoint within a few seconds;
+/// the work-set query is one indexed Postgres read and the loop is bounded and per-event
+/// backed off, so the interval costs nothing while nothing is pending.
+pub const DEFAULT_WEBHOOK_INTERVAL_SECS: u64 = 5;
+
 pub struct Config {
     /// `DATABASE_URL`. Required by every subcommand that writes rows; `smoke-grpc` never
     /// touches Postgres, so it is validated at use (see [`Config::require_database_url`])
@@ -60,6 +66,13 @@ pub struct Config {
     /// `METADATA_FETCH_INTERVAL` (seconds), default
     /// [`DEFAULT_METADATA_FETCH_INTERVAL_SECS`].
     pub metadata_fetch_interval: Duration,
+    /// `WEBHOOK_URL`: the endpoint the property-asset-registration webhook POSTs to (ADR-28).
+    /// `None` = the webhook is disabled -- the durable `webhook_events` rows are still
+    /// recorded (the record), but the delivery loop is never spawned and no external call is
+    /// ever made. Never logged (an operator may encode a bearer token in the query string).
+    pub webhook_url: Option<String>,
+    /// `WEBHOOK_INTERVAL` (seconds), default [`DEFAULT_WEBHOOK_INTERVAL_SECS`].
+    pub webhook_interval: Duration,
 }
 
 impl Config {
@@ -132,6 +145,24 @@ impl Config {
             Err(_) => DEFAULT_METADATA_FETCH_INTERVAL_SECS,
         };
 
+        // `WEBHOOK_URL` is optional: `None` (or empty) disables the webhook -- the durable
+        // `webhook_events` rows are still recorded, but the delivery loop is never spawned.
+        let webhook_url = std::env::var("WEBHOOK_URL").ok().filter(|u| !u.is_empty());
+
+        let webhook_interval_secs = match std::env::var("WEBHOOK_INTERVAL") {
+            Ok(s) => s
+                .parse::<u64>()
+                .with_context(|| format!("WEBHOOK_INTERVAL is not a u64 (seconds): {s}"))
+                .and_then(|v| {
+                    if v == 0 {
+                        Err(anyhow!("WEBHOOK_INTERVAL must be greater than 0 seconds"))
+                    } else {
+                        Ok(v)
+                    }
+                })?,
+            Err(_) => DEFAULT_WEBHOOK_INTERVAL_SECS,
+        };
+
         Ok(Self {
             database_url,
             alchemy_api_key,
@@ -146,6 +177,8 @@ impl Config {
             metrics_addr,
             reconcile_interval: Duration::from_secs(reconcile_interval_secs),
             metadata_fetch_interval: Duration::from_secs(metadata_fetch_interval_secs),
+            webhook_url,
+            webhook_interval: Duration::from_secs(webhook_interval_secs),
         })
     }
 
@@ -212,6 +245,10 @@ impl fmt::Debug for Config {
             .field("metrics_addr", &self.metrics_addr)
             .field("reconcile_interval", &self.reconcile_interval)
             .field("metadata_fetch_interval", &self.metadata_fetch_interval)
+            // The webhook URL may carry a bearer token in the query string: like the other
+            // credentials, it is never logged -- only whether it is set.
+            .field("webhook_url", &self.webhook_url.as_ref().map(|_| "<set>"))
+            .field("webhook_interval", &self.webhook_interval)
             .finish()
     }
 }

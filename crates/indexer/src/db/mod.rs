@@ -24,6 +24,7 @@ pub mod property_metadata;
 pub mod regions;
 pub mod sync_state;
 pub mod upgrades;
+pub mod webhooks;
 
 #[cfg(test)]
 mod tests;

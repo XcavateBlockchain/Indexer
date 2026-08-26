@@ -34,6 +34,7 @@ use indexer::metrics::PrometheusMetrics;
 use indexer::pipeline::{self, PipeDeps};
 use indexer::programs::ProgramSpec;
 use indexer::sync_frontier::SyncFrontier;
+use indexer::webhooks;
 use indexer::{reconcile, snapshot};
 use solana_pubkey::Pubkey;
 use tokio_util::sync::CancellationToken;
@@ -382,6 +383,27 @@ async fn run_live() -> Result<()> {
         None
     };
 
+    // The outbound webhook delivery loop (ADR-28): only when `WEBHOOK_URL` is set AND the
+    // marketplace program is configured (the only source of webhook events today). Its work
+    // set is the durable `webhook_events` table, so on startup it drains any backlog (e.g. a
+    // fresh index's backfill) and then delivers each new registration within one interval.
+    // With no `WEBHOOK_URL` the loop is never spawned and no external call is ever made.
+    let webhook_delivery =
+        if cfg.webhook_url.is_some() && cfg.programs.iter().any(|p| p.name == "marketplace") {
+            let pool = started.pool.clone();
+            let url = cfg
+                .webhook_url
+                .clone()
+                .expect("guarded by the is_some() check above");
+            let interval = cfg.webhook_interval;
+            let shutdown = shutdown.clone();
+            Some(tokio::spawn(async move {
+                webhooks::supervise(&pool, url, interval, shutdown).await
+            }))
+        } else {
+            None
+        };
+
     let mut backoff = RECONNECT_BACKOFF_MIN;
     while !shutdown.is_cancelled() {
         // Child token so cancelling the process cancels the datasource, but a datasource
@@ -463,6 +485,9 @@ async fn run_live() -> Result<()> {
     jobs.await.ok();
     if let Some(fetcher) = metadata_fetcher {
         fetcher.await.ok();
+    }
+    if let Some(delivery) = webhook_delivery {
+        delivery.await.ok();
     }
 
     // Dropping the last Batcher closes the channel, which makes the flusher commit its final

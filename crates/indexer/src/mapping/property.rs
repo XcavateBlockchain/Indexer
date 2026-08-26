@@ -215,6 +215,7 @@ pub fn map_instruction(
         instruction,
         action: None,
         closes,
+        webhook_events: vec![],
     }))
 }
 

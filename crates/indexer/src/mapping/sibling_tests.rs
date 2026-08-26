@@ -321,9 +321,10 @@ mod marketplace {
     use crate::mapping::marketplace::map_instruction;
     use carbon_marketplace_decoder::instructions::{
         AcceptOffer, BuyPropertyShares, BuyRelistedShares, CancelOffer, CloseCancelledPosition,
-        CloseCase, CloseDeadListing, CloseShareHolding, DelistShares, MakeOffer,
-        MarketplaceInstruction, RejectOffer, ReleaseReservation, RelistShares, SendPropertyShares,
-        UnregisterLawyer, WithdrawCancelled, WithdrawExpired, WithdrawLegalProcessExpired,
+        CloseCase, CloseDeadListing, CloseShareHolding, DelistShares, InitPropertyAssets,
+        MakeOffer, MarketplaceInstruction, RejectOffer, ReleaseReservation, RelistShares,
+        SendPropertyShares, UnregisterLawyer, WithdrawCancelled, WithdrawExpired,
+        WithdrawLegalProcessExpired,
     };
     use carbon_marketplace_decoder::PROGRAM_ID;
 
@@ -594,6 +595,70 @@ mod marketplace {
             let m = map(data, n);
             assert!(m.closes.is_empty(), "{name}");
             assert_eq!(m.instruction.ix_name, name);
+        }
+    }
+
+    #[test]
+    fn init_property_assets_emits_the_property_asset_webhook_event() {
+        // ADR-28: asset registration is the moment the `PropertyAsset` PDA (account index 3)
+        // gets its name + metadata_uri + share mint (index 4) -- the one instruction that
+        // fires the outbound webhook, deduped by the asset PDA.
+        let m = map(
+            MarketplaceInstruction::InitPropertyAssets(InitPropertyAssets {
+                listing_id: 1,
+                name: "42 Main Street".to_string(),
+                uri: "https://metadata.example/42-main".to_string(),
+            }),
+            11,
+        );
+        assert_eq!(m.instruction.ix_name, "init_property_assets");
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        let property_b58 = bs58::encode(pk(4).to_bytes()).into_string(); // index 3
+        let share_mint_b58 = bs58::encode(pk(5).to_bytes()).into_string(); // index 4
+        assert_eq!(ev.event_type, "property_asset_registered");
+        assert_eq!(
+            ev.event_id,
+            format!("property_asset_registered:{property_b58}")
+        );
+        assert_eq!(ev.slot, SLOT as i64);
+        assert_eq!(ev.tx_signature, sig().to_string());
+        assert_eq!(ev.block_time, block_time());
+        let p = &ev.payload;
+        assert_eq!(p["event"], "property_asset_registered");
+        assert_eq!(p["pubkey"], property_b58);
+        assert_eq!(p["listing_id"], serde_json::json!(1));
+        assert_eq!(p["name"], "42 Main Street");
+        assert_eq!(p["metadata_uri"], "https://metadata.example/42-main");
+        assert_eq!(p["share_mint"], share_mint_b58);
+        assert_eq!(p["slot"], serde_json::json!(SLOT as i64));
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["block_time"], block_time().to_rfc3339());
+        assert_eq!(p["program"], "marketplace");
+    }
+
+    #[test]
+    fn the_other_marketplace_instructions_emit_no_webhook_events() {
+        // The webhook fires ONLY on asset registration; every other instruction leaves the
+        // vector empty (the other three programs always do).
+        for (name, data, n) in [
+            (
+                "cancel_offer",
+                MarketplaceInstruction::CancelOffer(CancelOffer {}),
+                11,
+            ),
+            (
+                "buy_property_shares",
+                MarketplaceInstruction::BuyPropertyShares(BuyPropertyShares {
+                    listing_id: 1,
+                    amount: 2,
+                    max_total_cost: 100,
+                }),
+                12,
+            ),
+        ] {
+            let m = map(data, n);
+            assert!(m.webhook_events.is_empty(), "{name}");
         }
     }
 }

@@ -240,6 +240,7 @@ pub fn map_instruction(
         instruction,
         action: Some(action),
         closes: f.close.into_iter().collect(),
+        webhook_events: vec![],
     }))
 }
 

@@ -100,7 +100,7 @@ impl<M: ProgramMapper> Processor for InstructionProcessor<M> {
             }
         };
 
-        let mut ops = Vec::with_capacity(2 + mapped.closes.len());
+        let mut ops = Vec::with_capacity(2 + mapped.closes.len() + mapped.webhook_events.len());
         ops.push(WriteOp::InsertInstruction(mapped.instruction));
         if let Some(action) = mapped.action {
             ops.push(WriteOp::InsertAction(action));
@@ -146,6 +146,20 @@ impl<M: ProgramMapper> Processor for InstructionProcessor<M> {
                     offer_pubkey,
                     slot,
                 },
+            });
+        }
+
+        // ADR-28: durable webhook events (e.g. a new property asset registered). The batcher
+        // commits them idempotently (`ON CONFLICT (event_id) DO NOTHING`); the row IS the
+        // delivery queue that `crate::webhooks` drains, so nothing is fired from the pipe.
+        for event in &mapped.webhook_events {
+            ops.push(WriteOp::RecordWebhookEvent {
+                event_id: event.event_id.clone(),
+                event_type: event.event_type,
+                payload: event.payload.clone(),
+                slot: event.slot,
+                tx_signature: event.tx_signature.clone(),
+                block_time: event.block_time,
             });
         }
 

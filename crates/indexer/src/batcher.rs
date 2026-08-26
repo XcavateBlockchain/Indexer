@@ -22,6 +22,7 @@
 
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -125,6 +126,28 @@ pub enum WriteOp {
         upgrade_slot: i64,
         signature: String,
     },
+    /// A durable webhook event to deliver (ADR-28), emitted by the marketplace mapper for
+    /// `init_property_assets` (a new property asset registered). Committed as
+    /// `INSERT ... ON CONFLICT (event_id) DO NOTHING` -- idempotent, so a backfill re-walk
+    /// re-delivering the same instruction is a no-op and the notification is recorded at most
+    /// once. The row is both the durable "this event happened" record and the delivery queue:
+    /// the background loop ([`crate::webhooks`]) reads the undelivered rows and POSTs each
+    /// `payload` to `WEBHOOK_URL`, stamping the delivery timestamps (at-least-once delivery
+    /// with per-event backoff).
+    RecordWebhookEvent {
+        /// `<event_type>:<base58 subject key>` -- the `webhook_events` primary key.
+        event_id: String,
+        /// Low-cardinality event label (`property_asset_registered`).
+        event_type: &'static str,
+        /// The JSON document the delivery loop POSTs to `WEBHOOK_URL`.
+        payload: serde_json::Value,
+        /// Slot of the transaction that produced the event (provenance).
+        slot: i64,
+        /// base58 signature of that transaction.
+        tx_signature: String,
+        /// The transaction's block time.
+        block_time: DateTime<Utc>,
+    },
 }
 
 /// A `RecordProgramUpgrade` row that `commit_batch` actually inserted (as opposed to one
@@ -157,6 +180,7 @@ impl WriteOp {
             | WriteOp::CloseUnknownAccount { slot, .. }
             | WriteOp::SetBackfillCursor { slot, .. } => *slot,
             WriteOp::RecordProgramUpgrade { upgrade_slot, .. } => *upgrade_slot,
+            WriteOp::RecordWebhookEvent { slot, .. } => *slot,
         }
     }
 
@@ -169,8 +193,10 @@ impl WriteOp {
             | WriteOp::UpsertRegionsAccount(_)
             | WriteOp::UpsertMarketplaceAccount(_)
             | WriteOp::UpsertPropertyAccount(_)
-            // Orders against nothing: program_upgrades shares no rows with any other op kind.
-            | WriteOp::RecordProgramUpgrade { .. } => 0,
+            // Orders against nothing: program_upgrades and webhook_events share no rows with
+            // any other op kind (both are idempotent append-only records).
+            | WriteOp::RecordProgramUpgrade { .. }
+            | WriteOp::RecordWebhookEvent { .. } => 0,
             WriteOp::InsertInstruction(_) => 1,
             WriteOp::InsertAction(_) => 2,
             WriteOp::CloseAccount { .. }
@@ -496,6 +522,27 @@ async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<Vec<NewUpgrade>,
                         signature: signature.clone(),
                     });
                 }
+            }
+            WriteOp::RecordWebhookEvent {
+                event_id,
+                event_type,
+                payload,
+                slot,
+                tx_signature,
+                block_time,
+            } => {
+                // `ON CONFLICT (event_id) DO NOTHING`: a re-walked `init_property_assets` is a
+                // no-op, so the delivery queue never double-records an asset.
+                db::webhooks::record_event(
+                    &mut *tx,
+                    event_id,
+                    event_type,
+                    payload,
+                    *slot,
+                    tx_signature,
+                    *block_time,
+                )
+                .await?;
             }
         }
     }

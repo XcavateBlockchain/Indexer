@@ -42,6 +42,34 @@ pub struct MappedInstruction {
     /// Slot-guarded soft closes implied by this instruction (ruling R11). Usually empty or
     /// one entry; marketplace has instructions that close two PDAs at once.
     pub closes: Vec<PendingClose>,
+    /// Outbound webhook events this instruction records (ADR-28). Usually empty; only
+    /// marketplace's `init_property_assets` emits one (a new property asset registered).
+    /// The batcher commits each as a durable `webhook_events` row
+    /// (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
+    pub webhook_events: Vec<WebhookEvent>,
+}
+
+/// One durable, idempotent webhook notification the mapper wants recorded (ADR-28).
+///
+/// Carries only the on-chain evidence: the delivery loop (which owns the clock and the
+/// network) POSTs [`WebhookEvent::payload`] to `WEBHOOK_URL` and stamps the delivery
+/// timestamps in `webhook_events`. `event_id` is the `ON CONFLICT` key, so a backfill
+/// re-walk re-delivering the same instruction is a no-op and the notification fires at most
+/// once.
+#[derive(Debug, Clone)]
+pub struct WebhookEvent {
+    /// `<event_type>:<base58 subject key>` -- the dedup key (`webhook_events` primary key).
+    pub event_id: String,
+    /// Low-cardinality event label (`property_asset_registered`).
+    pub event_type: &'static str,
+    /// The JSON document the delivery loop POSTs to `WEBHOOK_URL`.
+    pub payload: serde_json::Value,
+    /// Slot of the transaction that produced this event (provenance).
+    pub slot: i64,
+    /// base58 signature of that transaction.
+    pub tx_signature: String,
+    /// The transaction's block time.
+    pub block_time: DateTime<Utc>,
 }
 
 /// A soft close implied by an instruction. The pubkey is taken from the instruction's own

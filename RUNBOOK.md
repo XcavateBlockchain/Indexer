@@ -244,6 +244,80 @@ A rising `property_metadata_fetched_total{result="failure"}` with a non-zero
 everything else; the live fetcher (or `indexer fetch-metadata`) refills it from the live
 URIs — no other step is needed.
 
+## Property-asset registration webhooks: setup and "not firing"
+
+When a new property asset is registered on-chain (the marketplace `init_property_assets`
+instruction creates the `PropertyAsset` PDA — the moment the asset's `name`,
+`metadata_uri`, and share mint all exist), the indexer POSTs one JSON document to
+`WEBHOOK_URL` (ADR-28).
+
+**Enable it.** Set `WEBHOOK_URL` to an http(s) endpoint the indexer can reach from the
+compose network (the operator's own endpoint — the ADR-27 SSRF guard applies:
+http/https only, non-global IP literals rejected). In Docker, add `WEBHOOK_URL=...` to
+`.env` (`docker-compose.yml` passes it through; empty/unset = disabled). Bare cargo:
+export it before starting `indexer run`. Optionally: `WEBHOOK_INTERVAL` (seconds,
+default 5) — the delivery poll interval; the loop costs nothing while nothing is
+pending. **The loop only spawns when `WEBHOOK_URL` is set AND `marketplace` is in
+`PROGRAMS`;** with no URL the durable `webhook_events` rows are still recorded (below)
+but no external call is ever made. `WEBHOOK_URL` is read at startup — restart the
+indexer after changing it.
+
+**How it works.** Detection and delivery are separate (ADR-28): the mapper records one
+durable row in `webhook_events` (migration 0014) per `init_property_assets` —
+`event_id` = `property_asset_registered:<base58 asset PDA>`, so each asset is recorded
+at most once even when backfill re-walks the range — committed atomically with the rest
+of the transaction's rows. A background loop (5 s interval, ≤50 events per cycle)
+drains the work set (undelivered rows whose backoff has elapsed) and POSTs each
+`payload` to `WEBHOOK_URL`. A 2xx marks the row delivered; a failure records
+`last_error` and backs off per event (30 s, doubling, 1 h cap) and retries. A dead
+endpoint degrades to lagging, retried-and-logged rows — never to a stalled ingest,
+never to a lost notification. Delivery is AT LEAST ONCE: a POST that reached the
+endpoint but whose success response was lost is re-POSTed — dedupe on `pubkey` (one
+asset registers exactly once).
+
+**Payload contract** (POSTed verbatim as `application/json`):
+
+    {
+      "event": "property_asset_registered",
+      "pubkey": "<base58 PropertyAsset PDA>",
+      "listing_id": 12,
+      "name": "42 Main Street",
+      "metadata_uri": "https://.../42-main.json",
+      "share_mint": "<base58 share mint>",
+      "slot": 487500123,
+      "tx_signature": "<base58 signature>",
+      "block_time": "2026-08-26T10:12:34+00:00",
+      "program": "marketplace"
+    }
+
+**Not firing / not delivered.** Check, in order:
+
+1. `docker compose logs indexer | grep webhook` — "webhook delivery loop started"
+   (the loop spawned; if absent, `WEBHOOK_URL` is unset or `marketplace` is not in
+   `PROGRAMS`), then the per-event `webhook delivered:` / `webhook delivery failed for
+   ...` lines.
+2. `SELECT event_id, attempts, next_attempt_at, last_error, delivered_at FROM
+   webhook_events ORDER BY created_at DESC LIMIT 20;` — the durable queue. Rows with
+   `delivered_at IS NULL` are pending; `last_error` carries the loop's own message
+   (HTTP status, connect error, timeout, SSRF-guard rejection).
+3. Metrics: `webhooks_delivered_total{result}` (success vs failure) and
+   `webhooks_pending` (work-set size after the last cycle; the series is absent while
+   the loop is off). The `WebhookDeliveryFailing` alert fires when deliveries have
+   been failing over a 2 h window.
+4. Force one specific stuck row to retry immediately (bypasses its backoff):
+   `UPDATE webhook_events SET next_attempt_at = now() WHERE event_id =
+   'property_asset_registered:<PDA>';`
+
+**Backlog on a fresh index.** A fresh database (first deploy, devnet volume wipe) gets
+the backfill re-walk recording every historical `init_property_assets`, and the loop
+then flushes the whole backlog — ≤50 events per 5 s cycle, in `event_id` order (base58
+PDA order, NOT slot order). Expect a burst right after a rebuild; it drains on its
+own.
+
+**Devnet volume wipe.** Dropping `pgdata` wipes `webhook_events` with everything else;
+the rebuild re-records the historical set (see the backlog note above) — no other step
+is needed.
+
 ## Alert list
 
 Defined in [`monitoring/alerts.yml`](monitoring/alerts.yml), rules only — no Alertmanager, so
@@ -259,6 +333,7 @@ nothing pages anyone on its own; check Prometheus's `/alerts` page or Grafana's 
 | `ReconnectStorm` | `grpc_reconnects_total` increased by more than 5 in 15m | Repeated gRPC stream rebuilds — usually Alchemy throttling, a network problem, or an unhealthy upstream. Undercounts brief blips the datasource heals internally (same caveat as `IndexerDown`); treat as a lower bound. |
 | `BackfillStalled` | `(chain_tip_slot - last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0` for 5m | No backfill-walk progress while the indexer is behind — most likely a stuck history walk (a poison signature, or every RPC endpoint failing). Also fires for a stalled *reconciler* long after the initial backfill finished, since the underlying gauge never resumes post-completion — check `backfillComplete` via `/health`/`syncStatus` to tell the two apart (see "Frozen frontier" above). |
 | `ProgramUpgradeDetected` | `program_upgrades_detected_total` increased in 1h | A tracked program's bytecode was upgraded on-chain (`ADR-24`) — the running decoder was generated from the pre-upgrade IDL. First observations only (crawl re-walks can't re-fire it); the durable record is the `program_upgrades` table / `programUpgrades` GraphQL query. Follow "After a program upgrade" above. |
+| `WebhookDeliveryFailing` | `increase(webhooks_delivered_total{result="failure"}[2h]) > 0` | Outbound property-asset webhook deliveries (`ADR-28`) have been failing over a 2 h window — the endpoint behind `WEBHOOK_URL` is rejecting or unreachable. Events are NOT lost: durable `webhook_events` rows retry with per-event backoff (30 s doubling, 1 h cap); the 2 h counter window is derived from that 1 h cap (see the rule's comment in alerts.yml). Per-row reason in `last_error`. See "Property-asset registration webhooks" above. |
 
 ## Secrets / rotation
 

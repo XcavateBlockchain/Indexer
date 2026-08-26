@@ -51,7 +51,7 @@ use solana_pubkey::Pubkey;
 
 use super::{
     account_bytes_at, close_at, instruction_row, ix_context, MappedInstruction, MappingError,
-    PendingClose, ProgramMapper,
+    PendingClose, ProgramMapper, WebhookEvent,
 };
 use crate::batcher::WriteOp;
 use crate::db::close::StateTable;
@@ -288,10 +288,45 @@ pub fn map_instruction(
         _ => vec![],
     };
 
+    // ADR-28: `init_property_assets` is the registration of a property asset -- the moment the
+    // `PropertyAsset` PDA (account index 3, seeded `["property", listing_id]`) gets its name +
+    // metadata_uri + share mint (index 4). Record a durable, idempotent webhook event
+    // (deduped by the asset PDA) that the background loop delivers to `WEBHOOK_URL`.
+    let webhook_events = match &decoded.data {
+        MarketplaceInstruction::InitPropertyAssets(args) => {
+            let property_pubkey = account_bytes_at(accounts, 3, name)?;
+            let share_mint = account_bytes_at(accounts, 4, name)?;
+            let property_b58 = bs58::encode(&property_pubkey).into_string();
+            let share_mint_b58 = bs58::encode(&share_mint).into_string();
+            let tx_signature = ctx.tx_signature.clone();
+            vec![WebhookEvent {
+                event_id: format!("property_asset_registered:{property_b58}"),
+                event_type: "property_asset_registered",
+                payload: serde_json::json!({
+                    "event": "property_asset_registered",
+                    "pubkey": &property_b58,
+                    "listing_id": args.listing_id,
+                    "name": &args.name,
+                    "metadata_uri": &args.uri,
+                    "share_mint": &share_mint_b58,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        _ => vec![],
+    };
+
     Ok(Some(MappedInstruction {
         instruction,
         action: None,
         closes,
+        webhook_events,
     }))
 }
 

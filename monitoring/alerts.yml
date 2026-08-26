@@ -166,3 +166,35 @@ groups:
             backfill_last_processed_slot does not resume in that phase; check
             `syncStatus`/`/health`'s `backfillComplete` field to tell the two cases
             apart.
+
+      # WebhookDeliveryFailing -- counter-based, because the gauge is spiky.
+      #
+      # The naive expression `webhooks_pending > 0 for 30m` does NOT work with the
+      # ADR-28 backoff design: the work set (and thus the gauge) excludes a row while
+      # its backoff runs, and at the 1 h cap a failing event sits in the work set only
+      # for the <=5 s cycle that retries it, then out again for up to an hour -- the
+      # series is near-zero except for brief spikes a scrape may miss. The failure
+      # COUNTER is the stable signal: every failed POST bumps
+      # webhooks_delivered_total{result="failure"} (pre-registered at zero in
+      # metrics.rs's install(), like DecodeFailures' series), and the 1 h backoff cap
+      # guarantees at least one failed attempt -- hence one bump -- inside any 2 h
+      # window while an endpoint stays down. A single transient failure also fires
+      # this (the house stance, cf. DecodeFailures): the alert stays lit until the
+      # failure ages out of the window, and the durable `webhook_events` rows
+      # (last_error / attempts / next_attempt_at) say what actually happened.
+      - alert: WebhookDeliveryFailing
+        expr: increase(webhooks_delivered_total{result="failure"}[2h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound property-asset webhook deliveries have been failing"
+          description: >-
+            webhooks_delivered_total{result="failure"} increased in the last 2
+            hours: the indexer's webhook delivery loop (ADR-28) has been POSTing
+            property-asset-registration payloads to WEBHOOK_URL and the endpoint
+            is failing (non-2xx, connect error, or timeout). Events are NOT lost --
+            they are durable rows in webhook_events that retry with exponential
+            backoff (30 s doubling, 1 h cap) until the endpoint answers 2xx. Check
+            the endpoint and the per-row last_error; see RUNBOOK.md "Property-asset
+            registration webhooks".

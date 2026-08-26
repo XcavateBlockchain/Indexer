@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE webhook_events\n        SET attempts = attempts + 1,\n            next_attempt_at = now() + (\n                LEAST(3600, (30 * power(2, LEAST(attempts, 20))))::bigint\n                * interval '1 second'),\n            last_error = $2\n        WHERE event_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c82776d302877048fb3f7f7e00de8ac80202c58b8c4a1d5ebe378006e28a206"
+}

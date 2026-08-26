@@ -899,3 +899,78 @@ the document verbatim plus a flattened, typed projection of it (ADR-27).
   4 deploy boundaries, 0 chain upgrades** -- full rebuild from the public devnet RPC with
   zero undecodable accounts; the new fetch step pulled every live property document
   (4 live assets with URIs, 4 fetched, 0 pending, 0 failing).
+
+## Property-asset registration webhook (ADR-28) — 2026-08-26
+
+When the marketplace `init_property_assets` instruction registers a new property asset
+(the `PropertyAsset` PDA gets its `name`, `metadata_uri`, and share mint), the indexer
+now POSTs one JSON document to a configurable `WEBHOOK_URL` — detection inside the
+batched pipeline, delivery by a separate retrying background loop (ADR-28).
+
+### What was built
+
+* **Detection (in the pipeline)**: `mapping::marketplace` emits one `WebhookEvent` for
+  `init_property_assets` only — `event_type` `property_asset_registered`, `event_id`
+  `property_asset_registered:<base58 PropertyAsset PDA>` (account index 3; the PDA is
+  the dedup key), payload `event` / `pubkey` / `listing_id` / `name` / `metadata_uri` /
+  `share_mint` (index 4) / `slot` / `tx_signature` / `block_time` / `program`. The other
+  three mappers always emit none. Carried as `WriteOp::RecordWebhookEvent` (phase 0, the
+  instruction's slot) and committed atomically with the rest of the transaction's rows.
+* **Schema (migration 0014)**: `webhook_events` — the durable delivery queue keyed by
+  `event_id` (TEXT PK), with `event_type`, `payload JSONB`, provenance (`slot`,
+  `tx_signature`, `block_time`), delivery state (`created_at`, `attempts`,
+  `next_attempt_at` backoff, `last_error`, `delivered_at`), and a partial index on the
+  undelivered rows. Deliberately NOT an account-state mirror (no slot guard / no soft
+  close, absent from the `db::close` roster and `StateTable`) — the same carve-out as
+  `marketplace_property_metadata` (ADR-27).
+* **Delivery loop** (`crates/indexer/src/webhooks.rs`): background task in `run_live`
+  (spawned only when `WEBHOOK_URL` is set AND `marketplace` ∈ `PROGRAMS`); one SQL
+  work-set query per cycle (undelivered, backoff elapsed; `WEBHOOK_INTERVAL`, default 5
+  s), ≤50 per cycle, sequential, reusing the metadata fetcher's SSRF-guarded reqwest
+  client; a 2xx marks the row delivered, a failure records `last_error` (≤500 chars) +
+  exponential backoff in SQL (30 s doubling, 1 h cap). AT-MOST-ONCE record (`ON
+  CONFLICT (event_id) DO NOTHING` — idempotent under backfill re-walks), AT-LEAST-ONCE
+  delivery (endpoints dedupe on `pubkey`). No URL → no loop, no external call, rows
+  still recorded.
+* **Config**: `WEBHOOK_URL` (optional; empty = disabled; never logged — an operator may
+  encode a bearer token in the query string) and `WEBHOOK_INTERVAL` (seconds, default
+  5, must be > 0). `WEBHOOK_URL` wired through docker-compose; `.env.example` documents
+  both.
+* **Metrics**: `webhooks_delivered_total{result=success|failure}` (both labels
+  pre-registered at zero) and the `webhooks_pending` gauge (work-set size after the last
+  cycle; deliberately not pre-registered — an absent series means the loop never ran).
+  **Alert**: `WebhookDeliveryFailing` (alerts.yml, counter-derived — see the rule's
+  comment for why the gauge-based form does not work with the backoff design).
+* **Docs**: ADR-28 (DECISIONS.md); RUNBOOK section "Property-asset registration
+  webhooks: setup and 'not firing'" (+ alert-list row); ARCHITECTURE.md pipeline note;
+  README env-table rows.
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| Fresh-index backlog | A fresh database records the whole historical `init_property_assets` set during the backfill re-walk; with the webhook enabled the loop flushes it at ≤50 events per 5 s cycle in `event_id` order (base58 PDA order, NOT slot order). A one-time burst after every rebuild-from-empty; the RUNBOOK notes it. |
+| `webhooks_pending` is spiky | The gauge counts the backoff-aware work set, so a failing event at the 1 h cap is in it only for the ≤5 s cycle that retries it. The alert therefore keys on the failure COUNTER over a 2 h window (≥ the 1 h backoff cap) — the derivation is documented in alerts.yml. |
+| No API surface | The webhook is emit-only: no GraphQL query over `webhook_events` (operators read the table directly; the API is a read-only mirror of the chain, and this table is the indexer's own outbox, not chain state). |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean; `cargo sqlx prepare
+  --check -- --lib` clean against the migrated 54329 Postgres (5 new cached queries).
+* `cargo test --workspace --locked`: 179 passed, 0 failed (30 api + 149 indexer,
+  including the new mapping test — `init_property_assets` emits exactly one event with
+  the PDA-keyed id and full payload, every other instruction emits none — the
+  `webhook_events` SQL tests — record idempotency, the 30 s → 60 s backoff chain, the
+  delivered terminal state, no re-announce after delivery — and the `host_of`
+  token-hiding cases).
+* `scripts/lint-migrations.sh` OK (0014 is additive-only).
+* `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 44 instructions, 4 snapshots,
+  4 deploy boundaries, 0 chain upgrades** -- full rebuild from the public devnet RPC with
+  zero undecodable accounts (migration 0014 applied cleanly from zero; the ADR-27 fetch
+  step pulled all 4 live property documents).
+* End-to-end record proof: an `indexer backfill` re-walk of the live devnet history into
+  the :54329 dev test DB recorded exactly 4 `webhook_events` rows -- one per historical
+  `init_property_assets`, `event_id` = `property_asset_registered:<asset PDA>`, all
+  undelivered (no `WEBHOOK_URL` is configured there).
