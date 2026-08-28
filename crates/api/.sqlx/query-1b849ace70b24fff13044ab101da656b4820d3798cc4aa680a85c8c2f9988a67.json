@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, developer, asset_id,\n               share_price, listed_share_amount, sold_share_amount, reserved_share_amount,\n               tax_paid_by_developer, tax_bps, marketplace_fee_bps, investor_fee_bps,\n               max_ownership_bps, listing_expiry, claiming_time, claim_deadline,\n               legal_process_time, lawyer_voting_time, min_voting_quorum_bps, position_count,\n               legal_deadline, deposit, developer_lawyer, developer_lawyer_costs,\n               developer_lawyer_doc_status, developer_lawyer_documents_hash, spv_lawyer,\n               spv_lawyer_costs, spv_lawyer_doc_status, spv_lawyer_documents_hash,\n               second_attempt, developer_engaged, spv_costs_due, spv_costs_payee,\n               collected_fee_quote, collected,\n               spv_election_expiry, spv_election_candidate_count, spv_election_round, status\n        FROM marketplace_listing\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR developer = $2)\n          AND ($3::text IS NULL OR status = $3)\n          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $5 OFFSET $6\n        ",
+  "query": "\n        SELECT l.pubkey, l.slot, l.lamports, l.closed_at_slot, l.listing_id, l.developer,\n               l.asset_id, l.share_price, l.listed_share_amount, l.sold_share_amount,\n               l.reserved_share_amount, l.tax_paid_by_developer, l.tax_bps,\n               l.marketplace_fee_bps, l.investor_fee_bps, l.max_ownership_bps,\n               l.listing_expiry, l.claiming_time, l.claim_deadline, l.legal_process_time,\n               l.lawyer_voting_time, l.min_voting_quorum_bps, l.position_count,\n               l.legal_deadline, l.deposit, l.developer_lawyer, l.developer_lawyer_costs,\n               l.developer_lawyer_doc_status, l.developer_lawyer_documents_hash, l.spv_lawyer,\n               l.spv_lawyer_costs, l.spv_lawyer_doc_status, l.spv_lawyer_documents_hash,\n               l.second_attempt, l.developer_engaged, l.spv_costs_due, l.spv_costs_payee,\n               l.collected_fee_quote, l.collected, l.spv_election_expiry,\n               l.spv_election_candidate_count, l.spv_election_round, l.status,\n               pa.pubkey AS \"pa_pubkey?\", pa.slot AS \"pa_slot?\",\n               pa.lamports AS \"pa_lamports?\",\n               pa.closed_at_slot AS \"pa_closed_at_slot?\",\n               pa.asset_id AS \"pa_asset_id?\",\n               pa.name AS \"pa_name?\",\n               pa.metadata_uri AS \"pa_metadata_uri?\",\n               pa.share_mint AS \"pa_share_mint?\",\n               pa.region_id AS \"pa_region_id?\",\n               pa.location AS \"pa_location?\",\n               pa.share_amount AS \"pa_share_amount?\",\n               pa.spv_created AS \"pa_spv_created?\",\n               pa.finalized AS \"pa_finalized?\",\n               pa.holder_count AS \"pa_holder_count?\"\n        FROM marketplace_listing AS l\n        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id\n        WHERE ($1::bigint IS NULL OR l.listing_id = $1)\n          AND ($2::bytea IS NULL OR l.developer = $2)\n          AND ($3::text IS NULL OR l.status = $3)\n          AND ($4::bool IS NULL OR (l.closed_at_slot IS NULL) = $4)\n        ORDER BY l.slot DESC, l.pubkey ASC\n        LIMIT $5 OFFSET $6\n        ",
   "describe": {
     "columns": [
       {
@@ -217,6 +217,76 @@
         "ordinal": 42,
         "name": "status",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 43,
+        "name": "pa_pubkey?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 44,
+        "name": "pa_slot?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 45,
+        "name": "pa_lamports?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 46,
+        "name": "pa_closed_at_slot?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 47,
+        "name": "pa_asset_id?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 48,
+        "name": "pa_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 49,
+        "name": "pa_metadata_uri?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 50,
+        "name": "pa_share_mint?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 51,
+        "name": "pa_region_id?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 52,
+        "name": "pa_location?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 53,
+        "name": "pa_share_amount?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 54,
+        "name": "pa_spv_created?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 55,
+        "name": "pa_finalized?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 56,
+        "name": "pa_holder_count?",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -272,8 +342,22 @@
       false,
       false,
       false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "d572fa71234cbf2b6dff13da440987f398c09945e7baa24c962de1e97fc966d8"
+  "hash": "1b849ace70b24fff13044ab101da656b4820d3798cc4aa680a85c8c2f9988a67"
 }

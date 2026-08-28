@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use carbon_core::graphql::primitives::I64;
 use chrono::{DateTime, Utc};
-use juniper::{FieldResult, GraphQLObject, ID};
+use juniper::{FieldError, FieldResult, GraphQLObject, Value, ID};
 
 use super::{b58, hex_string, json_string, parse_b58, total_count_i32, utf8_lossy};
 use crate::graphql::context::GraphQLContext;
@@ -143,6 +143,13 @@ pub struct LawyerVoteConnection {
 /// A property listing: sale terms, progress counters, the two flattened `LawyerAssignment`s,
 /// the flattened `SpvElection` and per-mint collected totals. `collected` is the raw JSON
 /// `[{"mint": "<base58>", "funds": N, "fee": N, "tax": N}, ...]` (see migration 0009).
+/// `propertyAsset` is the listing's tokenised property, LEFT-JOINed in the resolver
+/// (`pa.asset_id = l.asset_id`); the join is 1:1 -- one row per PDA on each side and the
+/// PropertyAsset PDA is seeded from the same id as the listing -- so it cannot duplicate
+/// nodes. `null` if the asset's state row is absent (defensive: `list_property` writes
+/// both accounts in one instruction, so this should not occur). The nested asset's
+/// `metadata` is always `null` on this path (the metadata table is not joined here; see
+/// `PropertyAsset`).
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct Listing {
     pub id: ID,
@@ -189,6 +196,8 @@ pub struct Listing {
     pub spv_election_candidate_count: I64,
     pub spv_election_round: I64,
     pub status: ListingStatus,
+    /// The tokenised property this listing sells shares of (1:1, same `asset_id`).
+    pub property_asset: Option<PropertyAsset>,
 }
 
 #[derive(GraphQLObject, Clone, Debug)]
@@ -199,9 +208,15 @@ pub struct ListingConnection {
 
 /// The tokenised property behind one listing (`asset_id == listing_id` in current source).
 /// `name` and `metadata_uri` are empty until `init_property_assets` attaches them.
-/// `metadata` is the fetched-and-decomposed off-chain document `metadata_uri` points at
-/// (ADR-27), nested so asset and document answer in ONE query; `null` while the enricher
-/// has no row for this PDA (fetch pending or still failing).
+/// Reachable two ways: standalone via the `propertyAssets` connection, or nested as
+/// `Listing.propertyAsset` (the `listings` resolver LEFT-JOINs this table, so one query
+/// returns both). `metadata` is the fetched-and-decomposed off-chain document
+/// `metadata_uri` points at (ADR-27), attached so asset and document answer in ONE
+/// query; `null` while the enricher has no row for this PDA (fetch pending or still
+/// failing). On the `listings` path it is always `null`: that resolver joins only the
+/// mirror `marketplace_property_asset` table (the derived metadata table is outside the
+/// mirror by design, ADR-27), so the fetched document is attached only by the
+/// `propertyAssets` connection.
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct PropertyAsset {
     pub id: ID,
@@ -875,6 +890,19 @@ pub async fn lawyer_votes(
     })
 }
 
+/// A `pa_*` LEFT-JOIN column that is NULL on a row whose `pa_pubkey` is present would mean
+/// the two state tables disagree; the upserts write every column explicitly, so this is a
+/// data-integrity error, not a representable state (same policy as `unknown_enum_value`).
+fn asset_column_missing(column: &str) -> FieldError {
+    FieldError::new(
+        format!(
+            "marketplace_property_asset.{column} was NULL on a row with a present asset \
+             (data integrity issue)"
+        ),
+        Value::null(),
+    )
+}
+
 pub async fn listings(
     context: &GraphQLContext,
     listing_id: Option<I64>,
@@ -893,25 +921,48 @@ pub async fn listings(
         .transpose()?;
     let status = status.map(|s| s.as_db_str());
 
+    // LEFT JOIN brings `Listing.propertyAsset` along in the same round-trip (1:1 -- see the
+    // `Listing` doc), so `listings { propertyAsset { ... } }` costs exactly this query plus
+    // the `count(*)`, whatever page size. The join key `asset_id` is indexed
+    // (`idx_mkt_property_asset_id`). Every `pa_*` column carries the `?` nullability
+    // override: sqlx derives nullability from the source table's NOT NULL constraints (its
+    // EXPLAIN-based patch for outer-join sides does not match aliased output columns), so
+    // without the override the macro types them as non-`Option` and a listing without an
+    // asset row would fail to decode.
     let rows = sqlx::query!(
         r#"
-        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, developer, asset_id,
-               share_price, listed_share_amount, sold_share_amount, reserved_share_amount,
-               tax_paid_by_developer, tax_bps, marketplace_fee_bps, investor_fee_bps,
-               max_ownership_bps, listing_expiry, claiming_time, claim_deadline,
-               legal_process_time, lawyer_voting_time, min_voting_quorum_bps, position_count,
-               legal_deadline, deposit, developer_lawyer, developer_lawyer_costs,
-               developer_lawyer_doc_status, developer_lawyer_documents_hash, spv_lawyer,
-               spv_lawyer_costs, spv_lawyer_doc_status, spv_lawyer_documents_hash,
-               second_attempt, developer_engaged, spv_costs_due, spv_costs_payee,
-               collected_fee_quote, collected,
-               spv_election_expiry, spv_election_candidate_count, spv_election_round, status
-        FROM marketplace_listing
-        WHERE ($1::bigint IS NULL OR listing_id = $1)
-          AND ($2::bytea IS NULL OR developer = $2)
-          AND ($3::text IS NULL OR status = $3)
-          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)
-        ORDER BY slot DESC, pubkey ASC
+        SELECT l.pubkey, l.slot, l.lamports, l.closed_at_slot, l.listing_id, l.developer,
+               l.asset_id, l.share_price, l.listed_share_amount, l.sold_share_amount,
+               l.reserved_share_amount, l.tax_paid_by_developer, l.tax_bps,
+               l.marketplace_fee_bps, l.investor_fee_bps, l.max_ownership_bps,
+               l.listing_expiry, l.claiming_time, l.claim_deadline, l.legal_process_time,
+               l.lawyer_voting_time, l.min_voting_quorum_bps, l.position_count,
+               l.legal_deadline, l.deposit, l.developer_lawyer, l.developer_lawyer_costs,
+               l.developer_lawyer_doc_status, l.developer_lawyer_documents_hash, l.spv_lawyer,
+               l.spv_lawyer_costs, l.spv_lawyer_doc_status, l.spv_lawyer_documents_hash,
+               l.second_attempt, l.developer_engaged, l.spv_costs_due, l.spv_costs_payee,
+               l.collected_fee_quote, l.collected, l.spv_election_expiry,
+               l.spv_election_candidate_count, l.spv_election_round, l.status,
+               pa.pubkey AS "pa_pubkey?", pa.slot AS "pa_slot?",
+               pa.lamports AS "pa_lamports?",
+               pa.closed_at_slot AS "pa_closed_at_slot?",
+               pa.asset_id AS "pa_asset_id?",
+               pa.name AS "pa_name?",
+               pa.metadata_uri AS "pa_metadata_uri?",
+               pa.share_mint AS "pa_share_mint?",
+               pa.region_id AS "pa_region_id?",
+               pa.location AS "pa_location?",
+               pa.share_amount AS "pa_share_amount?",
+               pa.spv_created AS "pa_spv_created?",
+               pa.finalized AS "pa_finalized?",
+               pa.holder_count AS "pa_holder_count?"
+        FROM marketplace_listing AS l
+        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id
+        WHERE ($1::bigint IS NULL OR l.listing_id = $1)
+          AND ($2::bytea IS NULL OR l.developer = $2)
+          AND ($3::text IS NULL OR l.status = $3)
+          AND ($4::bool IS NULL OR (l.closed_at_slot IS NULL) = $4)
+        ORDER BY l.slot DESC, l.pubkey ASC
         LIMIT $5 OFFSET $6
         "#,
         listing_id,
@@ -957,6 +1008,51 @@ pub async fn listings(
                 })?;
             let status = ListingStatus::from_db_str(&r.status)
                 .ok_or_else(|| unknown_enum_value("status", &r.status))?;
+            let property_asset = match r.pa_pubkey {
+                None => None, // no asset row for this listing (see `Listing` doc)
+                Some(pa_pubkey) => Some(PropertyAsset {
+                    id: ID::new(b58(&pa_pubkey)),
+                    slot: I64(r.pa_slot.ok_or_else(|| asset_column_missing("slot"))?),
+                    lamports: I64(r
+                        .pa_lamports
+                        .ok_or_else(|| asset_column_missing("lamports"))?),
+                    active: r.pa_closed_at_slot.is_none(),
+                    closed_at_slot: r.pa_closed_at_slot.map(I64),
+                    asset_id: I64(r
+                        .pa_asset_id
+                        .ok_or_else(|| asset_column_missing("asset_id"))?),
+                    name: r.pa_name.ok_or_else(|| asset_column_missing("name"))?,
+                    metadata_uri: r
+                        .pa_metadata_uri
+                        .ok_or_else(|| asset_column_missing("metadata_uri"))?,
+                    // This resolver does not join the derived metadata table (ADR-27);
+                    // the fetched document is attached only on the `propertyAssets`
+                    // path (ADR-29).
+                    metadata: None,
+                    share_mint: b58(&r
+                        .pa_share_mint
+                        .ok_or_else(|| asset_column_missing("share_mint"))?),
+                    region_id: r
+                        .pa_region_id
+                        .ok_or_else(|| asset_column_missing("region_id"))?,
+                    location: utf8_lossy(
+                        &r.pa_location
+                            .ok_or_else(|| asset_column_missing("location"))?,
+                    ),
+                    share_amount: I64(r
+                        .pa_share_amount
+                        .ok_or_else(|| asset_column_missing("share_amount"))?),
+                    spv_created: r
+                        .pa_spv_created
+                        .ok_or_else(|| asset_column_missing("spv_created"))?,
+                    finalized: r
+                        .pa_finalized
+                        .ok_or_else(|| asset_column_missing("finalized"))?,
+                    holder_count: I64(r
+                        .pa_holder_count
+                        .ok_or_else(|| asset_column_missing("holder_count"))?),
+                }),
+            };
             Ok(Listing {
                 id: ID::new(b58(&r.pubkey)),
                 slot: I64(r.slot),
@@ -1002,6 +1098,7 @@ pub async fn listings(
                 spv_election_candidate_count: I64(r.spv_election_candidate_count),
                 spv_election_round: I64(r.spv_election_round),
                 status,
+                property_asset,
             })
         })
         .collect::<FieldResult<Vec<_>>>()?;

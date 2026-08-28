@@ -583,7 +583,9 @@ impl QueryRoot {
         programs::marketplace::marketplace_config(context).await
     }
 
-    /// Property listings on the marketplace.
+    /// Property listings on the marketplace. Each node's `propertyAsset` is LEFT-JOINed in
+    /// (see `programs::marketplace::Listing`), so listings and their tokenised property come
+    /// back in a single round-trip.
     async fn listings(
         context: &GraphQLContext,
         listing_id: Option<I64>,
