@@ -834,3 +834,51 @@ table supersedes §3.4's for the live deployment):
 * `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 32 instructions, 4 snapshots,
   4 deploy boundaries, 0 chain upgrades** — full rebuild from the public devnet RPC against
   the new deployments, zero undecodable accounts.
+
+## API: listings expose propertyAsset (nested) — 2026-08-27
+
+A listing and its property asset are two rows a consumer almost always wants together (the
+listing's prices against the asset's name/metadata); previously that meant two round-trips
+— `listings { ... }` then a per-asset `propertyAsset(assetId:)` — and with page size
+clamped to 100 that is up to 100 follow-up point queries. This change nests the asset
+under the listing so one query returns both.
+
+### What was built
+
+* **`Listing.propertyAsset: PropertyAsset!`** (nullable: `null` when no asset row) — a plain
+  `Option<PropertyAsset>` field on the juniper `#[derive(GraphQLObject)]` struct, matching
+  the crate's already-resolved-data convention (no per-field DB resolvers, no request-scoped
+  cache).
+* **`listings()` is now one eager query**: `SELECT l.*` + 14 `pa_*` columns via
+  `LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id`. The join is 1:1
+  (both tables are one-row-per-PDA state tables, `pa.asset_id` indexed by
+  `idx_mkt_property_asset_id`), so fan-out is at most one row per listing and a page costs
+  exactly this query plus the existing `count(*)`, whatever the page size.
+* **`?` nullability overrides on every `pa_*` column** (sqlx
+  `ColumnNullabilityOverride::Nullable`): the macro derives nullability from the source
+  table's NOT NULL constraints and its EXPLAIN-based outer-join patch does not match aliased
+  output columns (PG 16 also dropped the `null` flag from EXPLAIN JSON), so without the
+  overrides the macro typed the joined columns non-`Option` and a listing without an asset
+  row would fail to decode. The overrides come from the SQL text, so online and offline
+  prepare agree.
+* **`.sqlx` cache**: one query file replaced (the hash follows the query text) — old
+  `query-d572fa…` dropped, new `query-1b849a…` added; no other cache churn.
+* No migrations, no schema changes, no indexer changes.
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| The `LEFT JOIN` is defensive in practice | `list_property` writes the Listing and the Property accounts in one instruction, so both rows land together; `propertyAsset: null` only exists for rows that cannot arise. Kept `LEFT` (not `INNER`) so any future divergence degrades to `null` instead of dropping listings from the page. |
+| No ADR | Small additive API surface; no architectural consequence. |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean (proves the `?` overrides hold
+  in offline mode); `cargo sqlx prepare --check` clean against the migrated 54329 Postgres.
+* `cargo test --workspace --locked`: 160 passed, 0 failed (30 api + 130 indexer).
+* `scripts/lint-migrations.sh` OK (no migration changes vs `origin/main`).
+* `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 51 instructions, 4 snapshots,
+  4 deploy boundaries, 0 chain upgrades** — full rebuild from the public devnet RPC.
