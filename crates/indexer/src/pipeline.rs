@@ -1,4 +1,4 @@
-//! Datasource wiring: four decoders (one per program), two pipes each plus a shared deletion
+//! Datasource wiring: five decoders (one per program), two pipes each plus a shared deletion
 //! pipe, one datasource.
 //!
 //! Two datasources are built here from the same processors:
@@ -34,6 +34,7 @@ use carbon_core::metrics::Metrics;
 use carbon_core::pipeline::{Pipeline, ShutdownStrategy};
 use carbon_marketplace_decoder::MarketplaceDecoder;
 use carbon_property_decoder::PropertyDecoder;
+use carbon_realxhub_decoder::RealxhubDecoder;
 use carbon_regions_decoder::RegionsDecoder;
 use carbon_rpc_transaction_crawler_datasource::{
     ConnectionConfig, Filters, RetryConfig, RpcTransactionCrawler,
@@ -55,7 +56,8 @@ use crate::block_time::BlockTimeResolver;
 use crate::config::Config;
 use crate::crawl::{CrawlWindow, ObservationSender, Observed};
 use crate::mapping::{
-    marketplace::Marketplace, property::Property, regions::Regions, whitelist::Whitelist,
+    marketplace::Marketplace, property::Property, realxhub::Realxhub, regions::Regions,
+    whitelist::Whitelist,
 };
 use crate::processors::{
     AccountDeletionProcessor, AccountProcessor, InstructionProcessor, TrackedAccounts,
@@ -69,7 +71,7 @@ use crate::upgrades::{LoaderUpgradeDecoder, UpgradeRecorder};
 /// what they select (`<program>_txs`).
 ///
 /// One entry PER PROGRAM is load-bearing: `account_required` is an AND over its list, so a
-/// single entry listing all four programs would match only transactions touching ALL of them
+/// single entry listing all five programs would match only transactions touching ALL of them
 /// -- i.e. almost nothing. (`account_include` is the OR form, but it can accidentally widen
 /// if another account is ever added to a list; per-program AND entries cannot.)
 ///
@@ -199,6 +201,20 @@ fn common_pipes(deps: PipeDeps<'_>) -> carbon_core::pipeline::PipelineBuilder {
             .account(
                 PropertyDecoder,
                 AccountProcessor::<Property>::new(deps.batcher.clone(), deps.tracked.clone()),
+            );
+    }
+    if configured("realxhub") {
+        builder = builder
+            .instruction(
+                RealxhubDecoder,
+                InstructionProcessor::<Realxhub>::new(
+                    deps.batcher.clone(),
+                    deps.block_time.clone(),
+                ),
+            )
+            .account(
+                RealxhubDecoder,
+                AccountProcessor::<Realxhub>::new(deps.batcher.clone(), deps.tracked.clone()),
             );
     }
     // The upgrade recorder (ADR-24) rides the same filters as everything else -- an Upgrade

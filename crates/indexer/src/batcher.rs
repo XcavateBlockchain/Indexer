@@ -54,6 +54,7 @@ pub enum WriteOp {
     UpsertRegionsAccount(db::regions::RegionsAccountRow),
     UpsertMarketplaceAccount(db::marketplace::MarketplaceAccountRow),
     UpsertPropertyAccount(db::property::PropertyAccountRow),
+    UpsertRealxhubAccount(db::realxhub::RealxhubAccountRow),
     InsertInstruction(NewInstruction),
     InsertAction(NewAction),
     /// Instruction-driven close of a PDA in a known state table (ruling R11).
@@ -87,6 +88,15 @@ pub enum WriteOp {
     CloseShareListingIfEmptiedByOffer {
         pubkey: Vec<u8>,
         offer_pubkey: Vec<u8>,
+        slot: i64,
+    },
+    /// Conditional close of a realxhub `ShareListing` by `buy_shares` (on-chain: closed only
+    /// when the buy drained the listing's remaining shares to zero) -- see
+    /// `db::realxhub::close_share_listing_if_emptied`.
+    CloseRealxhubShareListingIfEmptied {
+        pubkey: Vec<u8>,
+        /// The instruction's `amount` arg: how many shares were bought.
+        bought_amount: i64,
         slot: i64,
     },
     /// Close driven by carbon's `AccountDeletion`, which carries only `{pubkey, slot}` and so
@@ -171,12 +181,14 @@ impl WriteOp {
             WriteOp::UpsertRegionsAccount(r) => r.slot(),
             WriteOp::UpsertMarketplaceAccount(r) => r.slot(),
             WriteOp::UpsertPropertyAccount(r) => r.slot(),
+            WriteOp::UpsertRealxhubAccount(r) => r.slot(),
             WriteOp::InsertInstruction(r) => r.slot,
             WriteOp::InsertAction(r) => r.slot,
             WriteOp::CloseAccount { slot, .. }
             | WriteOp::CloseLettingAgentIfLast { slot, .. }
             | WriteOp::CloseShareListingIfEmptied { slot, .. }
             | WriteOp::CloseShareListingIfEmptiedByOffer { slot, .. }
+            | WriteOp::CloseRealxhubShareListingIfEmptied { slot, .. }
             | WriteOp::CloseUnknownAccount { slot, .. }
             | WriteOp::SetBackfillCursor { slot, .. } => *slot,
             WriteOp::RecordProgramUpgrade { upgrade_slot, .. } => *upgrade_slot,
@@ -193,6 +205,7 @@ impl WriteOp {
             | WriteOp::UpsertRegionsAccount(_)
             | WriteOp::UpsertMarketplaceAccount(_)
             | WriteOp::UpsertPropertyAccount(_)
+            | WriteOp::UpsertRealxhubAccount(_)
             // Orders against nothing: program_upgrades and webhook_events share no rows with
             // any other op kind (both are idempotent append-only records).
             | WriteOp::RecordProgramUpgrade { .. }
@@ -203,6 +216,7 @@ impl WriteOp {
             | WriteOp::CloseLettingAgentIfLast { .. }
             | WriteOp::CloseShareListingIfEmptied { .. }
             | WriteOp::CloseShareListingIfEmptiedByOffer { .. }
+            | WriteOp::CloseRealxhubShareListingIfEmptied { .. }
             | WriteOp::CloseUnknownAccount { .. } => 3,
             WriteOp::SetBackfillCursor { .. } => 4,
         }
@@ -452,6 +466,9 @@ async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<Vec<NewUpgrade>,
             WriteOp::UpsertPropertyAccount(row) => {
                 db::property::upsert(&mut *tx, row).await?;
             }
+            WriteOp::UpsertRealxhubAccount(row) => {
+                db::realxhub::upsert(&mut *tx, row).await?;
+            }
             WriteOp::InsertInstruction(row) => {
                 db::instructions::insert_instruction(&mut *tx, row.clone()).await?;
             }
@@ -496,6 +513,19 @@ async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<Vec<NewUpgrade>,
                     &mut *tx,
                     pubkey,
                     offer_pubkey,
+                    *slot,
+                )
+                .await?;
+            }
+            WriteOp::CloseRealxhubShareListingIfEmptied {
+                pubkey,
+                bought_amount,
+                slot,
+            } => {
+                db::realxhub::close_share_listing_if_emptied(
+                    &mut *tx,
+                    pubkey,
+                    *bought_amount,
                     *slot,
                 )
                 .await?;

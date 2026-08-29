@@ -11,7 +11,7 @@
 # Override with CARBON_CLI_VERSION only as part of a deliberate, all-pins-in-one-commit
 # carbon upgrade.
 #
-# Usage: verify-decoder-purity.sh [program ...]   (default: all four)
+# Usage: verify-decoder-purity.sh [program ...]   (default: all five)
 # Exit 0 = every checked crate is byte-identical to fresh generator output.
 
 set -euo pipefail
@@ -32,7 +32,7 @@ crate_dir() {
 }
 
 programs=("$@")
-[ ${#programs[@]} -gt 0 ] || programs=(xcavate_whitelist regions marketplace property)
+[ ${#programs[@]} -gt 0 ] || programs=(xcavate_whitelist regions marketplace property realxhub)
 
 status=0
 for name in "${programs[@]}"; do

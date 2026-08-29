@@ -60,7 +60,7 @@ services:
       # ALCHEMY_GRPC_URL / ALCHEMY_RPC_URL / RPC_FALLBACK_URL / PROGRAMS / METRICS_ADDR /
       # RECONCILE_INTERVAL / METADATA_FETCH_INTERVAL / WEBHOOK_INTERVAL all have working
       # defaults baked into the binary (crates/indexer/src/config.rs; the default
-      # PROGRAMS set is all four programs) -- only set them here (or in .env, wired
+      # PROGRAMS set is all five programs) -- only set them here (or in .env, wired
       # through above) if overriding one for a specific deployment.
     healthcheck:
       # Runs `indexer run`: migrations, then the startup subscribe gate (up to 30s on a

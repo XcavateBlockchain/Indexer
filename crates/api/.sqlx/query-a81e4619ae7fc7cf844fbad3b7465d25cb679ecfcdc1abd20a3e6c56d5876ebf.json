@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM realxhub_faucet_receipt\n        WHERE ($1::bool IS NULL OR (closed_at_slot IS NULL) = $1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a81e4619ae7fc7cf844fbad3b7465d25cb679ecfcdc1abd20a3e6c56d5876ebf"
+}

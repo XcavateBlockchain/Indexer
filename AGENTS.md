@@ -1,6 +1,6 @@
 # Agent guide
 
-You are working on the realXmarket Solana **indexer**: Rust + Carbon 0.12.0, four devnet
+You are working on the realXmarket Solana **indexer**: Rust + Carbon 0.12.0, five devnet
 programs, Postgres storage, GraphQL API. If you are the always-on maintenance agent, your
 mission and its rules are `docs/agentic-maintenance.md` (ADR-23/24/25 in `DECISIONS.md`);
 this file is the ground rules every agent obeys and the map of where everything is.

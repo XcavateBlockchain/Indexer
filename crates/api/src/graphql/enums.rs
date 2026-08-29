@@ -302,7 +302,7 @@ impl GovVoteChoice {
     }
 }
 
-/// The four indexed programs, for `programInstructions(program: ...)` filtering and
+/// The five indexed programs, for `programInstructions(program: ...)` filtering and
 /// attribution. `as_program_id_bytes` mirrors `addresses.json` / the indexer's registry.
 #[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgramName {
@@ -310,6 +310,7 @@ pub enum ProgramName {
     Regions,
     Marketplace,
     Property,
+    Realxhub,
 }
 
 impl ProgramName {
@@ -320,6 +321,7 @@ impl ProgramName {
             ProgramName::Regions => "5iupkzVtWxee48UXh3s615V9sXXuYjsSr61VPuduXdPc",
             ProgramName::Marketplace => "dj9Q3CpHvDHwexCbkgJ5APDx4JsTxPssNebkvP15g1T",
             ProgramName::Property => "deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq",
+            ProgramName::Realxhub => "Hjd9AHDefWgTnwCGLCoTPRqttpXHWCAUE3zv9aeNJnXu",
         }
     }
 
@@ -328,6 +330,7 @@ impl ProgramName {
         ProgramName::Regions,
         ProgramName::Marketplace,
         ProgramName::Property,
+        ProgramName::Realxhub,
     ];
 
     /// The indexer registry's snake_case spelling (the `PROGRAMS` env var vocabulary).
@@ -337,6 +340,7 @@ impl ProgramName {
             ProgramName::Regions => "regions",
             ProgramName::Marketplace => "marketplace",
             ProgramName::Property => "property",
+            ProgramName::Realxhub => "realxhub",
         }
     }
 

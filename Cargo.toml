@@ -12,4 +12,5 @@ exclude = [
     "crates/marketplace-decoder",
     "crates/property-decoder",
     "crates/regions-decoder",
+    "crates/realxhub-decoder",
 ]

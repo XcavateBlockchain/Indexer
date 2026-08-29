@@ -799,3 +799,42 @@ are unaffected (nesting adds one field level under an existing field — well in
 looking `metadata { id assetId metadataUri }` inside the nesting is deliberate: one
 canonical `PropertyMetadata` type serves both placements, no shadow type. Mainnet
 promotion (agentic-maintenance §8) inherits the surface unchanged.
+
+## ADR-30: realxhub is registered ahead of its devnet deploy (`deploy_slot: 0` sentinel)
+
+**Context.** The fifth program to index — realxhub (`Hjd9AHDefWgTnwCGLCoTPRqttpXHWCAUE3zv9aeNJnXu`,
+fractional hub shares on a secondary market) — has a stable IDL but is not yet deployed to
+devnet: no executable account, hence no deploy slot to pin. Chain-over-repo (house rule 6)
+governs the *version* of the IDL vs. the chain; the loop otherwise assumes every program
+already exists on-chain — `check-program-upgrades.py` reads `getProgramData` by address and
+`verify-devnet.sh` asserts the config PDA and instruction history per program. Onboarding a
+program before the chain is the first time the loop meets that case.
+
+**Decision.** Register the full surface now instead of deferring the pipeline until deploy.
+The pieces are the standard ones — `idls/realxhub.json` + carbon-generated frozen
+`crates/realxhub-decoder` (purity-checked), migration 0015 with five state tables (`realxhub_config`
+singleton, `realxhub_hub`, `realxhub_holding`, `realxhub_share_listing`, `realxhub_faucet_receipt`;
+close rules: `delist_shares` closes the listing PDA unconditionally and `buy_shares` closes it when
+the listing empties), the mapping + registry entry + `close.rs` wiring, and the GraphQL surface
+(`realxhub_config`, `realxhub_hubs`, `realxhub_holdings`, `realxhub_share_listings`,
+`realxhub_faucet_receipts`) — and the "registered but not deployed" state is one sentinel:
+**`deploy_slot: 0`** in both `addresses.json` and `crates/indexer/src/programs.rs`. Everything
+downstream keys off it: `check-program-upgrades.py` reports `NOT YET DEPLOYED` (owner absent and
+slot 0) and later `FIRST DEPLOY DETECTED at slot N`; `verify-devnet.sh` prints a NOTE and skips the
+config-PDA/instruction assertions for realxhub; and the registry-driven seeding (`init_sync_state`
++ `upgrades::seed_deploy_slot`, both idempotent) gives realxhub a floor of 0, so the slot-0 backfill
+is a superset and seeding before the chain is harmless. Deliberately not stored: the IDL's six
+events (house pattern — instructions + state tables only; events duplicate those writes), the
+`bump` field (stored in the tables, not exposed in GraphQL), and `u128` (income per share) is
+TEXT/`String`, matching the existing house treatment of `u128`.
+
+**Consequences.** The post-deploy procedure is: when the realxhub executable appears on devnet,
+pin the real deploy slot in `addresses.json` (`deploy_slots.realxhub`) AND the realxhub entry in
+`crates/indexer/src/programs.rs`, then re-run `scripts/agent/verify-devnet.sh` — the config-PDA and
+instruction assertions engage for realxhub, and the registry↔addresses.json pinned test now
+constrains the slot. Until then: realxhub backfill is `HistoryExhausted` on an empty range (nothing
+to index), all gauntlet invariants hold 5-of-5, and the first deploy surfaces as `FIRST DEPLOY
+DETECTED` from `check-program-upgrades.py`. A breaking IDL change before the first deploy is a
+plain additive regeneration (nothing on-chain to protect); after it, the versioned-decoder
+mechanism (ADR-25) applies unchanged. Mainnet promotion (agentic-maintenance §8) inherits the
+sentinel pattern if a mainnet program ever lands ahead of its own deploy.

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE realxhub_share_listing\n        SET slot = $2,\n            closed_at_slot = $2\n        WHERE pubkey = $1\n          AND slot < $2\n          AND amount = $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de72e243e45aa90faa534e5fa8ba748cd9258b814abb305417844ce20c63578b"
+}

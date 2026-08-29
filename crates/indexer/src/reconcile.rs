@@ -12,7 +12,7 @@
 //!   days at a time -- "no updates" is the normal case, so silence proves nothing either way.
 //!
 //! Hence: `last_contiguous_slot` is advanced ONLY here, and only by evidence this task gathered
-//! itself. With four programs, each has its own row, frontier, and crawl -- one program's lag
+//! itself. With five programs, each has its own row, frontier, and crawl -- one program's lag
 //! (say, an unfinished backfill) must never freeze the others' frontiers.
 //!
 //! ## One cycle (per interval tick)
@@ -29,9 +29,9 @@
 //! ## Cost
 //!
 //! One `getSlot` + one `getSignaturesForAddress` page per program per RECONCILE_INTERVAL
-//! (default 300 s) = ~2,880 requests/day for four programs, plus one `getTransaction` per
+//! (default 300 s) = ~2,880 requests/day for five programs, plus one `getTransaction` per
 //! genuinely new transaction. Alchemy's free tier is 100 M compute units/month;
-//! `getSignaturesForAddress` is 67 CU and `getSlot` 10 CU, so this is ~5.6 M CU/month, under
+//! `getSignaturesForAddress` is 67 CU and `getSlot` 10 CU, so this is ~5.8 M CU/month, under
 //! 6 % of the budget. The live stream, not this loop, is what keeps latency low, so the
 //! interval can be raised freely if that budget ever tightens.
 

@@ -10,7 +10,7 @@
 #   * `anchor build` stamps each IDL's `address` from the source's declare_id!() -- which
 #     matches NONE of the deployed devnet addresses (deploys were made from gitignored
 #     keypairs; addresses.json is canonical, ADR-19). Every built IDL is therefore
-#     normalized to the deployed address before diffing, or all four programs would look
+#     normalized to the deployed address before diffing, or all five programs would look
 #     "changed" on every run.
 #   * an old anchor-cli (0.29-era) silently emits the OLD IDL format, which would make every
 #     diff look catastrophically breaking. The CLI major.minor must match the anchor-lang
@@ -77,13 +77,23 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
 fi
 
 # --- normalize + diff ------------------------------------------------------------------------
-# Registry names equal the upstream lib names for all four programs (the whitelist crate is
-# xcavate-whitelist but its lib -- and so its IDL file -- is xcavate_whitelist).
+# Registry names equal the upstream lib names for all deployed programs (the whitelist
+# crate is xcavate-whitelist but its lib -- and so its IDL file -- is xcavate_whitelist).
+# realxhub is registered ahead of its deploy (deploy_slot 0, ADR-30): if upstream has no
+# buildable crate for it yet, the loop skips it with a NOTE instead of erroring.
 worst=0
 summary="[]"
 for name in $(jq -r '.programs | keys[]' "$REPO_ROOT/addresses.json"); do
     built="$WORK_DIR/target/idl/$name.json"
-    [ -f "$built" ] || err "anchor build produced no $built (program renamed upstream?)"
+    if [ ! -f "$built" ]; then
+        slot="$(jq -r ".deploy_slots[\"$name\"]" "$REPO_ROOT/addresses.json")"
+        if [ "$slot" = "0" ]; then
+            echo "NOTE: no $built -- $name is registered ahead of its deploy (deploy_slot 0,"
+            echo "ADR-30) and upstream has no buildable crate for it yet; skipping."
+            continue
+        fi
+        err "anchor build produced no $built (program renamed upstream?)"
+    fi
     address="$(jq -r ".programs[\"$name\"]" "$REPO_ROOT/addresses.json")"
     python3 "$IDL_TOOLS" normalize "$built" --address "$address" -o "$OUT_DIR/$name.json"
 

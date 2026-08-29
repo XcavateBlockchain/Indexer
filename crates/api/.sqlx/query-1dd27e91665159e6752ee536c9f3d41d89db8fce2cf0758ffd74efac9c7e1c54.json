@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, authority, stable_mint, next_hub_id\n        FROM realxhub_config\n        ORDER BY slot DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "authority",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "stable_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "next_hub_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1dd27e91665159e6752ee536c9f3d41d89db8fce2cf0758ffd74efac9c7e1c54"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM realxhub_hub\n        WHERE ($1::bigint IS NULL OR id = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7c86c303a63177b50029b73631fa011d8177f6292fda5840a1480c2483f1e68e"
+}

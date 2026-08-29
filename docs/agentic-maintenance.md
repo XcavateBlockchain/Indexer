@@ -9,7 +9,7 @@ script-by-script summary).
 ## 1. Objective
 
 On every settled push to `XcavateBlockchain/realxmarket-solana` `main`, and on every on-chain
-upgrade of the four deployed programs, the maintenance agent updates this indexer so that it
+upgrade of the five registered programs, the maintenance agent updates this indexer so that it
 keeps indexing correctly — old history and new — with a human-reviewed PR as the only way
 anything ships. The deployment contract with the program side:
 
@@ -102,10 +102,12 @@ the reaction is the maintenance loop, not anything automatic in the indexer.
 
 ## 5. Version boundaries and slot-routed decoding (ADR-25 — designed, dormant)
 
-Nothing routes by version today because nothing has ever needed it: all four programs are
-still at their version-1 deploy (verified on-chain 2026-08-25 -- the version-1 deploys of
-the ADR-26 REDEPLOY at new addresses, which absorbed upstream `main@5927362`'s breaking
-changes without ever upgrading a program in place), so one decoder per program is exact.
+Nothing routes by version today because nothing has ever needed it: all four DEPLOYED
+programs are still at their version-1 deploy (verified on-chain 2026-08-25 -- the
+version-1 deploys of the ADR-26 REDEPLOY at new addresses, which absorbed upstream
+`main@5927362`'s breaking changes without ever upgrading a program in place); the fifth
+(realxhub, ADR-30) is registered ahead of its devnet deploy with the slot-0 sentinel, so
+one decoder per program is exact for every deployed program.
 The design below is pre-agreed so that activating it is mechanical when the first breaking
 in-place upgrade is prepared. Note what ADR-26 makes explicit: a redeploy at a NEW address
 is not a version boundary and this mechanism cannot express it -- the answer there is the
@@ -159,7 +161,7 @@ migration lint), then the two ground-truth checks —
 * `scripts/agent/verify-devnet.sh`: rebuild the entire dataset from nothing into a
   disposable Postgres from the **public** devnet RPC and assert it matches the chain (zero
   undecodable accounts, complete backfills, the config PDAs from `addresses.json` present,
-  the version boundaries seeded). The four programs' whole footprint is tiny, so this full
+  the version boundaries seeded). The five programs' whole footprint is tiny, so this full
   end-to-end proof costs about a minute — it is the same evidence the original migration's
   sign-off used, and it needs no Alchemy key.
 * `scripts/agent/check-program-upgrades.py`: what is actually deployed, so the PR can state
@@ -179,12 +181,16 @@ everything before those two gates.
 
 Measured, not assumed — by running this pipeline's own tooling:
 
-* On-chain (devnet): all four programs are the 2026-08-25 redeploy at NEW addresses
-  (ADR-26; `addresses.json` is current), each still at its version-1 deploy slot
+* On-chain (devnet): all four DEPLOYED programs are the 2026-08-25 redeploy at NEW
+  addresses (realxhub, the fifth, is registered ahead of its deploy with the slot-0
+  sentinel -- ADR-30; ADR-26; `addresses.json` is current), each still at its
+  version-1 deploy slot
   (`check-program-upgrades.py` exit 0). `idls/` matches the deployed programs; the indexer
   decodes every account and instruction on devnet (`verify-devnet.sh`: 4 programs, 32
-  instructions, 0 undecodable, 4 seeded boundaries).
-* Upstream `main@5927362` vs `idls/`: IDENTICAL for all four — the redeploy WAS that
+  instructions, 0 undecodable, 4 seeded boundaries; after the 2026-08-28 realxhub
+  onboarding: 5 programs, 54 instructions, 5 boundaries).
+* Upstream `main@5927362` vs `idls/`: IDENTICAL for all four deployed programs — the
+  redeploy WAS that
   upstream state (secondary market, offers, income, governance). What 2026-08-22's entry
   here forecast as the first versioned-decoder activation instead arrived as a redeploy at
   new addresses, which ADR-25's slot routing cannot express and does not need to: the old

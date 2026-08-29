@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO realxhub_config (pubkey, slot, lamports, closed_at_slot, authority, stable_mint, next_hub_id, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot = EXCLUDED.slot,\n            lamports = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            authority = EXCLUDED.authority,\n            stable_mint = EXCLUDED.stable_mint,\n            next_hub_id = EXCLUDED.next_hub_id,\n            bump = EXCLUDED.bump\n        WHERE realxhub_config.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4cd6a5ad69b57006a3894f04f536f83bff14a217090411f033eac65fd874c3c"
+}

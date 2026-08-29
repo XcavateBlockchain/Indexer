@@ -103,7 +103,7 @@ for the whitelist, `<p>.rs` for the rest.
 
    It must read `version = "0.12.0"`. If the generator moved it, **STOP**: this is now a
    whole-workspace carbon upgrade — read DECISIONS.md ADR-12 ("Upgrade path"), regenerate
-   ALL FOUR decoders with the new CLI, and bump every other `carbon-*` pin (core,
+   ALL FIVE decoders with the new CLI, and bump every other `carbon-*` pin (core,
    yellowstone datasource, transaction crawler, metrics) in the SAME commit. Never
    partially. Set `CARBON_CLI_VERSION` when re-running `verify-decoder-purity.sh`.
 

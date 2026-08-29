@@ -1099,3 +1099,72 @@ under the listing so one query returns both.
 * `scripts/lint-migrations.sh` OK (no migration changes vs `origin/main`).
 * `scripts/agent/verify-devnet.sh`: **VERIFY OK: 4 programs, 51 instructions, 4 snapshots,
   4 deploy boundaries, 0 chain upgrades** — full rebuild from the public devnet RPC.
+
+## Indexer: realxhub program onboarded ahead of its devnet deploy — 2026-08-28
+
+The fifth program, `realxhub` (`Hjd9AHDefWgTnwCGLCoTPRqttpXHWCAUE3zv9aeNJnXu`,
+"fractional hub shares on a secondary market"), is registered in the indexer **before it
+exists on devnet**: the IDL arrives with the deploy, so it is indexed ahead of the chain
+using the `deploy_slot: 0` sentinel (ADR-30). The whole pipeline — registry, decoder,
+mappers, state tables, GraphQL — is live and green; until the deploy lands, realxhub
+simply has no transactions to decode.
+
+### What was built
+
+* **`idls/realxhub.json`** + the `addresses.json` entry (`deploy_slots.realxhub: 0`
+  sentinel). The registry-derived pinned-addresses test and the `verify-devnet.sh`
+  assertions both treat slot 0 as "not deployed yet".
+* **`crates/realxhub-decoder`** — carbon-cli-generated from the IDL, frozen by
+  `freeze-decoder-version.sh`, purity-checked by `verify-decoder-purity.sh`
+  (byte-identical regeneration; the one sanctioned package-rename line is the only edit).
+* **`migrations/0015_realxhub_state.sql`** — five state tables following the 0002/0008
+  one-row-per-PDA conventions: `realxhub_config` (singleton), `realxhub_hub`,
+  `realxhub_holding`, `realxhub_share_listing`, `realxhub_faucet_receipt`. Only
+  `realxhub_share_listing` can close (`buy_shares` closing a drained listing is PDA
+  reuse, `delist_shares` closes outright, rent back to the seller); the rest keep
+  `closed_at_slot` NULL forever. `u128` income fields are stored as `TEXT` (house
+  convention, exact, orderable by width+lex), `u32`/`u8` fields widen to `BIGINT`/
+  `SMALLINT`, and every `bump` is `SMALLINT NOT NULL` stored as-is.
+* **`crates/indexer/src/mapping/realxhub.rs`** — all eight instructions
+  (`create_hub`, `list_shares`, `buy_shares`, `delist_shares`, `claim_income`,
+  `record_sale`, `faucet`, `initialize`) plus `CpiEvent` handling. PDA pubkeys are
+  derived in the mapper from the accounts + args (holding/listing embed `hub_id` and the
+  wallet; `share_mint` is derived from the config account's `next_hub_id` because
+  `create_hub` takes no `hub_id` argument).
+* **Registry entry** in `crates/indexer/src/programs.rs` (slot 0, `decoder_covers_boundary:
+  0`, "Not deployed on devnet yet (ADR-30)" comment). Registry-driven seeding gives
+  realxhub a `sync_state` row with floor 0; the slot-0 backfill is a superset of the
+  eventual post-deploy backfill, so pre-chain seeding is harmless.
+* **GraphQL (additive)**: `realxhub_config` (singleton), `realxhub_hubs(hubId, active, …)`,
+  `realxhub_holdings(active, …)`, `realxhub_share_listings(seller, active, …)`,
+  `realxhub_faucet_receipts(active, …)` — same house conventions as the other
+  programs (camelCase, `active` filters on `closed_at_slot`, `?page`/`?pageSize` with the
+  100 clamp). `bump` is stored but not exposed.
+* **Tooling slot-0 special cases**: `check-program-upgrades.py` reports
+  "NOT YET DEPLOYED" and "FIRST DEPLOY DETECTED at slot N" once it lands;
+  `verify-devnet.sh` prints a NOTE and skips the realxhub on-chain assertions
+  (config-PDA existence, instruction coverage) until then.
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| First ahead-of-chain onboarding | Registration before deploy is new for this loop; the IDL rule (superset decoders decode everything deployed) makes it safe, and a breaking IDL change pre-deploy degenerates to an additive regen — post-deploy, the ADR-25 versioned-decoder mechanism applies as usual. |
+| Events are not stored | Six IDL events (`HubCreated`, `SharesListed`, …) map to the same state the instruction + state tables already capture; the house pattern stores instructions and state, not events. |
+| Post-deploy pin is bookkeeping | The slot-0 backfill already covers every slot, so pinning the real deploy slot in `addresses.json`/`programs.rs` after the fact changes no data — it keeps the pinned-addresses test and the `verify-devnet.sh` assertions honest. |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean; `cargo sqlx prepare --check`
+  clean for both `crates/indexer --lib` and `crates/api --bin api`.
+* `cargo test --workspace --locked`: **183 passed, 0 failed** (30 api + 153 indexer).
+* `scripts/lint-migrations.sh` OK (0015 additive-only);
+  `scripts/agent/verify-decoder-purity.sh` OK (byte-identical regeneration).
+* `scripts/agent/verify-devnet.sh`: **VERIFY OK: 5 programs, 54 instructions, 5 snapshots,
+  5 deploy boundaries, 0 chain upgrades**, with the expected NOTE that realxhub is not
+  yet deployed (config PDA computed, not on-chain, assertions skipped).
+* Realxhub backfill against the public devnet RPC: `HistoryExhausted`,
+  `backfill_complete=true` (nothing to index yet — correct for a program that does not
+  exist on-chain).

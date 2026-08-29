@@ -1,8 +1,9 @@
 # realXmarket Indexer
 
-Indexes the four [realXmarket](https://github.com/XcavateBlockchain/realxmarket-solana)
-Solana programs — the whitelist (roles/compliance registry), regions, marketplace and
-property — on **Solana devnet**, and serves them over GraphQL. Built on
+Indexes the five [realXmarket](https://github.com/XcavateBlockchain/realxmarket-solana)
+Solana programs — the whitelist (roles/compliance registry), regions, marketplace, property
+and realxhub (registered ahead of its devnet deploy, ADR-30) — on **Solana devnet**, and
+serves them over GraphQL. Built on
 [Carbon](https://github.com/sevenlabs-hq/carbon) (Rust), reading one live Yellowstone gRPC
 stream from Alchemy plus RPC-driven backfill/snapshot paths for completeness. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline, schema, and where the old SubQuery-based
@@ -15,6 +16,7 @@ indexer's logic ended up; [DECISIONS.md](DECISIONS.md) for why things are built 
 | regions | `5iupkzVtWxee48UXh3s615V9sXXuYjsSr61VPuduXdPc` | 487,427,494 |
 | marketplace | `dj9Q3CpHvDHwexCbkgJ5APDx4JsTxPssNebkvP15g1T` | 487,427,626 |
 | property | `deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq` | 487,427,732 |
+| realxhub | `Hjd9AHDefWgTnwCGLCoTPRqttpXHWCAUE3zv9aeNJnXu` | — (not yet deployed; ADR-30) |
 
 Each program is indexed from its own deployment slot, so the dataset covers the protocol's
 complete history. The whitelist was migrated first (whitelist-only scope, ADR-19); the three
@@ -101,7 +103,7 @@ Source: [`.env.example`](.env.example), `crates/indexer/src/config.rs`,
 | `ALCHEMY_GRPC_URL` | indexer | `https://solana-devnet.g.alchemy.com` | Yellowstone gRPC host. |
 | `ALCHEMY_RPC_URL` | indexer, api | `https://solana-devnet.g.alchemy.com/v2/$ALCHEMY_API_KEY` | JSON-RPC primary endpoint override. |
 | `RPC_FALLBACK_URL` | indexer, api | `https://api.devnet.solana.com` | Public devnet RPC, used when the primary errors (throttling, plan limits). |
-| `PROGRAMS` | indexer, api | *(unset → all four)* | Comma-separated subset of registry names (`xcavate_whitelist,regions,marketplace,property`). For the indexer: which programs to subscribe, snapshot, backfill and reconcile. For the api: which programs' rows the `/health` and `syncStatus` aggregates cover — set BOTH to the same value when narrowing on a database that has other programs' rows, or the excluded programs' frozen `sync_state` rows drag the aggregates behind forever. Addresses and per-program backfill floors are compiled in (`crates/indexer/src/programs.rs`) — the old `PROGRAM_ID`/`BACKFILL_START_SLOT` overrides are gone (a decoder only recognises its compiled-in program, so overriding the address never worked). |
+| `PROGRAMS` | indexer, api | *(unset → all five)* | Comma-separated subset of registry names (`xcavate_whitelist,regions,marketplace,property,realxhub`). For the indexer: which programs to subscribe, snapshot, backfill and reconcile. For the api: which programs' rows the `/health` and `syncStatus` aggregates cover — set BOTH to the same value when narrowing on a database that has other programs' rows, or the excluded programs' frozen `sync_state` rows drag the aggregates behind forever. Addresses and per-program backfill floors are compiled in (`crates/indexer/src/programs.rs`) — the old `PROGRAM_ID`/`BACKFILL_START_SLOT` overrides are gone (a decoder only recognises its compiled-in program, so overriding the address never worked). |
 | `METRICS_ADDR` | indexer, api | `0.0.0.0:9464` (indexer) / `0.0.0.0:9465` (api) | Prometheus `/metrics` bind address — deliberately different per binary so they never collide on one host. |
 | `RECONCILE_INTERVAL` | indexer | `300` (seconds) | How often the reconciliation supervisor re-walks the tip. See [ARCHITECTURE.md §5](ARCHITECTURE.md#5-contiguity-crawler-driven-reconciliation). |
 | `WEBHOOK_URL` | indexer | *(unset → disabled)* | Outbound webhook target for property-asset registration (ADR-28): when a new `PropertyAsset` PDA is created (marketplace `init_property_assets`), the indexer's background loop POSTs one JSON document here. Unset/empty = no delivery loop is spawned and no external call is made (the durable `webhook_events` rows are still recorded). See [RUNBOOK.md](RUNBOOK.md) "Property-asset registration webhooks". |
@@ -161,9 +163,10 @@ exists instead of trusting the live stream alone.
 
 ## Regenerating a decoder after an IDL change
 
-The four decoder crates (`crates/whitelist-decoder`, `crates/marketplace-decoder`,
-`crates/property-decoder`, `crates/regions-decoder`) are **generated — never hand-edit
-them** (`cargo fmt` must not touch them either; they are excluded from the workspace, so
+The five decoder crates (`crates/whitelist-decoder`, `crates/marketplace-decoder`,
+`crates/property-decoder`, `crates/regions-decoder`, `crates/realxhub-decoder`) are
+**generated — never hand-edit them** (`cargo fmt` must not touch them either; they are
+excluded from the workspace, so
 plain `cargo fmt` skips them — never run `cargo fmt --all`). If an IDL under `idls/` changes
 (a program upgrade, a new instruction), regenerate that program's crate with the exact
 command Task 1 verified — pinned to the CLI version that generates against
@@ -197,7 +200,7 @@ decoders are consumed.
 
 ## Adding another program
 
-All four checked-in IDLs are indexed. A future program follows the same shape (it is what
+All five checked-in IDLs are indexed. A future program follows the same shape (it is what
 ADR-19 planned and ADR-22 executed for the siblings): a generated decoder crate
 (`carbon-cli`, command above; add it to the root `Cargo.toml` `exclude` list and the
 pre-cook `COPY` lines in `docker/rust.Dockerfile`), a registry entry in
@@ -216,10 +219,11 @@ crates/whitelist-decoder/   generated Carbon decoders, one per program (never ha
 crates/marketplace-decoder/
 crates/property-decoder/
 crates/regions-decoder/
+crates/realxhub-decoder/
 crates/indexer/             the pipeline binary: run / backfill / snapshot / smoke-grpc
 crates/api/                 the GraphQL API binary (Axum + Juniper), :3010
 migrations/                 sqlx migrations, applied in filename order (additive-only, see scripts/lint-migrations.sh)
-idls/                       the four programs' Anchor IDLs as DEPLOYED on devnet (see idls/README.md)
+idls/                       the five programs' Anchor IDLs (four deployed on devnet; realxhub registered ahead of its deploy — ADR-30) (see idls/README.md)
 agent/skills/               the maintenance agent's procedures (entry point: AGENTS.md)
 scripts/                    lint-migrations.sh + scripts/agent/ maintenance tooling
 monitoring/                 Prometheus scrape config + alert rules + Grafana provisioning

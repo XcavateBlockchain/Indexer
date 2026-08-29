@@ -64,7 +64,7 @@ one crash-loops every existing database, including production, at its next start
    carrying it violates the CHECK; `crates/indexer/src/batcher.rs` retries the identical
    failed batch forever (exponential backoff, 1s→30s cap, until shutdown), the bounded
    channel backpressures the processor, and carbon's update loop halts — ingestion for ALL
-   FOUR programs stalls on one deterministic failure. Postgres cannot alter a CHECK in
+   FIVE programs stalls on one deterministic failure. Postgres cannot alter a CHECK in
    place; the sanctioned pattern is drop+re-add with a strict-superset argument:
 
    ```sql
@@ -191,7 +191,7 @@ one crash-loops every existing database, including production, at its next start
 ## Traps
 
 - **Editing an applied migration**: sqlx checksum mismatch → instant crash-loop for every existing DB including production. Also: if you renumber/edit your OWN in-progress file after applying it to carbon-mig-test-pg, that local DB is poisoned — recreate the container; never "fix" by editing history.
-- **CHECK stall**: an unwidened enum CHECK deterministically fails the batch; `batcher.rs` retries it forever and all four programs stop ingesting. The lint will NOT warn you — it has no `DROP CONSTRAINT`/`ADD CONSTRAINT` keyword.
+- **CHECK stall**: an unwidened enum CHECK deterministically fails the batch; `batcher.rs` retries it forever and all five programs stop ingesting. The lint will NOT warn you — it has no `DROP CONSTRAINT`/`ADD CONSTRAINT` keyword.
 - **DO UPDATE SET omission**: compiles, passes insert tests, silently serves stale values on every conflict update. Grep each touched upsert: column count in `SET` must equal columns-minus-pubkey.
 - **Roster drift**: `the_generic_close_matches_every_state_table` catches a `StateTable` entry with no real table (dynamic UPDATE errors); `every_state_table_belongs_to_exactly_one_program` catches an entry missing from (or duplicated across) `ProgramSpec.tables`. NOTHING catches a table created in SQL but never added to `StateTable` — it passes every test and is simply never closed or swept. The enum edit is on you.
 - **Version metadata in state tables**: decoder/schema-version columns belong ONLY on append-only history (`program_instructions.decoder_version`, 0011). State tables are ADR-2 disposable on-chain mirrors — anything not reconstructible from a fresh snapshot breaks their drop-and-rebuild contract.

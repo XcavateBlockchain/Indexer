@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM realxhub_share_listing\n        WHERE ($1::bytea IS NULL OR seller = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a72632cfe8c8a1e14fe5e3988c91a0e00c5af46ae26061183236f6d9205a75b2"
+}
