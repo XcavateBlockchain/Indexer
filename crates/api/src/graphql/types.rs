@@ -110,7 +110,7 @@ pub struct AccessCheck {
     pub compliant: bool,
 }
 
-/// Replaces the old SubQuery `_metadata` surface. With four programs indexed, the top-level
+/// Replaces the old SubQuery `_metadata` surface. With five programs indexed, the top-level
 /// fields are fleet aggregates -- the stack is only as caught-up as its laggiest program:
 /// `lastContiguousSlot` is the minimum across programs, `backfillComplete` is true only when
 /// every program's backfill is complete, `snapshotSlot` is the oldest snapshot (null if any

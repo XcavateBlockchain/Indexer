@@ -30,7 +30,7 @@ version="${2:?usage: freeze-decoder-version.sh <registry_name> <version>}"
 
 case "$name" in
     xcavate_whitelist) dir="whitelist-decoder" ;;
-    regions|marketplace|property) dir="$name-decoder" ;;
+    regions|marketplace|property|realxhub) dir="$name-decoder" ;;
     *) echo "error: unknown registry name '$name'" >&2; exit 1 ;;
 esac
 

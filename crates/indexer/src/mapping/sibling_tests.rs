@@ -663,6 +663,147 @@ mod marketplace {
     }
 }
 
+mod realxhub {
+    //! Realxhub (fractional hub shares, fifth program onboarded — ADR-30): two instruction
+    //! shapes touch the close logic — `delist_shares` unconditionally closes the seller's
+    //! listing (position 2) and `buy_shares` closes it *only if the purchase empties it*
+    //! (the IfEmptied arm). Everything else is a plain state upsert and must produce no
+    //! closes, no actions, no webhook events. The decoder is exercised end-to-end through
+    //! the same `decoded_for` fixture every sibling program uses (ADR-03).
+    use super::*;
+    use crate::mapping::realxhub::map_instruction;
+    use carbon_realxhub_decoder::instructions::{
+        BuyShares, ClaimIncome, CreateHub, DelistShares, Faucet, Initialize, ListShares,
+        RealxhubInstruction, RecordSale,
+    };
+    use carbon_realxhub_decoder::types::HubParams;
+    use carbon_realxhub_decoder::PROGRAM_ID;
+
+    fn map(data: RealxhubInstruction, n_accounts: usize) -> MappedInstruction {
+        map_instruction(
+            &metadata(),
+            &decoded_for(PROGRAM_ID, data, &pks(n_accounts)),
+            block_time(),
+        )
+        .expect("mapping must succeed")
+        .expect("this variant must produce rows")
+    }
+
+    /// `delist_shares` [seller, holding, listing] → unconditional close of the listing at
+    /// position 2 (the program zeroes the amount; the batcher closes when the post-mapping
+    /// balance hits zero — same ruling as the marketplace's `delist_property_shares`).
+    #[test]
+    fn delist_shares_always_closes_the_listing() {
+        let m = map(
+            RealxhubInstruction::DelistShares(DelistShares { hub_id: 1 }),
+            3,
+        );
+        assert_eq!(m.instruction.ix_name, "delist_shares");
+        expect_close(&m, StateTable::RealxhubShareListing, 2);
+    }
+
+    /// `buy_shares` [buyer, seller, hub, listing, …] → the seller's listing (position 3)
+    /// closes only if the purchase empties it, carrying the bought amount for the
+    /// zero-balance check.
+    #[test]
+    fn buy_shares_closes_the_listing_if_emptied() {
+        let m = map(
+            RealxhubInstruction::BuyShares(BuyShares {
+                hub_id: 1,
+                amount: 25,
+                max_cost: 1_000_000_000,
+            }),
+            15,
+        );
+        assert_eq!(m.instruction.ix_name, "buy_shares");
+        assert_eq!(
+            m.closes,
+            vec![PendingClose::RealxhubShareListingIfEmptied {
+                pubkey: pk(4).to_bytes().to_vec(),
+                bought_amount: 25,
+                slot: SLOT as i64,
+            }]
+        );
+    }
+
+    /// A short account list on a closing instruction is a loud error, never a silent skip —
+    /// the same contract as the marketplace's `close_dead_listing` guard.
+    #[test]
+    fn a_short_account_list_on_delist_shares_is_a_loud_error() {
+        let err = map_instruction(
+            &metadata(),
+            &decoded_for(
+                PROGRAM_ID,
+                RealxhubInstruction::DelistShares(DelistShares { hub_id: 1 }),
+                &pks(2),
+            ),
+            block_time(),
+        )
+        .expect_err("must not silently skip the close");
+        assert_eq!(err.reason(), "missing_account");
+    }
+
+    /// The state-upsert instructions (faucet, record_sale, claim_income, initialize,
+    /// list_shares, create_hub) land rows in the state tables and touch nothing that can
+    /// be closed.
+    #[test]
+    fn the_state_upsert_instructions_produce_no_closes() {
+        for (name, data, n_accounts) in [
+            ("faucet", RealxhubInstruction::Faucet(Faucet {}), 8),
+            (
+                "record_sale",
+                RealxhubInstruction::RecordSale(RecordSale {
+                    hub_id: 1,
+                    amount: 1_000,
+                }),
+                14,
+            ),
+            (
+                "claim_income",
+                RealxhubInstruction::ClaimIncome(ClaimIncome { hub_id: 1 }),
+                9,
+            ),
+            (
+                "initialize",
+                RealxhubInstruction::Initialize(Initialize {}),
+                7,
+            ),
+            (
+                "list_shares",
+                RealxhubInstruction::ListShares(ListShares {
+                    hub_id: 1,
+                    amount: 10,
+                    price: 1_000_000,
+                }),
+                5,
+            ),
+            (
+                "create_hub",
+                RealxhubInstruction::CreateHub(CreateHub {
+                    params: HubParams {
+                        name: "spv-hub-1".into(),
+                        per_wallet_cap: 10,
+                        supplier: pk(1),
+                        operators: pk(2),
+                        protocol: pk(3),
+                    },
+                }),
+                12,
+            ),
+        ] {
+            let m = map(data, n_accounts);
+            assert_eq!(m.instruction.program_id, PROGRAM_ID.to_bytes().to_vec());
+            assert_eq!(m.instruction.ix_name, name);
+            assert!(
+                m.action.is_none(),
+                "{name}: realxhub has no webhook actions"
+            );
+            assert!(m.webhook_events.is_empty(), "{name}: no webhook events");
+            assert!(m.closes.is_empty(), "{name}: must not close anything");
+        }
+    }
+}
+
 /// One decode-through test per sibling decoder would need real discriminator bytes; the
 /// whitelist's `a_real_borsh_encoded_instruction_decodes_and_maps` already exercises the
 /// decoder -> mapper seam, and the sibling decoders are generated by the same tool from the

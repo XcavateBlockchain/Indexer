@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, last_drip\n        FROM realxhub_faucet_receipt\n        WHERE ($1::bool IS NULL OR (closed_at_slot IS NULL) = $1)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $2 OFFSET $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_drip",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "347123c0040b83241e497a0853109ff3bee31e6930f6578df2d35969d469aad6"
+}

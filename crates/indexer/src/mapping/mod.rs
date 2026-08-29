@@ -7,7 +7,8 @@
 //!
 //! * [`whitelist`] -- the port of the old SubQuery `mappingHandlers.ts` (ruling R7: one
 //!   instruction => one `program_instructions` row + one `whitelist_actions` row).
-//! * [`regions`], [`marketplace`], [`property`] -- the sibling programs. One instruction =>
+//! * [`regions`], [`marketplace`], [`property`], [`realxhub`] -- the sibling programs. One
+//!   instruction =>
 //!   one `program_instructions` row; there is no per-program action log for them (the
 //!   whitelist's exists for SubQuery parity only), so current state comes from the
 //!   account-state tables and history from `program_instructions`.
@@ -29,6 +30,7 @@ use crate::db::models::{NewAction, NewInstruction};
 
 pub mod marketplace;
 pub mod property;
+pub mod realxhub;
 pub mod regions;
 pub mod whitelist;
 
@@ -114,6 +116,16 @@ pub enum PendingClose {
     ShareListingIfEmptiedByOffer {
         pubkey: Vec<u8>,
         offer_pubkey: Vec<u8>,
+        slot: i64,
+    },
+    /// Conditional close of a realxhub `ShareListing` by `buy_shares`, which on-chain closes
+    /// the PDA only when the buy emptied it. The instruction's `amount` arg carries how many
+    /// shares were bought; the batcher's write
+    /// (`db::realxhub::close_share_listing_if_emptied`) compares it against the stored row's
+    /// remaining amount.
+    RealxhubShareListingIfEmptied {
+        pubkey: Vec<u8>,
+        bought_amount: i64,
         slot: i64,
     },
 }

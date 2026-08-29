@@ -1,6 +1,6 @@
 //! Detection of on-chain upgrades of the indexed programs (ADR-24).
 //!
-//! Every one of the four programs is owned by the BPF upgradeable loader, so a redeploy of
+//! Every one of the five programs is owned by the BPF upgradeable loader, so a redeploy of
 //! its bytecode is not an out-of-band event -- it is a transaction executing the loader's
 //! `Upgrade` instruction with the program account in its account list. That transaction
 //! therefore already passes the per-program Yellowstone filters (`account_required` matches

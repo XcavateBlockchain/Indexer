@@ -1,0 +1,103 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, id, name, share_mint, operational_spv,\n               supplier, operators, protocol, per_wallet_cap, income_per_share, income_dust\n        FROM realxhub_hub\n        WHERE ($1::bigint IS NULL OR id = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $3 OFFSET $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "share_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "operational_spv",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "supplier",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 9,
+        "name": "operators",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 10,
+        "name": "protocol",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 11,
+        "name": "per_wallet_cap",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "income_per_share",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "income_dust",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5452a8697e7b00160c263ce558f448fa1e93a23b90785f3bc894d0f1d343e20a"
+}

@@ -7,7 +7,7 @@
 //! The pipeline (`datasource -> decode -> map -> batcher`) is pure chain-mirror machinery:
 //! every write is idempotent, slot-guarded, and must never fail deterministically -- the
 //! batcher retries a failed batch forever, so one dead URI would stall ingestion of ALL
-//! four programs (the write-migration skill's stall trap). The metadata document is
+//! five programs (the write-migration skill's stall trap). The metadata document is
 //! off-chain, mutable, and operator-hosted: fetching it belongs in its own loop with its
 //! own per-URI backoff, writing through `db::property_metadata` and never through the
 //! batcher.

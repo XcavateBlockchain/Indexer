@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO realxhub_faucet_receipt (pubkey, slot, lamports, closed_at_slot, last_drip, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot = EXCLUDED.slot,\n            lamports = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            last_drip = EXCLUDED.last_drip,\n            bump = EXCLUDED.bump\n        WHERE realxhub_faucet_receipt.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3ca072629adff828375d3611606309ca29f3ce785a63f2874304e739802e99fc"
+}

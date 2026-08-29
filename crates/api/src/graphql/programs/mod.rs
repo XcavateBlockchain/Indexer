@@ -1,8 +1,8 @@
-//! Per-program GraphQL surfaces for the sibling programs (marketplace, property, regions),
-//! one submodule each: entity types mirroring the account-state tables of migrations
-//! 0008..0010, plus the resolver bodies `QueryRoot` delegates to (juniper permits only one
-//! `#[graphql_object]` impl per type, so the fields live on `QueryRoot` and the work lives
-//! here).
+//! Per-program GraphQL surfaces for the sibling programs (marketplace, property, regions,
+//! realxhub), one submodule each: entity types mirroring the account-state tables of
+//! migrations 0008..0015, plus the resolver bodies `QueryRoot` delegates to (juniper
+//! permits only one `#[graphql_object]` impl per type, so the fields live on `QueryRoot`
+//! and the work lives here).
 //!
 //! Shared conventions (matching the whitelist surface in `super::types`):
 //!
@@ -21,6 +21,7 @@ use juniper::{FieldError, FieldResult, Value};
 
 pub mod marketplace;
 pub mod property;
+pub mod realxhub;
 pub mod regions;
 
 pub(crate) fn b58(bytes: &[u8]) -> String {

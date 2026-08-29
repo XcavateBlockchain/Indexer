@@ -82,6 +82,7 @@ COPY crates/whitelist-decoder crates/whitelist-decoder
 COPY crates/marketplace-decoder crates/marketplace-decoder
 COPY crates/property-decoder crates/property-decoder
 COPY crates/regions-decoder crates/regions-decoder
+COPY crates/realxhub-decoder crates/realxhub-decoder
 # Dependency layer, cached across builds unless Cargo.toml/Cargo.lock/decoder crates change.
 # BuildKit cache mounts (registry downloads + incremental target/) survive even when the
 # Dockerfile-layer cache above them is invalidated (e.g. by an application source change) --

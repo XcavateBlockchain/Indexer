@@ -4,13 +4,15 @@
     "xcavate_whitelist": "7TrzjKpdrEhnfhxuw8tWdH1sjxadazscsG5HXCDPLmaY",
     "regions": "5iupkzVtWxee48UXh3s615V9sXXuYjsSr61VPuduXdPc",
     "marketplace": "dj9Q3CpHvDHwexCbkgJ5APDx4JsTxPssNebkvP15g1T",
-    "property": "deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq"
+    "property": "deCp9srk9C6P4BXJaFpjR5H6Jsm6DCq8AL2kk338dVq",
+    "realxhub": "Hjd9AHDefWgTnwCGLCoTPRqttpXHWCAUE3zv9aeNJnXu"
   },
   "deploy_slots": {
     "xcavate_whitelist": 487427394,
     "regions": 487427494,
     "marketplace": 487427626,
-    "property": 487427732
+    "property": 487427732,
+    "realxhub": 0
   },
   "mints": {
     "xcav": "8dW943dozaNPdRRaW6xpV2vxFv1Kcpz3z63Nji3VLups",
@@ -21,7 +23,8 @@
     "whitelist": "2AbUzgHBgyYZ3ujZ2WbF78ZNUkK5LWTCRro1mGXuYcbo",
     "regions": "FBq1xdKfjnGt68qUyspF5NaUPiNRbFECbsVtWXcjGV5q",
     "marketplace": "FvypPqraGoYskTM9jiUywfsdfTeoqkXg2RdPHuw5S7aK",
-    "property": "B88Lhv3UsTKJ7hdubi5KHz5WynMx7GnEWmx6zDZvFpHa"
+    "property": "B88Lhv3UsTKJ7hdubi5KHz5WynMx7GnEWmx6zDZvFpHa",
+    "realxhub": "3y13c4cpPne3qbTHx3oSf9vcEhC6TWgLphNy8Svrznjs"
   },
   "region": { "id": 1, "address": "5qDQzydw8oSw7uCPThUihyo6yc1NZcWQkhhebDKpC6Cn", "postcodes": ["SW1A1AA", "M11AE"] },
   "wallets": {

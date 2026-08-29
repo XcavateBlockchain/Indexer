@@ -1,0 +1,1820 @@
+{
+  "address": "Hjd9AHDefWgTnwCGLCoTPRqttpXHWCAUE3zv9aeNJnXu",
+  "metadata": {
+    "name": "realxhub",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "realXhub demo: fractional hub shares on a secondary market"
+  },
+  "instructions": [
+    {
+      "name": "buy_shares",
+      "discriminator": [
+        40,
+        239,
+        138,
+        154,
+        8,
+        37,
+        106,
+        108
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "seller",
+          "docs": [
+            "payment and, when the listing empties, its rent."
+          ],
+          "writable": true
+        },
+        {
+          "name": "hub",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  117,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller_holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyer_holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "buyer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "share_mint",
+          "writable": true
+        },
+        {
+          "name": "seller_share_account",
+          "writable": true
+        },
+        {
+          "name": "buyer_share_account",
+          "docs": [
+            "derivation checked) by the associated-token program."
+          ],
+          "writable": true
+        },
+        {
+          "name": "stable_mint",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  98,
+                  108,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyer_stable",
+          "docs": [
+            "program checks ownership and balance on the transfer itself."
+          ],
+          "writable": true
+        },
+        {
+          "name": "seller_stable",
+          "docs": [
+            "derivation checked) by the associated-token program."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "hub_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u32"
+        },
+        {
+          "name": "max_cost",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "claim_income",
+      "discriminator": [
+        6,
+        24,
+        199,
+        191,
+        118,
+        141,
+        95,
+        123
+      ],
+      "accounts": [
+        {
+          "name": "holder",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "hub",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  117,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "holder"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stable_mint",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  98,
+                  108,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "income_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "hub"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "stable_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "holder_stable",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "holder"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "stable_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "hub_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "create_hub",
+      "discriminator": [
+        247,
+        142,
+        101,
+        165,
+        135,
+        38,
+        9,
+        91
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "hub",
+          "docs": [
+            "The hub PDA is also the share mint's freeze authority and permanent",
+            "delegate, so it signs every share movement."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  117,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.next_hub_id",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "share_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  97,
+                  114,
+                  101,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.next_hub_id",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "operational_spv"
+        },
+        {
+          "name": "spv_share_account",
+          "writable": true
+        },
+        {
+          "name": "spv_holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.next_hub_id",
+                "account": "Config"
+              },
+              {
+                "kind": "account",
+                "path": "operational_spv"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stable_mint",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  98,
+                  108,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "income_vault",
+          "docs": [
+            "claimed; created in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "HubParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "delist_shares",
+      "discriminator": [
+        75,
+        11,
+        92,
+        6,
+        15,
+        186,
+        201,
+        253
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "hub_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "faucet",
+      "discriminator": [
+        0,
+        98,
+        59,
+        30,
+        144,
+        142,
+        113,
+        12
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "stable_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  98,
+                  108,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "receipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  97,
+                  117,
+                  99,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "caller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "caller_stable",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "caller"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "stable_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initialize",
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "program",
+          "docs": [
+            "This program's executable account, tying `program_data` to it."
+          ],
+          "address": "Hjd9AHDefWgTnwCGLCoTPRqttpXHWCAUE3zv9aeNJnXu"
+        },
+        {
+          "name": "program_data",
+          "docs": [
+            "Only the upgrade authority can claim the config (and with it the",
+            "faucet mint), so a deploy can't be sniped between deploy and init."
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "stable_mint",
+          "docs": [
+            "name on-chain. The config PDA keeps the mint authority so the faucet",
+            "can drip without any key being shared."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  98,
+                  108,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "list_shares",
+      "discriminator": [
+        156,
+        51,
+        24,
+        84,
+        242,
+        112,
+        152,
+        53
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "hub",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  117,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "docs": [
+            "One live listing per seller per hub; delist to change it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "hub_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u32"
+        },
+        {
+          "name": "price",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "record_sale",
+      "discriminator": [
+        224,
+        117,
+        233,
+        68,
+        233,
+        154,
+        0,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "hub",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  117,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hub_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stable_mint",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  98,
+                  108,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer_stable",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "payer"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "stable_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "supplier"
+        },
+        {
+          "name": "supplier_stable",
+          "writable": true
+        },
+        {
+          "name": "operators"
+        },
+        {
+          "name": "operators_stable",
+          "writable": true
+        },
+        {
+          "name": "protocol"
+        },
+        {
+          "name": "protocol_stable",
+          "writable": true
+        },
+        {
+          "name": "income_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "hub"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "stable_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "hub_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "FaucetReceipt",
+      "discriminator": [
+        226,
+        121,
+        83,
+        120,
+        145,
+        233,
+        226,
+        179
+      ]
+    },
+    {
+      "name": "Holding",
+      "discriminator": [
+        23,
+        96,
+        64,
+        250,
+        235,
+        191,
+        0,
+        144
+      ]
+    },
+    {
+      "name": "Hub",
+      "discriminator": [
+        143,
+        189,
+        4,
+        120,
+        169,
+        234,
+        14,
+        125
+      ]
+    },
+    {
+      "name": "ShareListing",
+      "discriminator": [
+        38,
+        219,
+        182,
+        80,
+        137,
+        29,
+        254,
+        143
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "HubCreated",
+      "discriminator": [
+        23,
+        9,
+        252,
+        247,
+        30,
+        187,
+        151,
+        167
+      ]
+    },
+    {
+      "name": "IncomeClaimed",
+      "discriminator": [
+        21,
+        89,
+        144,
+        230,
+        121,
+        18,
+        93,
+        243
+      ]
+    },
+    {
+      "name": "SaleRecorded",
+      "discriminator": [
+        142,
+        88,
+        165,
+        117,
+        120,
+        73,
+        169,
+        110
+      ]
+    },
+    {
+      "name": "SharesBought",
+      "discriminator": [
+        240,
+        98,
+        69,
+        10,
+        253,
+        234,
+        226,
+        65
+      ]
+    },
+    {
+      "name": "SharesDelisted",
+      "discriminator": [
+        144,
+        224,
+        44,
+        62,
+        218,
+        208,
+        50,
+        133
+      ]
+    },
+    {
+      "name": "SharesListed",
+      "discriminator": [
+        233,
+        5,
+        16,
+        63,
+        107,
+        7,
+        205,
+        196
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6001,
+      "name": "NotAuthority",
+      "msg": "Only the config authority may do this"
+    },
+    {
+      "code": 6002,
+      "name": "NotUpgradeAuthority",
+      "msg": "Only the program upgrade authority may initialize"
+    },
+    {
+      "code": 6003,
+      "name": "PriceLimitExceeded",
+      "msg": "The listing costs more than the buyer agreed to"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidName",
+      "msg": "Hub name is empty or too long"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidAmount",
+      "msg": "Amount must be greater than zero"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidPrice",
+      "msg": "Price must be greater than zero"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidCap",
+      "msg": "Per-wallet cap must be between 1 and the share supply"
+    },
+    {
+      "code": 6008,
+      "name": "InsufficientShares",
+      "msg": "Not enough unlisted shares"
+    },
+    {
+      "code": 6009,
+      "name": "NotEnoughListed",
+      "msg": "The listing holds fewer shares than that"
+    },
+    {
+      "code": 6010,
+      "name": "WalletCapExceeded",
+      "msg": "Purchase would exceed the per-wallet cap"
+    },
+    {
+      "code": 6011,
+      "name": "WrongTokenAccount",
+      "msg": "Not the associated token account for that wallet"
+    },
+    {
+      "code": 6012,
+      "name": "NothingToClaim",
+      "msg": "No income to claim"
+    },
+    {
+      "code": 6013,
+      "name": "FaucetCooldown",
+      "msg": "The faucet already dripped to this wallet this hour"
+    }
+  ],
+  "types": [
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "stable_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "next_hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FaucetReceipt",
+      "docs": [
+        "Per-wallet faucet cooldown marker."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "last_drip",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Holding",
+      "docs": [
+        "The canonical per-holder ledger. Share tokens sit frozen in the owner's",
+        "token account; this account is what the program trusts."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "amount",
+            "type": "u32"
+          },
+          {
+            "name": "listed",
+            "docs": [
+              "Shares currently up for sale; still owned, still earning."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "per_share",
+            "docs": [
+              "The hub's `income_per_share` this holding is settled up to."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "pending",
+            "docs": [
+              "Settled income not yet paid out."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Hub",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "id",
+            "type": "u64"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "share_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "operational_spv",
+            "docs": [
+              "The operational SPV: first holder of all 100 shares."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "supplier",
+            "type": "pubkey"
+          },
+          {
+            "name": "operators",
+            "type": "pubkey"
+          },
+          {
+            "name": "protocol",
+            "type": "pubkey"
+          },
+          {
+            "name": "per_wallet_cap",
+            "type": "u32"
+          },
+          {
+            "name": "income_per_share",
+            "docs": [
+              "Cumulative stablecoin income per share since the hub was created."
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "income_dust",
+            "docs": [
+              "Remainder of holder legs that didn't divide by the supply; carried",
+              "into the next sale so nothing is lost."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HubCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "share_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "operational_spv",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HubParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "per_wallet_cap",
+            "type": "u32"
+          },
+          {
+            "name": "supplier",
+            "type": "pubkey"
+          },
+          {
+            "name": "operators",
+            "type": "pubkey"
+          },
+          {
+            "name": "protocol",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IncomeClaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SaleRecorded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "supplier_leg",
+            "type": "u64"
+          },
+          {
+            "name": "operators_leg",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_leg",
+            "type": "u64"
+          },
+          {
+            "name": "holder_leg",
+            "type": "u64"
+          },
+          {
+            "name": "per_share_gain",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShareListing",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u32"
+          },
+          {
+            "name": "price",
+            "docs": [
+              "Stablecoin per share."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SharesBought",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u32"
+          },
+          {
+            "name": "cost",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SharesDelisted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SharesListed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u32"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

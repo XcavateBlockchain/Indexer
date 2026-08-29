@@ -1,9 +1,9 @@
 //! The full roster of account-state tables and the generic slot-guarded soft close.
 //!
 //! Every state table shares the exact same close shape (`UPDATE <t> SET slot = $2,
-//! closed_at_slot = $2 WHERE pubkey = $1 AND slot < $2`), so with 31 tables across four
+//! closed_at_slot = $2 WHERE pubkey = $1 AND slot < $2`), so with 35 tables across five
 //! programs the close is ONE dynamically-built statement over an enum-constrained table name
-//! rather than 31 copies of a compile-checked macro call. The table name can only come from
+//! rather than 35 copies of a compile-checked macro call. The table name can only come from
 //! [`StateTable`], so nothing user-controlled ever reaches the SQL string; schema drift
 //! (a table missing the shared columns) is caught by `db::tests`, which exercises every
 //! [`StateTable::ALL`] entry against the migrated schema.
@@ -14,9 +14,9 @@
 use sqlx::postgres::PgQueryResult;
 use sqlx::PgExecutor;
 
-/// Every account-state table, across all four programs. The whitelist's three (0002) keep
+/// Every account-state table, across all five programs. The whitelist's three (0002) keep
 /// their legacy unprefixed names; the sibling programs' tables (0008..0010, extended by
-/// 0012 for the 2026-08 redeploy) are program-prefixed.
+/// 0012 for the 2026-08 redeploy, and 0015 for realxhub) are program-prefixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateTable {
     // xcavate_whitelist (migrations/0002)
@@ -54,6 +54,12 @@ pub enum StateTable {
     PropertyLetting,
     PropertyProposal,
     PropertyResignationNotice,
+    // realxhub (migrations/0015)
+    RealxhubConfig,
+    RealxhubFaucetReceipt,
+    RealxhubHolding,
+    RealxhubHub,
+    RealxhubShareListing,
 }
 
 impl StateTable {
@@ -89,6 +95,11 @@ impl StateTable {
         StateTable::PropertyLetting,
         StateTable::PropertyProposal,
         StateTable::PropertyResignationNotice,
+        StateTable::RealxhubConfig,
+        StateTable::RealxhubFaucetReceipt,
+        StateTable::RealxhubHolding,
+        StateTable::RealxhubHub,
+        StateTable::RealxhubShareListing,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -124,6 +135,11 @@ impl StateTable {
             StateTable::PropertyLetting => "property_letting",
             StateTable::PropertyProposal => "property_proposal",
             StateTable::PropertyResignationNotice => "property_resignation_notice",
+            StateTable::RealxhubConfig => "realxhub_config",
+            StateTable::RealxhubFaucetReceipt => "realxhub_faucet_receipt",
+            StateTable::RealxhubHolding => "realxhub_holding",
+            StateTable::RealxhubHub => "realxhub_hub",
+            StateTable::RealxhubShareListing => "realxhub_share_listing",
         }
     }
 }

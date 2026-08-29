@@ -2,7 +2,7 @@
 # End-to-end devnet verification: rebuild the whole dataset from nothing into a disposable
 # Postgres and assert it looks like devnet (docs/agentic-maintenance.md step "Verify").
 #
-# This is the cheapest strong check this stack has: the four programs' complete devnet
+# This is the cheapest strong check this stack has: the five programs' complete devnet
 # footprint is tiny (tens of signatures/accounts), so a full snapshot + backfill against the
 # PUBLIC devnet RPC takes about a minute and exercises decoders, mappers, migrations, the
 # batcher, and the upgrade recorder (ADR-24) in one pass -- the same evidence Phase 10's
@@ -13,10 +13,10 @@
 #   * `indexer snapshot` decodes EVERY account of every program (zero undecodable -- an
 #     undecodable account is exactly the IDL-drift signal this pipeline exists to catch);
 #   * `indexer backfill` walks every program's history to completion;
-#   * each program's config PDA (addresses.json ground truth) landed in its state table;
+#   * each DEPLOYED program's config PDA (addresses.json ground truth) landed in its state table;
 #   * program_upgrades holds each program's seeded deploy boundary, and any 'chain' rows
 #     are surfaced for the operator to read;
-#   * program_instructions is non-empty for every program;
+#   * program_instructions is non-empty for every deployed program (deploy_slot > 0);
 #   * off-chain property metadata documents are fetched (ADR-27): every live asset with a
 #     metadata_uri has at least one fetched document (>= 1, since object storage may be
 #     down); pending/failing rows are surfaced as a NOTE.
@@ -86,8 +86,15 @@ rows="$(psql_c "SELECT count(*) FROM sync_state")"
 declare -A config_table=(
     [whitelist]=config [regions]=regions_config
     [marketplace]=marketplace_config [property]=property_config
+    [realxhub]=realxhub_config
 )
-for key in whitelist regions marketplace property; do
+for key in whitelist regions marketplace property realxhub; do
+    # A registered program that has not been deployed yet (deploy_slot 0, ADR-30) has no
+    # on-chain config PDA to assert: its address is computed, not read from chain.
+    if [ "$key" = "realxhub" ] && [ "$(jq -r '.deploy_slots.realxhub' addresses.json)" = "0" ]; then
+        echo "NOTE: realxhub not yet deployed (deploy_slot 0) -- config PDA 3y13c4cpPne3qbTHx3oSf9vcEhC6TWgLphNy8Svrznjs is computed, not on-chain; skipping assertion"
+        continue
+    fi
     pda="$(jq -r ".configs[\"$key\"]" addresses.json)"
     hex="$(python3 -c "
 import sys
@@ -117,12 +124,16 @@ else
     echo "NOTE: no live assets with a metadata_uri on devnet -- the fetch step was a no-op"
 fi
 
-# Every program produced instruction history.
+# Every DEPLOYED program produced instruction history. A registered program that is not
+# deployed yet (deploy_slot 0, ADR-30) legitimately has zero signatures: its first
+# backfill page is empty and the crawl marks the history exhausted at slot 0.
+deployed_count="$(jq '[.deploy_slots[] | select(. > 0)] | length' addresses.json)"
 empty="$(psql_c "SELECT count(*) FROM (
     SELECT s.program_id FROM sync_state s
     LEFT JOIN program_instructions pi ON pi.program_id = s.program_id
     GROUP BY s.program_id HAVING count(pi.signature) = 0) t")"
-[ "$empty" = "0" ] || err "$empty program(s) have no program_instructions rows after backfill"
+[ "$empty" -le "$((programs_total - deployed_count))" ] \
+    || err "$empty program(s) have no program_instructions rows (expected at most $((programs_total - deployed_count)) not-yet-deployed, ADR-30)"
 
 # Version boundaries: one seeded 'deploy' row per program, always. 'chain' rows mean the
 # deployed programs have been upgraded -- not a failure, but the operator must know.

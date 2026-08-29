@@ -157,7 +157,7 @@ than before, or the reconciliation supervisor's crawl reports slots that no long
 Solana devnet is periodically reset by the network operators, which orphans all prior
 history.
 
-**Recovery** (minutes, at these programs' data volume — the whole four-program history is
+**Recovery** (minutes, at these programs' data volume — the whole five-program history is
 ~31 signatures and ~30 accounts as of the ADR-26 redeploy):
 
 ```bash

@@ -9,6 +9,7 @@ carbon-xcavate-whitelist-decoder = { path = "../whitelist-decoder", features = [
 carbon-marketplace-decoder = { path = "../marketplace-decoder", features = ["postgres"] }
 carbon-property-decoder = { path = "../property-decoder", features = ["postgres"] }
 carbon-regions-decoder = { path = "../regions-decoder", features = ["postgres"] }
+carbon-realxhub-decoder = { path = "../realxhub-decoder", features = ["postgres"] }
 # Pinned to 0.8.6 to match the version the generated decoder crate already pulls in via its
 # own `postgres` feature (see .superpowers/sdd/carbon-migration-spec/env-notes.md, ruling R9)
 # -- a mismatched sqlx version here would duplicate the dependency graph.

@@ -828,6 +828,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "carbon-realxhub-decoder"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "carbon-core",
+ "serde",
+ "serde-big-array",
+ "serde_json",
+ "solana-account",
+ "solana-instruction",
+ "solana-pubkey 3.0.0",
+ "sqlx",
+ "sqlx_migrator",
+]
+
+[[package]]
 name = "carbon-regions-decoder"
 version = "0.1.0"
 dependencies = [
@@ -2391,6 +2408,7 @@ dependencies = [
  "carbon-core",
  "carbon-marketplace-decoder",
  "carbon-property-decoder",
+ "carbon-realxhub-decoder",
  "carbon-regions-decoder",
  "carbon-rpc-transaction-crawler-datasource",
  "carbon-xcavate-whitelist-decoder",

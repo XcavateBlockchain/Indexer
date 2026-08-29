@@ -146,6 +146,15 @@ impl<M: ProgramMapper> Processor for InstructionProcessor<M> {
                     offer_pubkey,
                     slot,
                 },
+                PendingClose::RealxhubShareListingIfEmptied {
+                    pubkey,
+                    bought_amount,
+                    slot,
+                } => WriteOp::CloseRealxhubShareListingIfEmptied {
+                    pubkey,
+                    bought_amount,
+                    slot,
+                },
             });
         }
 

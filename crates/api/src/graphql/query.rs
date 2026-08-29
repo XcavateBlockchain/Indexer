@@ -950,6 +950,57 @@ impl QueryRoot {
     ) -> FieldResult<programs::regions::VoteRecordConnection> {
         programs::regions::vote_records(context, proposal_id, voter, active, first, offset).await
     }
+
+    // --- realxhub ---------------------------------------------------------------------------
+
+    /// The realxhub program's singleton config PDA.
+    async fn realxhub_config(
+        context: &GraphQLContext,
+    ) -> FieldResult<Option<programs::realxhub::RealxhubConfig>> {
+        programs::realxhub::realxhub_config(context).await
+    }
+
+    /// Fractional hubs.
+    async fn realxhub_hubs(
+        context: &GraphQLContext,
+        hub_id: Option<I64>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::realxhub::RealxhubHubConnection> {
+        programs::realxhub::realxhub_hubs(context, hub_id, active, first, offset).await
+    }
+
+    /// Per-holder share holdings (the canonical ledger).
+    async fn realxhub_holdings(
+        context: &GraphQLContext,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::realxhub::RealxhubHoldingConnection> {
+        programs::realxhub::realxhub_holdings(context, active, first, offset).await
+    }
+
+    /// Live secondary-market share listings.
+    async fn realxhub_share_listings(
+        context: &GraphQLContext,
+        seller: Option<String>,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::realxhub::RealxhubShareListingConnection> {
+        programs::realxhub::realxhub_share_listings(context, seller, active, first, offset).await
+    }
+
+    /// Per-wallet faucet cooldown receipts.
+    async fn realxhub_faucet_receipts(
+        context: &GraphQLContext,
+        active: Option<bool>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::realxhub::RealxhubFaucetReceiptConnection> {
+        programs::realxhub::realxhub_faucet_receipts(context, active, first, offset).await
+    }
 }
 
 async fn role_assignment_row(

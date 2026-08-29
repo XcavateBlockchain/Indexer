@@ -151,4 +151,4 @@ executes the upgrade, and correct if the multisig never executes it at all.
   `program_upgrades` + `decoder_version` only (ADR-25); state tables stay ADR-2 mirrors.
 - **Shipping the decoder and the migration in different PRs.** Migrations apply at
   startup; a decoder that can emit a value the schema rejects stalls the whole batcher
-  (all four programs) in a retry loop.
+  (all five programs) in a retry loop.

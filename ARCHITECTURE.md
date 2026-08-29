@@ -66,7 +66,7 @@ day-2 operations, see [RUNBOOK.md](RUNBOOK.md).
   One extra pipe rides both paths (upgrades.rs, ADR-24): a hand-written decoder for the
   BPF upgradeable loader's Upgrade instruction -- upgrade transactions reference the
   program account, so the existing per-program filters and crawls already deliver them --
-  recording every version boundary of the four programs into program_upgrades. Detection
+  recording every version boundary of the five programs into program_upgrades. Detection
   only: reacting to an upgrade is the maintenance loop's job (docs/agentic-maintenance.md).
 
   One outbound notification rides the batcher (webhooks.rs, ADR-28): when a new property
@@ -85,7 +85,7 @@ Prometheus scrapes both, Grafana reads Prometheus, per [RUNBOOK.md](RUNBOOK.md).
 Every account update lands in **two** kinds of table, for different reasons:
 
 - **`program_instructions`** — append-only, one row per decoded instruction of any of the
-  four programs (including nested/CPI instructions, collapsed to `(outer, inner)` index
+  five programs (including nested/CPI instructions, collapsed to `(outer, inner)` index
   pairs), attributed by its `program_id` column, `ON CONFLICT DO NOTHING`. This is the raw
   history: every instruction the programs ever executed, in full, with JSONB-encoded
   arguments (`ADR-4`). Nothing downstream trusts insertion order — a reprocessed
@@ -93,7 +93,8 @@ Every account update lands in **two** kinds of table, for different reasons:
 - **The account-state tables** — slot-guarded, current-only account state, one table per
   on-chain account type, one row per PDA (`ADR-2`, `ADR-6`): the whitelist's legacy
   unprefixed `config` / `admin` / `role_account` plus the program-prefixed sibling tables
-  (`regions_*`, `marketplace_*`, `property_*` — 21 tables, ADR-22). These hold *only*
+  (`regions_*`, `marketplace_*`, `property_*` — 21 tables across the four sibling programs
+  plus the five `realxhub_*` (ADR-22, ADR-30)). These hold *only*
   fields that exist on-chain, so they stay droppable and rebuildable from fresh
   `getProgramAccounts` snapshots at any time (`ADR-3`) — a close is a soft `UPDATE`, never
   a `DELETE` (`ADR-7`).
@@ -188,10 +189,10 @@ The reconciliation supervisor is the *only* writer of `last_contiguous_slot`: ev
 `RECONCILE_INTERVAL` (default 300s), it reads `getSlot` **before** crawling (so its claim
 only covers a range it actually walked), crawls newest-to-oldest down to
 each program's `last_contiguous_slot + 1`, and only then advances that program's frontier to
-the pre-crawl tip (one shared `getSlot` per tick serves all four programs; each enumeration
+the pre-crawl tip (one shared `getSlot` per tick serves all five programs; each enumeration
 page additionally proves the serving node's view has reached that tip, so a lagging fallback
 node cannot cause a false contiguity claim). On quiet programs this is one page (~2 RPC
-calls) per program per cycle — about 2,880 requests/day for four programs, under 6% of
+calls) per program per cycle — about 3,600 requests/day for five programs, under 8% of
 Alchemy's free-tier budget.
 
 `chain_tip_slot - last_contiguous_slot` (the Grafana slot-lag panel, the `SlotLagHigh`
@@ -219,10 +220,11 @@ crates/
   regions-decoder/
   marketplace-decoder/
   property-decoder/
+  realxhub-decoder/
   indexer/              the Carbon pipeline binary: run / backfill / snapshot / smoke-grpc
   api/                  the GraphQL API binary (Axum + Juniper), port 3010
 migrations/             sqlx migrations, applied in filename order (0001..0010)
-idls/                   the four programs' Anchor IDLs — all indexed (ADR-22)
+idls/                   the five programs' Anchor IDLs — all indexed (ADR-22; realxhub ahead of its deploy, ADR-30)
 monitoring/              Prometheus scrape config + alert rules + Grafana provisioning/dashboards
 docker/                 rust.Dockerfile (indexer+api), pg-Dockerfile (postgres), node.Dockerfile (SubQuery rollback only)
 docker-compose.yml       the active stack: postgres, indexer, api, prometheus, grafana

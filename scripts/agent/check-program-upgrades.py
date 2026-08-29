@@ -8,6 +8,10 @@ against addresses.json's deploy_slots (the version-1 slots compiled into the ind
 registry) and, with --graphql URL, against what the indexer itself has recorded in
 `program_upgrades` (the `programUpgrades` query).
 
+A program whose deploy_slot is 0 was registered ahead of its devnet deploy (ADR-30):
+absence on-chain is the EXPECTED state ("NOT YET DEPLOYED", not an error), while a
+loader-v3 presence means the first deploy arrived and its slot must be pinned.
+
 This is the belt to the indexer's braces: the in-pipeline recorder (crates/indexer/src/
 upgrades.rs) sees upgrades through the data paths, while this script asks the chain
 directly -- run it before trusting any upstream diff (build-upstream-idls.sh tells you what
@@ -138,7 +142,24 @@ def main():
         owner, slot = last_deploy_slot(rpc_url, address)
         expected = known.get(name)
         if owner is None:
+            if expected == 0:
+                # Registered ahead of its devnet deploy (ADR-30): absence on-chain is the
+                # EXPECTED state, not a missing program.
+                print(
+                    f"  {name:18} {address}  NOT YET DEPLOYED (deploy_slot 0; pin the real "
+                    "slot in addresses.json + crates/indexer/src/programs.rs when it lands)"
+                )
+                continue
             print(f"  {name:18} {address}  MISSING ON-CHAIN (devnet reset? wrong cluster?)")
+            upgraded = True
+            continue
+        if expected == 0:
+            # On-chain but registered pre-deploy: the first deploy has arrived and its
+            # slot must be pinned before the indexer can route it (ADR-30).
+            print(
+                f"  {name:18} {address}  FIRST DEPLOY DETECTED at slot {slot} -- pin "
+                "deploy_slot in addresses.json + crates/indexer/src/programs.rs (ADR-30)"
+            )
             upgraded = True
             continue
         if slot is None:

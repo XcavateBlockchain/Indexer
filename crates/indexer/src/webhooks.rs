@@ -5,7 +5,7 @@
 //!
 //! The pipeline (`datasource -> decode -> map -> batcher`) is pure chain-mirror machinery:
 //! every write is idempotent, slot-guarded, and must never block on the outside world. An
-//! HTTP POST on the write path would couple ingestion of all four programs to the availability
+//! HTTP POST on the write path would couple ingestion of all five programs to the availability
 //! of an operator endpoint, and the batcher's forever-retry on a deterministic failure (the
 //! write-migration skill's stall trap) would stall everything on one dead endpoint. So the
 //! mapper only RECORDS the event durably (`WriteOp::RecordWebhookEvent` -> `webhook_events`);
