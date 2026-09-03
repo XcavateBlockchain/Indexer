@@ -111,6 +111,15 @@ point `INDEXER_IMAGE`/`API_IMAGE`/`PG_IMAGE` at an earlier SHA tag and `docker c
 GitHub: open the last good run of the Deploy workflow and choose **Re-run all jobs**
 (`workflow_dispatch` cannot target an arbitrary commit), or `git revert` and push.
 
+Rolling back to an *older* SHA can also be the right move against a *newer* deploy: an
+image built from newer `main` is not automatically better than an older one. The 2026-09-03
+incident was exactly this — a fresh build's binary demanded a glibc newer than the pinned
+runtime provided, so both `indexer` and `api` crash-looped at exec (`GLIBC_2.38' not
+found`), and rolling the image tags back to the last good SHA was the immediate mitigation.
+The build-side fix (builder stage rebuilt on the runtime's own base for
+parity-by-construction) is recorded in `MIGRATION_LOG.md` (2026-09-03 glibc-parity entry);
+the host-side procedure is `RUNBOOK.md` → `## Container crash-loops with a GLIBC error`.
+
 **Rollback to the old SubQuery stack**: a different operation entirely — see
 [../RUNBOOK.md](../RUNBOOK.md#rolling-back-to-subquery).
 
