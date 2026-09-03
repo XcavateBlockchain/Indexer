@@ -947,3 +947,44 @@ out. With the mirror disabled, `propertyImageThumbnails` stays `null` and client
 back to the original `property_images` URIs; enabling it later drains the whole backlog
 through the work set. Mainnet promotion (agentic-maintenance §8) inherits the surface
 unchanged: same table, same loop, a different bucket.
+
+## ADR-32: The process-level rustls CryptoProvider is installed explicitly at startup (ring)
+
+**Context.** rustls 0.23 auto-selects the process-level `CryptoProvider` only when its
+crate-feature set enables EXACTLY ONE of `ring` / `aws_lc_rs`; on an ambiguous set it
+refuses and panics at the first TLS use ("Could not automatically determine the
+process-level CryptoProvider"). Since the ADR-31 image mirror's dependencies entered the
+tree (`43e3a25`, 2026-09-03 — `rust-s3` -> `aws-creds` -> attohttpc 0.30, whose `__rustls`
+enables `rustls/default`, and rustls 0.23.43's `default` set is `["aws_lc_rs", ...]`),
+the unified graph names BOTH providers: `ring` (sqlx's `runtime-tokio-rustls` resolves to
+its ring/webpki path; the solana stack's `solana-tls-utils` selects ring) and `aws_lc_rs`
+(acttohttpc, above). The 2026-09-03 image rebuild (after the glibc pin) was the first
+production build from that lockfile: `indexer` died at its startup gRPC smoke gate — the
+first TLS connection in the process — and restart-looped every minute. `api` carried the
+same latent fault behind its chain-tip `getSlot` (solana-rpc-client -> reqwest -> rustls),
+where a request-task panic 500s `/health` and `syncStatus.chainTipSlot` instead of
+killing the process. Neither feature edge is under this repo's control: `rust-s3`'s
+`tokio-rustls-tls` feature and attohttpc's manifest decide them, and any future
+dependency bump can re-derive the same or a worse combination.
+
+**Decision.** Both binaries install the provider explicitly, first thing in `main()`,
+before any TLS-capable code runs:
+`rustls::crypto::ring::default_provider().install_default()`
+(`crates/indexer/src/main.rs`, `crates/api/src/main.rs`), each with a direct
+`rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }`
+edge so the `rustls::crypto::ring` path resolves regardless of what the transitive edges
+enable. `ring` is the process default because it is the provider the rest of the stack is
+already built for — sqlx's `runtime-tokio-rustls` default path and the solana RPC stack
+both select it — so the install simply makes deterministic what feature unification used
+to decide by accident.
+
+**Consequences.** Both providers stay COMPILED into the binaries (the third-party edges
+still enable `aws_lc_rs`); the explicit install only decides which one the process uses
+at runtime, so no dependency manifest is touched and nothing new is pulled in. The
+same one-line install is rustls's documented remedy for this whole class of failure, so
+any future crate in either binary that builds a rustls `ClientConfig` inherits the
+protection. A lockfile-level alternative (forcing attohttpc or rust-s3 off `aws_lc_rs`)
+was rejected: it fights upstream defaults and re-breaks silently on the next bump, while
+the explicit install is stable under any future feature unification. The binaries' `ring`
+requirement is now pinned by their own direct edges, so it cannot be lost by a
+transitive change.

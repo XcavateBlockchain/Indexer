@@ -38,6 +38,14 @@ use crate::state::ApiState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // ADR-32: install the process-level rustls CryptoProvider before any TLS use — the shared
+    // dependency graph enables both provider crate-features, and rustls 0.23 panics at first
+    // TLS use without an explicit install (see crates/indexer/src/main.rs for the full
+    // rationale). This process's first TLS use is the chain-tip getSlot
+    // (solana-rpc-client -> reqwest -> rustls); without the install, every cache-expiry RPC
+    // call would panic inside the request task and 500 /health and syncStatus.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let cfg = Config::from_env()?;

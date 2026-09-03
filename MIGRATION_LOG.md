@@ -1410,3 +1410,71 @@ wrong half. `OBJECT_STORAGE_*` / `WEBHOOK_URL` already filter empty via
 * Immediate ops stopgap until this ships: add `IMAGE_MIRROR_INTERVAL=30` to
   `/opt/indexer/.env`, then `cd /opt/indexer && docker compose up -d` —
   any numeric value works; the code fix makes the variable optional again.
+
+## Indexer: install the rustls CryptoProvider explicitly at process start — 2026-09-03
+
+### What was built
+
+Incident (same host, same day): with the glibc-fixed image live, `indexer`
+crash-looped at every start — each attempt reached
+`smoke-grpc: connecting to https://solana-devnet.g.alchemy.com`, then panicked
+with `Could not automatically determine the process-level CryptoProvider from
+Rustls crate features` (rustls-0.23.43, `crypto/mod.rs:249`), restarting every
+minute.
+
+Root cause: rustls 0.23 auto-selects the process-level `CryptoProvider` only
+when the unified crate-feature set enables EXACTLY ONE of `ring` /
+`aws_lc_rs`; on an ambiguous set it panics at the first TLS use instead. This
+tree's graph enables BOTH: `ring` (sqlx's `runtime-tokio-rustls` resolves to
+its ring/webpki path; the solana stack's `solana-tls-utils` selects ring too)
+and `aws_lc_rs` (attohttpc 0.30 enables `rustls/default`, and rustls 0.23.43's
+`default` set is `["aws_lc_rs", ...]`; attohttpc enters the graph via
+`rust-s3 -> aws-creds`, which arrived with the ADR-31 image mirror in
+`43e3a25`). The 2026-09-03 image rebuild (after the glibc pin) was the FIRST
+production build from the current `Cargo.lock` — the last good image predates
+the realxhub layout fix, hence the older lock without the attohttpc edge —
+which is why it surfaced exactly then. Reproduced locally pre-fix with
+`cargo run -p indexer -- smoke-grpc`: the panic at the same source line, byte
+for byte.
+
+The fix (ADR-32): both binaries install the provider explicitly, first thing
+in `main()`, before any TLS use —
+`rustls::crypto::ring::default_provider().install_default()` — each with a
+direct `rustls = { version = "0.23", default-features = false, features =
+["std", "ring"] }` edge so `rustls::crypto::ring` resolves regardless of
+transitive features. `ring` is the provider the rest of the stack is built
+for (sqlx's default rustls path, the solana RPC stack). `api` carried the same
+latent fault behind its chain-tip `getSlot` (solana-rpc-client -> reqwest ->
+rustls): without the install, every cache-expiry RPC call would panic inside
+the request task, 500-ing `/health` and `syncStatus.chainTipSlot` — the same
+one-liner fixes it too. Both providers remain COMPILED (the third-party edges
+still enable `aws_lc_rs`); the install only decides which one the process
+uses. The lockfile-level alternative (forcing attohttpc/rust-s3 off
+`aws_lc_rs`) was rejected — see ADR-32.
+
+### Verification
+
+* **Pre-fix reproduction**: `cargo run -p indexer -- smoke-grpc --timeout 15`
+  (dummy `ALCHEMY_API_KEY`) → panic at
+  `rustls-0.23.43/src/crypto/mod.rs:249:14`, byte-identical to the production
+  error.
+* **Post-fix, same command**: the TLS handshake completes (ring provider);
+  the run then fails *only* on the dummy key's subscribe rejection (`The
+  request does not have valid authentication credentials`) — the provider
+  panic is gone and the smoke gate's auth-rejection path is exercised
+  end-to-end.
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy
+  --workspace --all-targets -- -D warnings` clean; `SQLX_OFFLINE=true cargo
+  build --workspace --locked` clean.
+* `cargo test --workspace --locked` (test Postgres): **194 passed, 0 failed**
+  (30 api + 164 indexer; no test changes needed).
+* `cargo sqlx prepare --check` (per crate): clean (no query/schema changes).
+* `bash scripts/lint-migrations.sh`: clean (no migration changes).
+* `bash scripts/agent/verify-devnet.sh`: **VERIFY OK: 5 programs, 73
+  instructions, 5 snapshots, 5 deploy boundaries, 0 chain upgrades** — the
+  full devnet rebuild also exercises the ADR-27 metadata fetcher's HTTPS path
+  (4/4 documents fetched) on the ring provider.
+* `python3 scripts/agent/check-program-upgrades.py`: exit 0 — all five
+  programs' deploys unchanged on devnet.
+* `Cargo.lock` diff: +2 lines — a `rustls` dependency edge under `api` and
+  `indexer`; no version changes, no new packages.

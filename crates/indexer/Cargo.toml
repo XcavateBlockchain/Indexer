@@ -95,6 +95,13 @@ rust-s3 = { version = "0.37", default-features = false, features = [
 # Already in the lockfile transitively (sqlx). We compute SHA-256 of the source URI so
 # `object_key` is deterministic per (pubkey, index, uri).
 sha2 = "0.10"
+# ADR-32: rustls 0.23 panics at the FIRST TLS use when the unified crate-feature set enables
+# more than one `CryptoProvider` — `ring` (sqlx's `runtime-tokio-rustls` ring path, the solana
+# stack) and `aws_lc_rs` (attohttpc's `rustls/default`, pulled in by rust-s3 -> aws-creds) are
+# both on in this graph. The binary ends the ambiguity itself: it installs the `ring` provider
+# explicitly at the top of `main()` (src/main.rs). This direct edge is what makes
+# `rustls::crypto::ring` resolvable in this crate.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 
 [dev-dependencies]
 solana-message = "3.0.0"
