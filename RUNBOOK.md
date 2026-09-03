@@ -214,6 +214,41 @@ The pre-migration stack is preserved, inert, specifically for this — see
 in CI-adjacent testing — Task 7's exit verification) so you can sanity-check the rollback
 file itself before an actual incident, without starting it.
 
+## Container crash-loops with a GLIBC error
+
+**Symptom** (2026-09-03): `indexer` and `api` sit in `Restarting (1)` in
+`docker compose ps`, and every line of `docker compose logs --tail=50 indexer`
+is:
+
+    indexer: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by indexer)
+
+**Meaning:** the binary links against a *newer* glibc than the runtime image
+provides. On this stack the runtime is pinned (`debian:bookworm-slim`, glibc
+2.36), so the only way this happens is a build whose *builder* stage ran on a
+newer base — in the 2026-09-03 incident the floating
+`lukemathwalker/cargo-chef:latest-rust-1` builder tag had drifted past it.
+The fix landed the same day (builder rebuilt on the runtime's own base — see
+the 2026-09-03 entry in `MIGRATION_LOG.md`), so this class of incident should
+not recur, but the rollback below works for any future glibc-skew image.
+
+**Immediate mitigation (roll the images back on the host, no code needed):**
+
+1. `docker images | grep xcavateblockchain` — find the last good pre-incident
+   SHA tag (an image from before the drift was pulled/built; the prod image
+   tags are the git SHAs).
+2. Edit `/opt/indexer/.env`: set `INDEXER_IMAGE` and `API_IMAGE` to that
+   older SHA. Leave `PG_IMAGE` alone (the postgres image is unrelated and
+   healthy).
+3. `cd /opt/indexer && docker compose pull && docker compose up -d`
+4. Verify: `docker compose ps` shows both `Up (healthy)`, and
+   `curl -s http://localhost:3010/health` responds.
+
+**Caveat:** the older image predates whatever fixes landed after it. In the
+2026-09-03 case the rolled-back image predated the realxhub layout fix
+(ADR-30 addendum), so `realxhubShareListings` `seller`/`amount`/`price` stay
+wrong until the fixed build ships and `indexer snapshot` re-runs — a
+deliberate trade (API up outranks field correctness).
+
 ## Property metadata is missing, stale, or not updating
 
 `marketplace_property_asset.metadata_uri` (the redeploy, migration 0012) points at an

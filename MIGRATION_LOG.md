@@ -1310,3 +1310,52 @@ chain outranks the repo: `idls/` must decode what is deployed).
   0 chain upgrades** — with the realxhub backfill walk covering 11 signatures
   from the pinned deploy slot 489635042 (slots 489635042..=492427277, 0
   failed-on-chain).
+
+## Indexer: pin the Docker builder base for glibc parity with the runtime — 2026-09-03
+
+### What was built
+
+Incident: on the prod host both `indexer` and `api` crash-looped at exec with
+`/lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.38' not found (required by
+indexer)`. The binary demands glibc 2.38; the pinned `debian:bookworm-slim`
+runtime provides 2.36. Root cause: `docker/rust.Dockerfile`'s builder stage
+used `FROM lukemathwalker/cargo-chef:latest-rust-1` — a *floating* tag whose
+base image had moved to a distro whose default toolchain links against
+glibc ≥ 2.38 (the tag's last push predates this incident only by days; a
+float is a scheduled incident, not a one-off). The runtime stage was pinned
+(`debian:bookworm-slim`, glibc 2.36), so only fresh builds broke.
+
+The fix rebuilds the builder stage on the **runtime's own base image**
+(`debian:bookworm-slim` + rustup `stable`), so builder and runtime can never
+again diverge in glibc: parity-by-construction. Two deliberate side decisions:
+
+- **cargo-chef is dropped.** It was a dependency-cache warm-up optimization;
+  the BuildKit `--mount=type=cache` on `~/.cargo`/`target` (already present)
+  provides incremental builds without a separate intermediate stage, and it is
+  exactly the floating tag that caused this incident.
+- **rustup `stable` matches CI** (`dtolnay/rust-toolchain@stable`), so the
+  image toolchain tracks the same source as the CI matrix.
+
+`cargo clippy --workspace --all-targets -- -D warnings` clean; full Rust
+gauntlet not applicable (no Rust changed).
+
+### Verification
+
+- One-time proof build (`DOCKER_BUILDKIT=1 docker build -f docker/rust.Dockerfile
+  --target indexer/api`), both binaries:
+  - `indexer --help` → **runs** (rc 0). Before the fix this exec failed with
+    the GLIBC_2.38 linker error.
+  - `api --help` → **execs** and fails *inside the app* with
+    `Error: DATABASE_URL is required (postgres://user:pass@host:port/db)` —
+    i.e. the dynamic loader resolved and the process started; an rc=1 from
+    missing env proves the binary loads (no linker failure).
+  - `ldd --version` in both images: **Debian GLIBC 2.36-9+deb12u14** (bookworm),
+    matching the runtime.
+- No changes to the `runtime-base`/`indexer`/`api` final stages (entrypoint,
+  cmd, EXPOSE, env untouched); only the builder stage was replaced.
+- Immediate ops mitigation while the fixed image ships: roll `INDEXER_IMAGE`
+  and `API_IMAGE` in `/opt/indexer/.env` back to the last good pre-incident
+  SHA tag (see RUNBOOK `## Container crash-loops with a GLIBC error`).
+  Caveat: the last good image predates the realxhub layout fix
+  (2026-09-03, ADR-30 addendum), so `seller`/`amount`/`price` stay wrong until
+  the fixed build is live — API-up outranks field-correctness.
