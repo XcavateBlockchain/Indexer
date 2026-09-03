@@ -9,6 +9,7 @@ use solana_pubkey::Pubkey;
 pub struct SharesDelistedEvent {
     pub hub_id: u64,
     pub seller: Pubkey,
+    pub amount: u32,
 }
 
 impl SharesDelistedEvent {

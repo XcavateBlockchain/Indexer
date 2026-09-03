@@ -1168,3 +1168,145 @@ simply has no transactions to decode.
 * Realxhub backfill against the public devnet RPC: `HistoryExhausted`,
   `backfill_complete=true` (nothing to index yet — correct for a program that does not
   exist on-chain).
+
+## Indexer: property-image mirror to object storage — 2026-08-29
+
+Marketplace `PropertyAssets` carry `propertyImages` URIs pointing at large upstream
+images. The image mirror downloads each URI, encodes a **720×720 centred-crop JPEG**
+(q85), and uploads it to the operator's public object storage (Hetzner S3 in
+production), with the compressed URI exposed on the GraphQL API
+(ADR-31). The original URIs stay untouched — the API's `propertyImages` still serves
+the upstream values.
+
+### What was built
+
+* **`migrations/0016_property_images.sql`** — `marketplace_property_image`
+  (`(asset_pubkey, image_index)` PK, `uri`/`thumb_uri`/`attempts`/`last_error`/
+  `uploaded_at`/`next_attempt_at`). Additive-only; the mirror is entirely off-path from
+  the transaction pipeline, so a disabled mirror costs one idle table.
+* **`crates/indexer/src/images.rs`** — the mirror loop: a work-set query (open assets
+  only, ≤50 pending images per cycle), fetch (15 s timeout, 10 MiB cap,
+  `metadata::uri_allowed` SSRF guard), 720×720 centred-crop → JPEG q85, S3 upload
+  under `properties/{bs58(asset_pubkey)}/{image_index}/{sha256-hex(uri)}.jpg`
+  (content-addressed — re-uploads on URI change land as new objects, old ones stay
+  until bucket GC). Failures double the per-image delay from 30 s to a 1 h cap via a
+  SQL `LEAST(3600, 30*2^LEAST(attempts+1,20))` expression, computed in-database so the
+  process cannot drift the schedule; a URI change resets the backoff. Non-image bodies
+  fail with a backoff and are never uploaded. Sequential, no concurrency.
+* **`crates/indexer/src/db/property_images.rs`** — work-set fetch, `uri` upsert
+  (INSERT … ON CONFLICT), success/failure updates.
+* **Config** — the five `OBJECT_STORAGE_*` variables are **all-or-nothing**: one
+  missing = the feature is disabled (the mirror is not spawned, no metrics registered
+  → absent gauge = "disabled" in the dashboard); any set without the rest is a hard
+  startup error naming the missing variables, and the key is never logged (hand-rolled
+  `Debug`). `OBJECT_STORAGE_PUBLIC_BASE_URL` is optional (defaults to the endpoint
+  host), `IMAGE_MIRROR_INTERVAL` defaults to 30 s.
+* **`indexer mirror-images`** — one-shot subcommand for first-boot catch-up and
+  manual re-drives; refuses to run without object-storage config; refuses on a
+  missing `marketplace` row in `sync_state`.
+* **API** — `PropertyMetadata.propertyImageThumbnails: [String!]!` (juniper
+  `propertyImageThumbnails`): `thumb_uri`s in `image_index` order, stale rows
+  (index ≥ the current `propertyImages` array length) filtered out, `null` until the
+  first upload succeeds. One batched `IN` query per page.
+* **Ops surface** — `property_images_mirrored_total{result=uploaded|failed}` and
+  `property_images_pending` metrics; `PropertyImageMirrorFailing` alert (uploads
+  failing for 15 min); `docker-compose.yml` / `.env.example` passthroughs; RUNBOOK +
+  `docs/deployment.md` sections.
+* **`.sqlx` cache** — one new query file per crate (indexer: work-set/select/upsert/
+  success/failure; api: the thumbnails `IN` query).
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| No real S3 in the test path | CI/dev have no credentials: the tests cover `object_key` naming, `encode_thumbnail` (crop/resize/quality), and the DB backoff SQL against Postgres — not a live upload. First real verification is the one-shot `mirror-images` run against the configured bucket, per the RUNBOOK. |
+| Backoff lives in SQL | The delay is computed in the failure UPDATE, not in process memory — restarts, redeploys and the one-shot subcommand all see the identical schedule. |
+| All-or-nothing config is deliberate | A half-configured bucket (endpoint without key) is a foot-gun; the startup error names every missing variable. The mirror's disabled state is observable (`property_images_pending` absent, `propertyImageThumbnails` all-null). |
+| No ADR of its own beyond ADR-31 | The design decision (where images live, what the API exposes) is ADR-31; everything else is house pattern. |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean; `cargo sqlx prepare
+  --check` clean for both `crates/indexer --lib` and `crates/api --bin api`.
+* `cargo test --workspace --locked`: **194 passed, 0 failed** (30 api + 164 indexer;
+  new: object_key naming, encode_thumbnail crop/size/quality, work-set/backoff SQL
+  behaviour, API stale-row filtering).
+* `scripts/lint-migrations.sh` OK (0016 additive-only, base `origin/main`).
+* `scripts/agent/verify-devnet.sh` full rebuild from the public devnet RPC:
+  **VERIFY OK: 5 programs, 56 instructions, 5 snapshots, 5 deploy boundaries,
+  0 chain upgrades** — with the metadata fetch cycle live in the same run
+  (4 attempted / 4 fetched / 0 failed, devnet marketplace rows).
+
+## Indexer: realxhub layout fix — IDL corrected to the first deployed layout (ADR-30 addendum) — 2026-09-03
+
+realxhub was registered ahead of its devnet deploy (ADR-30) with the
+`deploy_slot: 0` sentinel and the upstream pre-deploy IDL. The first deploy landed
+at slot **489635042** (`check-program-upgrades.py` exit 10, `FIRST DEPLOY
+DETECTED`), and the deployed program did not match that IDL: the on-chain
+`Holding`/`ShareListing` state carries a leading `hub_id: u64` (`Holding` also
+carries `owner: Pubkey` as its second word, shifting `amount`/`listed`/
+`per_share` by two words), and the `list_shares`/`record_sale` instruction
+accounts differ. Rows streamed with the pre-deploy decoder came out shifted —
+the client symptom was `realxhubShareListings` returning `seller: 4uQeVj5t…`,
+i.e. the leading `hub_id` word decoded into `seller`. Hard rule 6 applies (the
+chain outranks the repo: `idls/` must decode what is deployed).
+
+### What was built
+
+* **`idls/realxhub.json`** — corrected in place to the deployed layout (five drift
+  items): `Holding` + leading `hub_id: u64` + `owner: Pubkey`; `ShareListing` +
+  leading `hub_id: u64`; `SharesDelisted` event + trailing `amount: u32`;
+  `list_shares` loses its `hub` account (5→4); `record_sale` gains `config`
+  (14→15). A breaking change *before the first deploy* is a plain regeneration
+  (ADR-30) — nothing was ever written on-chain under the pre-deploy layout, so
+  the ADR-25 versioned-decoder mechanism was not needed.
+* **`crates/realxhub-decoder/`** — regenerated from the corrected IDL with pinned
+  carbon-cli 0.12.0; byte-identical provenance re-proven
+  (`verify-decoder-purity.sh`).
+* **`crates/indexer/src/mapping/realxhub.rs`** — the `Holding` arm carries
+  `hub_id`/`owner`, the `ShareListing` arm `hub_id`.
+* **`migrations/0017_realxhub_layout_fix.sql`** + `crates/indexer/src/db/realxhub.rs`
+  — `realxhub_share_listing.hub_id` and `realxhub_holding.{hub_id,owner}`
+  (`NOT NULL`, zero defaults as a temp lie over pre-fix rows) plus three
+  indexes. Additive-only; the 0016→0017 numbering is consecutive, `0016` being
+  the in-flight property-image mirror (separate commit).
+* **`crates/api/src/graphql/programs/realxhub.rs`** — `realxhubShareListings.hubId`
+  and `realxhubHoldings.{hubId, owner}` (base58) exposed; the SELECTs pick the new
+  columns up.
+* **`addresses.json` + `crates/indexer/src/programs.rs`** —
+  `deploy_slot`/`decoder_covers_boundary` pinned from the sentinel `0` to
+  `489635042`; the registry↔addresses.json pinned test enforces agreement.
+* **One-time heal** — `indexer snapshot` (new RUNBOOK duty under "Rebuild account
+  state from a snapshot"): the slot-guarded upsert accepts the corrected decode
+  over the poisoned rows because the snapshot's tag slot postdates them. No
+  backfill re-walk is required for the client symptom — the affected tables are
+  account-state tables, re-read wholesale by the snapshot.
+
+### Findings
+
+| Finding | Detail |
+|---|---|
+| In-place correction, not a versioned split | ADR-25 protects on-chain data written under an old layout; no deploy existed before 489635042, so there was none. The single decoder covers from slot 0. ADR-25 remains the mandatory path for any *future* breaking realxhub change. |
+| Closed accounts keep the old decode | The snapshot only re-reads live accounts; rows for already-closed accounts written before the fix keep their shifted fields. Bounded and closed. |
+| `0017` defaults are a temp lie | `DEFAULT 0` / zero-byte `owner` exists so pre-fix rows are never blocked from upsert; the snapshot overwrites them. Any row written after the snapshot slot was decoded by the corrected decoder and is real. |
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy
+  --workspace --all-targets -- -D warnings` clean.
+* `SQLX_OFFLINE=true cargo build --workspace --locked` clean; `cargo sqlx prepare
+  --check` clean for both `crates/indexer --lib` and `crates/api --bin api`.
+* `cargo test --workspace --locked`: **194 passed, 0 failed** (30 api + 164
+  indexer; updated: the realxhub account counts in `sibling_tests.rs` —
+  `record_sale` 15, `list_shares` 4 — and the registry/addresses.json slot
+  pin).
+* `scripts/lint-migrations.sh` OK (0017 additive-only).
+* `scripts/agent/verify-decoder-purity.sh` clean (regenerated crate
+  byte-identical to pinned-carbon-cli output).
+* `scripts/agent/verify-devnet.sh` full rebuild from the public devnet RPC:
+  **VERIFY OK: 5 programs, 67 instructions, 5 snapshots, 5 deploy boundaries,
+  0 chain upgrades** — with the realxhub backfill walk covering 11 signatures
+  from the pinned deploy slot 489635042 (slots 489635042..=492427277, 0
+  failed-on-chain).

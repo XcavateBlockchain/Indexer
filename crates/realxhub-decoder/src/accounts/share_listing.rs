@@ -7,6 +7,7 @@ use solana_pubkey::Pubkey;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, borsh::BorshSerialize, CarbonDeserialize, PartialEq)]
 pub struct ShareListing {
+    pub hub_id: u64,
     pub seller: Pubkey,
     pub amount: u32,
     /// Stablecoin per share.

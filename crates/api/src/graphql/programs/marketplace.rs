@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use carbon_core::graphql::primitives::I64;
 use chrono::{DateTime, Utc};
 use juniper::{FieldError, FieldResult, GraphQLObject, Value, ID};
+use sqlx::PgPool;
 
 use super::{b58, hex_string, json_string, parse_b58, total_count_i32, utf8_lossy};
 use crate::graphql::context::GraphQLContext;
@@ -438,6 +439,11 @@ pub struct PropertyMetadata {
     pub other_documents: Option<String>,
     /// Raw JSON array of URL strings.
     pub property_images: Option<String>,
+    /// Public URLs of the mirrored 720x720 JPEG thumbnails of `property_images` (ADR-31), in
+    /// `image_index` order; `null` until the image mirror has uploaded at least one, and
+    /// possibly a partial list during the first upload pass (entries appear as the mirror
+    /// uploads them; indices beyond the current `propertyImages` array are never listed).
+    pub property_image_thumbnails: Option<Vec<String>>,
 }
 
 #[derive(GraphQLObject, Clone, Debug)]
@@ -547,8 +553,79 @@ macro_rules! property_metadata_from_row {
             sales_agreement: row.sales_agreement,
             other_documents: row.other_documents.as_ref().map(json_string),
             property_images: row.property_images.as_ref().map(json_string),
+            // The thumbnails live in `marketplace_property_image` (ADR-31), a different
+            // table than this projection: the callers attach them after the decomposition
+            // (`with_thumbnails`), which keeps the 50-column projection shared by both
+            // metadata queries untouched.
+            property_image_thumbnails: None,
         }
     }};
+}
+
+/// The page's mirrored thumbnails (ADR-31) keyed by the asset PDA's pubkey: one `ANY(...)`
+/// lookup over the derived table, `(image_index, thumb_uri)` pairs in `image_index` order
+/// (the partial index `idx_mkt_property_image_thumb` covers exactly this). Skipped on an
+/// empty page.
+async fn image_thumbnails(
+    pool: &PgPool,
+    pubkeys: &[Vec<u8>],
+) -> FieldResult<HashMap<Vec<u8>, Vec<(i32, String)>>> {
+    let mut out: HashMap<Vec<u8>, Vec<(i32, String)>> = HashMap::new();
+    if pubkeys.is_empty() {
+        return Ok(out);
+    }
+    let rows = sqlx::query!(
+        r#"
+        SELECT asset_pubkey, image_index, thumb_uri
+        FROM marketplace_property_image
+        WHERE asset_pubkey = ANY($1) AND thumb_uri IS NOT NULL
+        ORDER BY image_index
+        "#,
+        pubkeys,
+    )
+    .fetch_all(pool)
+    .await?;
+    for r in rows {
+        // The column is nullable, so sqlx hands us `Option` even though the query filters
+        // `IS NOT NULL`; skip the impossible `None` rather than panic on it.
+        let Some(uri) = r.thumb_uri else {
+            continue;
+        };
+        out.entry(r.asset_pubkey)
+            .or_default()
+            .push((r.image_index, uri));
+    }
+    Ok(out)
+}
+
+/// Attach the page's thumbnails to a built `PropertyMetadata` (ADR-31): `null` until the
+/// mirror has uploaded one, and only the current array's indices (0016's rows outlive a
+/// shrunken `propertyImages` array; the stale ones are dropped here).
+fn with_thumbnails(
+    mut metadata: PropertyMetadata,
+    thumbs: Option<Vec<(i32, String)>>,
+) -> PropertyMetadata {
+    metadata.property_image_thumbnails = match (thumbs, current_image_count(&metadata)) {
+        (Some(thumbs), Some(len)) => Some(
+            thumbs
+                .into_iter()
+                .filter(|(i, _)| usize::try_from(*i).is_ok_and(|i| i < len))
+                .map(|(_, uri)| uri)
+                .collect(),
+        ),
+        _ => None,
+    };
+    metadata
+}
+
+/// The number of entries in the asset's current `propertyImages` array (the stale-thumbnail
+/// filter, 0016); `None` when the document carries no images (or the JSON is unparseable).
+fn current_image_count(metadata: &PropertyMetadata) -> Option<usize> {
+    metadata.property_images.as_deref().and_then(|s| {
+        serde_json::from_str::<Vec<serde_json::Value>>(s)
+            .ok()
+            .map(|v| v.len())
+    })
 }
 
 // --- resolver bodies ------------------------------------------------------------------------
@@ -1191,6 +1268,10 @@ pub async fn property_assets(
         }
     }
 
+    // Attach the mirrored thumbnails (ADR-31) alongside the metadata: one keyed lookup over
+    // the derived image table, skipped on an empty page like the metadata lookup.
+    let mut thumbs_by_pubkey = image_thumbnails(&context.pool, &pubkeys).await?;
+
     Ok(PropertyAssetConnection {
         nodes: rows
             .into_iter()
@@ -1205,7 +1286,9 @@ pub async fn property_assets(
                 metadata_uri: r.metadata_uri,
                 // The page's pubkeys are unique (table PK) and so are the metadata rows', so
                 // each lookup is consumed exactly once.
-                metadata: metadata_by_pubkey.remove(&r.pubkey),
+                metadata: metadata_by_pubkey
+                    .remove(&r.pubkey)
+                    .map(|m| with_thumbnails(m, thumbs_by_pubkey.remove(&r.pubkey))),
                 share_mint: b58(&r.share_mint),
                 region_id: r.region_id,
                 location: utf8_lossy(&r.location),
@@ -1559,9 +1642,20 @@ pub async fn property_metadata(
     .await?
     .unwrap_or(0);
 
+    // Attach the mirrored thumbnails (ADR-31), the same keyed lookup `property_assets` uses.
+    let pubkeys: Vec<Vec<u8>> = rows.iter().map(|r| r.pubkey.clone()).collect();
+    let mut thumbs_by_pubkey = image_thumbnails(&context.pool, &pubkeys).await?;
+
     let nodes = rows
         .into_iter()
-        .map(|r| property_metadata_from_row!(r))
+        .map(|r| {
+            // The macro body moves the row's fields, so capture the map key first.
+            let key = r.pubkey.clone();
+            with_thumbnails(
+                property_metadata_from_row!(r),
+                thumbs_by_pubkey.remove(&key),
+            )
+        })
         .collect();
 
     Ok(PropertyMetadataConnection {

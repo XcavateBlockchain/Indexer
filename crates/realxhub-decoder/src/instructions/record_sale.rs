@@ -16,6 +16,7 @@ pub struct RecordSale {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RecordSaleInstructionAccounts {
     pub payer: solana_pubkey::Pubkey,
+    pub config: solana_pubkey::Pubkey,
     pub hub: solana_pubkey::Pubkey,
     pub stable_mint: solana_pubkey::Pubkey,
     pub payer_stable: solana_pubkey::Pubkey,
@@ -59,6 +60,7 @@ impl ArrangeAccounts for RecordSale {
         let mut iter = accounts.iter();
 
         let payer = next_account(&mut iter)?;
+        let config = next_account(&mut iter)?;
         let hub = next_account(&mut iter)?;
         let stable_mint = next_account(&mut iter)?;
         let payer_stable = next_account(&mut iter)?;
@@ -77,6 +79,7 @@ impl ArrangeAccounts for RecordSale {
 
         Some(RecordSaleInstructionAccounts {
             payer,
+            config,
             hub,
             stable_mint,
             payer_stable,

@@ -54,8 +54,9 @@ pub struct RealxhubHubConnection {
     pub total_count: i32,
 }
 
-/// A Holding PDA: the canonical per-holder share ledger. The holder's wallet is the PDA's
-/// trailing seed (not a stored column), so listings/holdings pair on the pubkey.
+/// A Holding PDA: the canonical per-holder share ledger. `owner` is the holder's wallet as
+/// embedded in the on-chain state and `hub_id` the on-chain hub index (ADR-30 addendum
+/// 2026-09-03); listings/holdings still pair on the PDA pubkey.
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct RealxhubHolding {
     pub id: ID,
@@ -63,6 +64,8 @@ pub struct RealxhubHolding {
     pub lamports: I64,
     pub active: bool,
     pub closed_at_slot: Option<I64>,
+    pub hub_id: I64,
+    pub owner: String,
     pub amount: I64,
     pub listed: I64,
     pub per_share: String,
@@ -76,7 +79,8 @@ pub struct RealxhubHoldingConnection {
 }
 
 /// A ShareListing PDA: one seller's live listing for a hub (delist closes the account; the
-/// same address can be re-listed later and show up again).
+/// same address can be re-listed later and show up again). `hub_id` is the on-chain hub index
+/// (ADR-30 addendum 2026-09-03).
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct RealxhubShareListing {
     pub id: ID,
@@ -84,6 +88,7 @@ pub struct RealxhubShareListing {
     pub lamports: I64,
     pub active: bool,
     pub closed_at_slot: Option<I64>,
+    pub hub_id: I64,
     pub seller: String,
     pub amount: I64,
     pub price: I64,
@@ -215,7 +220,7 @@ pub async fn realxhub_holdings(
 
     let rows = sqlx::query!(
         r#"
-        SELECT pubkey, slot, lamports, closed_at_slot, amount, listed, per_share, pending
+        SELECT pubkey, slot, lamports, closed_at_slot, hub_id, owner, amount, listed, per_share, pending
         FROM realxhub_holding
         WHERE ($1::bool IS NULL OR (closed_at_slot IS NULL) = $1)
         ORDER BY slot DESC, pubkey ASC
@@ -248,6 +253,8 @@ pub async fn realxhub_holdings(
                 lamports: I64(r.lamports),
                 active: r.closed_at_slot.is_none(),
                 closed_at_slot: r.closed_at_slot.map(I64),
+                hub_id: I64(r.hub_id),
+                owner: b58(&r.owner),
                 amount: I64(r.amount),
                 listed: I64(r.listed),
                 per_share: r.per_share,
@@ -274,7 +281,7 @@ pub async fn realxhub_share_listings(
 
     let rows = sqlx::query!(
         r#"
-        SELECT pubkey, slot, lamports, closed_at_slot, seller, amount, price
+        SELECT pubkey, slot, lamports, closed_at_slot, hub_id, seller, amount, price
         FROM realxhub_share_listing
         WHERE ($1::bytea IS NULL OR seller = $1)
           AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)
@@ -311,6 +318,7 @@ pub async fn realxhub_share_listings(
                 lamports: I64(r.lamports),
                 active: r.closed_at_slot.is_none(),
                 closed_at_slot: r.closed_at_slot.map(I64),
+                hub_id: I64(r.hub_id),
                 seller: b58(&r.seller),
                 amount: I64(r.amount),
                 price: I64(r.price),

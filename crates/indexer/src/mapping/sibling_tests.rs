@@ -756,7 +756,7 @@ mod realxhub {
                     hub_id: 1,
                     amount: 1_000,
                 }),
-                14,
+                15,
             ),
             (
                 "claim_income",
@@ -775,7 +775,7 @@ mod realxhub {
                     amount: 10,
                     price: 1_000_000,
                 }),
-                5,
+                4,
             ),
             (
                 "create_hub",

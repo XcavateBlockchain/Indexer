@@ -9,6 +9,7 @@ use juniper::GraphQLObject;
 #[graphql(name = "ShareListing")]
 pub struct ShareListingGraphQL {
     pub account_metadata: crate::accounts::graphql::AccountMetadataGraphQL,
+    pub hub_id: U64,
     pub seller: Pubkey,
     pub amount: U32,
     pub price: U64,
@@ -20,6 +21,7 @@ impl TryFrom<crate::accounts::postgres::ShareListingRow> for ShareListingGraphQL
     fn try_from(row: crate::accounts::postgres::ShareListingRow) -> Result<Self, Self::Error> {
         Ok(Self {
             account_metadata: row.account_metadata.into(),
+            hub_id: carbon_core::graphql::primitives::U64(*row.hub_id),
             seller: carbon_core::graphql::primitives::Pubkey(row.seller.0),
             amount: carbon_core::graphql::primitives::U32((*row.amount) as u32),
             price: carbon_core::graphql::primitives::U64(*row.price),

@@ -2,10 +2,13 @@
 use carbon_core::CarbonDeserialize;
 use carbon_core::borsh;
 use carbon_core::deserialize::CarbonDeserialize;
+use solana_pubkey::Pubkey;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, borsh::BorshSerialize, CarbonDeserialize, PartialEq)]
 pub struct Holding {
+    pub hub_id: u64,
+    pub owner: Pubkey,
     pub amount: u32,
     /// Shares currently up for sale; still owned, still earning.
     pub listed: u32,

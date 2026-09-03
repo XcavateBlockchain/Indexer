@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO marketplace_property_image (\n            asset_pubkey, image_index, source_uri, attempts, next_attempt_at, last_error\n        )\n        VALUES ($1, $2, $3, 1, now() + interval '30 seconds', $4)\n        ON CONFLICT (asset_pubkey, image_index) DO UPDATE SET\n            source_uri      = EXCLUDED.source_uri,\n            attempts        = CASE\n                                  WHEN marketplace_property_image.source_uri = EXCLUDED.source_uri\n                                  THEN marketplace_property_image.attempts + 1\n                                  ELSE 1\n                              END,\n            next_attempt_at = now() + (\n                LEAST(3600, (30 * power(2, LEAST(\n                    CASE\n                        WHEN marketplace_property_image.source_uri = EXCLUDED.source_uri\n                        THEN marketplace_property_image.attempts + 1\n                        ELSE 1\n                    END, 20)))::bigint)\n                * interval '1 second'),\n            last_error      = EXCLUDED.last_error\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int4",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c0b0d16056ccc5704881b4c49ccd004db386e074f262dbb10caf601212465b54"
+}

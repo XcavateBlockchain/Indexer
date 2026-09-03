@@ -206,6 +206,64 @@ Postgres data lives in the `pgdata` named volume (shared with the SubQuery rollb
 see above); Prometheus keeps 15 days of metrics in `promdata`
 (`--storage.tsdb.retention.time`), and Grafana's own state lives in `grafanadata`.
 
+### Property image mirror (object storage)
+
+The indexer mirrors marketplace `PropertyAssets` `propertyImages` URIs to object
+storage as 720×720 centred-crop JPEGs and exposes the compressed URIs via
+`PropertyMetadata.propertyImageThumbnails` (ADR-31). The feature is **off by default** —
+it activates only when object-storage configuration is present.
+
+**One-time Hetzner setup** (Object Storage, e.g. `fsn1`):
+
+1. Create a **public-read bucket** (e.g. `indexer-property-images`) — thumbnails are
+   served directly from the bucket URL to API consumers, no CDN in front.
+2. In the project's access keys, create a key with a **write-only** bucket policy on
+   that bucket (upload/delete only — the mirror never reads back through the API,
+   public reads go through the bucket's anonymous policy).
+3. Set the GitHub **repository secrets** (all five, all-or-nothing — see below):
+
+   | Secret | Hetzner value |
+   |---|---|
+   | `OBJECT_STORAGE_ENDPOINT` | `https://<region>.<your-objectstorage-domain>`, e.g. `https://fsn1.your-objectstorage.com` — the domain is assigned per customer and shown in the Hetzner Console; **bare `scheme://host`**, no path, no bucket (the endpoint host must carry no port) |
+   | `OBJECT_STORAGE_BUCKET` | the bucket name |
+   | `OBJECT_STORAGE_REGION` | the bucket's location code — the first label of the endpoint host, e.g. `fsn1` or `nbg1` |
+   | `OBJECT_STORAGE_ACCESS_KEY` | the access key's ID |
+   | `OBJECT_STORAGE_SECRET_KEY` | the access key's secret |
+
+   Optional **repository variables**: `OBJECT_STORAGE_PUBLIC_BASE_URL` (default:
+   `{scheme}://{bucket}.{endpoint-host}`, derived virtual-hosted — correct for Hetzner;
+   only override if a CDN/proxy fronts the bucket) and `IMAGE_MIRROR_INTERVAL`
+   (default 30 seconds).
+   `docker-compose.yml` passes all seven through; a fresh `git pull` +
+   `docker compose up -d` on the server picks them up on the next deploy.
+
+**All-or-nothing semantics**: with zero of the five set, the mirror is disabled (the
+`property_images_pending` gauge is absent in Prometheus — that absence is the
+dashboard's "disabled" signal). With *some* set and any missing, the indexer fails
+fast at startup naming the missing variables — there is no half-configured state.
+
+**First boot / manual catch-up**: the running mirror drains pending work automatically
+(≤50 images per 30 s cycle, per-image backoff 30 s → 1 h on failure), but for a big
+initial backfill run the one-shot subcommand — it exits once the work set is empty and
+refuses to run without object-storage config:
+
+```bash
+docker compose exec -T indexer indexer mirror-images
+```
+
+Forced retries (e.g. after fixing an upstream URI 404) are a SQL reset:
+
+```bash
+docker compose exec -T postgres psql -U postgres -c \
+  "UPDATE marketplace_property_image SET next_attempt_at = now() WHERE last_error IS NOT NULL;"
+```
+
+**Verifying**: `docker compose logs -f indexer | grep -i 'image mirror'` (per-cycle
+`N uploaded, N failed, M pending` lines, never the key), or `GET <public base URL>/
+properties/<assetPubkey>/<i>/<sha256-hex(uri)>.jpg`, or
+`propertyAsset(assetId: …) { propertyImageThumbnails }` via the API. Failing uploads
+alert after 15 minutes (`PropertyImageMirrorFailing`) — see the RUNBOOK alert list.
+
 ### Monitoring
 
 **Grafana** — `http://<host>:3011`, user `admin`, password = the `GRAFANA_PASSWORD` secret.
@@ -240,7 +298,7 @@ expose `/metrics` as soon as they're up (`indexer:9464`, `api:9465`).
 - `curl http://localhost:3010/health` (or the `syncStatus` GraphQL field) exposes
   `last_contiguous_slot`, `chain_tip_slot`, `slot_lag`, `healthy` — poll it from any uptime
   monitor.
-- See [../RUNBOOK.md "Alert list"](../RUNBOOK.md#alert-list) for what each of the seven
+- See [../RUNBOOK.md "Alert list"](../RUNBOOK.md#alert-list) for what each of the eight
   Prometheus alerting rules (`monitoring/alerts.yml`) means when it fires — rules only, no
   Alertmanager (`ADR-20`), so nothing pages anyone automatically; check Prometheus's
   `/alerts` page or Grafana's alerting view.

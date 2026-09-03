@@ -78,6 +78,17 @@ pub const WEBHOOKS_DELIVERED_TOTAL: &str = "webhooks_delivered_total";
 /// persistently non-zero value means the loop is losing to the endpoint (or the network) --
 /// the per-event reason is `last_error` in `webhook_events`.
 pub const WEBHOOKS_PENDING: &str = "webhooks_pending";
+/// Counter: property image mirror attempts by outcome (ADR-31), labelled `result` =
+/// `success` / `failure`. A rising `failure` series is the source-host or object-storage
+/// problem surfacing early; the durable per-image state is `last_error` in
+/// `marketplace_property_image`.
+pub const PROPERTY_IMAGES_MIRRORED_TOTAL: &str = "property_images_mirrored_total";
+/// Gauge: the property image mirror work-set size after the last mirror cycle (ADR-31):
+/// images not yet mirrored (never attempted, failed and past their backoff, or whose source
+/// URI changed). 0 = every image has a current thumbnail; a persistently non-zero value
+/// means the mirror is losing to the network (or a bad URI) -- the per-image reason is
+/// `last_error` in `marketplace_property_image`.
+pub const PROPERTY_IMAGES_PENDING: &str = "property_images_pending";
 
 /// Installs the global recorder and starts the `GET /metrics` listener on `addr`.
 ///
@@ -162,6 +173,14 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         WEBHOOKS_PENDING,
         "Webhook delivery work-set size after the last cycle: events recorded but not yet delivered"
     );
+    metrics::describe_counter!(
+        PROPERTY_IMAGES_MIRRORED_TOTAL,
+        "Property image mirror attempts by outcome (ADR-31): one increment per work-set image per cycle, success or failure. The failure series feeds the PropertyImageMirrorFailing alert."
+    );
+    metrics::describe_gauge!(
+        PROPERTY_IMAGES_PENDING,
+        "Property image mirror work-set size after the last cycle (ADR-31): images not yet mirrored (never attempted, failed and past their backoff, or whose source URI changed)"
+    );
 
     // Register every counter (and every label value it can take) at zero. Without this the
     // series simply does not exist until the first occurrence, and a Prometheus rule like
@@ -179,6 +198,7 @@ pub fn install(addr: SocketAddr) -> Result<()> {
     for result in ["success", "failure"] {
         metrics::counter!(PROPERTY_METADATA_FETCH_TOTAL, "result" => result).increment(0);
         metrics::counter!(WEBHOOKS_DELIVERED_TOTAL, "result" => result).increment(0);
+        metrics::counter!(PROPERTY_IMAGES_MIRRORED_TOTAL, "result" => result).increment(0);
     }
     // WEBHOOKS_PENDING is deliberately not pre-registered (same convention as the slot gauges
     // and property_metadata_pending): an absent series reads as "this process has not run a
@@ -187,6 +207,9 @@ pub fn install(addr: SocketAddr) -> Result<()> {
     // PROPERTY_METADATA_PENDING is deliberately not pre-registered: an absent series reads as
     // "this process has not run a fetch cycle yet" (same convention as the slot gauges),
     // while 0 would be indistinguishable from "caught up" only after the first cycle anyway.
+    // PROPERTY_IMAGES_PENDING is deliberately not pre-registered too: an absent series reads
+    // as "this process has not run a mirror cycle yet" (exactly the case when OBJECT_STORAGE_*
+    // is unset and the mirror is disabled).
     for source in ["stream", "cache", "rpc", "rpc_fallback"] {
         metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(0);
     }
@@ -320,4 +343,16 @@ pub fn inc_webhook_delivery(result: &'static str) {
 /// The webhook delivery work-set size after one delivery cycle (ADR-28).
 pub fn set_webhooks_pending(n: i64) {
     metrics::gauge!(WEBHOOKS_PENDING).set(n as f64);
+}
+
+/// One property image mirror attempt (ADR-31). `result` is `success` or `failure`
+/// (low-cardinality label -- never a URI or an error message; the per-image reason is
+/// `last_error` in `marketplace_property_image`).
+pub fn inc_property_image_mirror(result: &'static str) {
+    metrics::counter!(PROPERTY_IMAGES_MIRRORED_TOTAL, "result" => result).increment(1);
+}
+
+/// The property image mirror work-set size after one mirror cycle (ADR-31).
+pub fn set_property_images_pending(n: i64) {
+    metrics::gauge!(PROPERTY_IMAGES_PENDING).set(n as f64);
 }

@@ -13,11 +13,15 @@
 //! - [`RealxhubFaucetReceiptRow`] — the per-wallet `["faucet", wallet]`
 //!   cooldown marker (`last_drip` is unix time).
 //! - [`RealxhubHoldingRow`] — the canonical `["holding", hub_id, wallet]`
-//!   ledger: held amount, the listed subset, and the pending income.
+//!   ledger: held amount, the listed subset, and the pending income
+//!   (`hub_id`/`owner` are also embedded in the account state since the first
+//!   on-chain layout — ADR-30 addendum 2026-09-03; the PDA remains the source
+//!   of truth).
 //! - [`RealxhubHubRow`] — the `["hub", hub_id]` account: name, the five
 //!   economic roles, the per-wallet cap, and the cumulative per-share income.
 //! - [`RealxhubShareListingRow`] — the `["listing", hub_id, seller]` account:
-//!   the shares on sale and their stablecoin price per share.
+//!   the shares on sale and their stablecoin price per share (`hub_id` is
+//!   embedded in the account state too — ADR-30 addendum 2026-09-03).
 //!
 //! Type mapping follows the house convention (see the migration header): the
 //! `u128` fields (`Hub.income_per_share`, `Holding.per_share`) are decimal
@@ -62,6 +66,14 @@ pub struct RealxhubHoldingRow {
     pub pubkey: Vec<u8>,
     pub slot: i64,
     pub lamports: i64,
+    /// Hub the holding belongs to. The deployed program embeds it in the
+    /// account state as well (the pre-deploy IDL carried it only in the PDA
+    /// seeds) so it is stored alongside the PDA components; the PDA remains
+    /// the source of truth. (ADR-30 addendum 2026-09-03)
+    pub hub_id: i64,
+    /// Owner wallet as stored in the account state (dual source: the PDA
+    /// carries it too).
+    pub owner: Vec<u8>,
     pub amount: i64,
     pub listed: i64,
     /// `per_share`: the hub's `income_per_share` this holding is settled up to.
@@ -102,6 +114,9 @@ pub struct RealxhubShareListingRow {
     pub pubkey: Vec<u8>,
     pub slot: i64,
     pub lamports: i64,
+    /// Hub the listing belongs to; embedded in the account state by the
+    /// deployed program (see `RealxhubHoldingRow::hub_id`).
+    pub hub_id: i64,
     pub seller: Vec<u8>,
     pub amount: i64,
     /// Stablecoin per share.
@@ -209,12 +224,14 @@ where
 {
     sqlx::query!(
         r#"
-        INSERT INTO realxhub_holding (pubkey, slot, lamports, closed_at_slot, amount, listed, per_share, pending, bump)
-        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8)
+        INSERT INTO realxhub_holding (pubkey, slot, lamports, closed_at_slot, hub_id, owner, amount, listed, per_share, pending, bump)
+        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (pubkey) DO UPDATE SET
             slot = EXCLUDED.slot,
             lamports = EXCLUDED.lamports,
             closed_at_slot = EXCLUDED.closed_at_slot,
+            hub_id = EXCLUDED.hub_id,
+            owner = EXCLUDED.owner,
             amount = EXCLUDED.amount,
             listed = EXCLUDED.listed,
             per_share = EXCLUDED.per_share,
@@ -225,6 +242,8 @@ where
         row.pubkey,
         row.slot,
         row.lamports,
+        row.hub_id,
+        row.owner,
         row.amount,
         row.listed,
         row.per_share,
@@ -295,12 +314,13 @@ where
 {
     sqlx::query!(
         r#"
-        INSERT INTO realxhub_share_listing (pubkey, slot, lamports, closed_at_slot, seller, amount, price, bump)
-        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7)
+        INSERT INTO realxhub_share_listing (pubkey, slot, lamports, closed_at_slot, hub_id, seller, amount, price, bump)
+        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8)
         ON CONFLICT (pubkey) DO UPDATE SET
             slot = EXCLUDED.slot,
             lamports = EXCLUDED.lamports,
             closed_at_slot = EXCLUDED.closed_at_slot,
+            hub_id = EXCLUDED.hub_id,
             seller = EXCLUDED.seller,
             amount = EXCLUDED.amount,
             price = EXCLUDED.price,
@@ -310,6 +330,7 @@ where
         row.pubkey,
         row.slot,
         row.lamports,
+        row.hub_id,
         row.seller,
         row.amount,
         row.price,

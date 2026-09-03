@@ -42,6 +42,13 @@ pub const DEFAULT_METADATA_FETCH_INTERVAL_SECS: u64 = 30;
 /// backed off, so the interval costs nothing while nothing is pending.
 pub const DEFAULT_WEBHOOK_INTERVAL_SECS: u64 = 5;
 
+/// How often the property image mirror polls its work set (see [`crate::images`], ADR-31).
+/// 30 seconds: like the metadata fetcher the work-set query is one indexed Postgres read; a
+/// thumbnail showing up within a minute of the metadata fetch is plenty, and the downloads are
+/// bounded (`images::CYCLE_LIMIT`) and backed off per image, so the interval costs nothing
+/// while the work set is empty.
+pub const DEFAULT_IMAGE_MIRROR_INTERVAL_SECS: u64 = 30;
+
 pub struct Config {
     /// `DATABASE_URL`. Required by every subcommand that writes rows; `smoke-grpc` never
     /// touches Postgres, so it is validated at use (see [`Config::require_database_url`])
@@ -73,6 +80,56 @@ pub struct Config {
     pub webhook_url: Option<String>,
     /// `WEBHOOK_INTERVAL` (seconds), default [`DEFAULT_WEBHOOK_INTERVAL_SECS`].
     pub webhook_interval: Duration,
+    /// Object storage for the property image mirror (ADR-31). `None` (no `OBJECT_STORAGE_*`
+    /// variables set) disables the mirror entirely -- the supervisor is never spawned and no
+    /// external call is ever made. Partially-set `OBJECT_STORAGE_*` is a hard error (see
+    /// [`object_storage_from_env`]).
+    pub object_storage: Option<ObjectStorage>,
+    /// `IMAGE_MIRROR_INTERVAL` (seconds), default [`DEFAULT_IMAGE_MIRROR_INTERVAL_SECS`].
+    pub image_mirror_interval: Duration,
+}
+
+/// The object storage target for the mirrored image thumbnails (ADR-31).
+///
+/// Deliberately plain fields rather than an `s3::bucket::Bucket`: this is the *configuration*,
+/// and the bucket client is built once per process (see [`crate::images`]), so the one-shot
+/// `mirror-images` subcommand and tests can inspect what is configured without TLS
+/// initialisation.
+#[derive(Clone)]
+pub struct ObjectStorage {
+    /// `OBJECT_STORAGE_ENDPOINT` -- the S3 endpoint URL, e.g.
+    /// `https://fsn1.<your-objectstorage-domain>`: `<region>.<domain>`, where the domain
+    /// (a `*.your-objectstorage.com`-style name) is assigned per customer and shown in the
+    /// Hetzner Console.
+    pub endpoint: String,
+    /// `OBJECT_STORAGE_BUCKET` -- the public-read bucket the thumbnails are uploaded to.
+    pub bucket: String,
+    /// `OBJECT_STORAGE_REGION` -- the bucket's location code, e.g. `fsn1` or `nbg1` (also
+    /// the first label of the endpoint host).
+    pub region: String,
+    /// `OBJECT_STORAGE_ACCESS_KEY`. Never logged (`Debug` is hand-written below).
+    pub access_key: String,
+    /// `OBJECT_STORAGE_SECRET_KEY`. Never logged.
+    pub secret_key: String,
+    /// `OBJECT_STORAGE_PUBLIC_BASE_URL`, or `{scheme}://{bucket}.{host}` derived from the
+    /// endpoint when unset (virtual-hosted, matching how the bucket serves objects): the
+    /// prefix of every public thumbnail URL the API serves.
+    pub public_base_url: String,
+}
+
+/// Hand-written so the access key / secret key never reach a log line via `{:?}` (the same
+/// treatment as [`Config`]).
+impl fmt::Debug for ObjectStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ObjectStorage")
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("access_key", &"<set>")
+            .field("secret_key", &"<set>")
+            .field("public_base_url", &self.public_base_url)
+            .finish()
+    }
 }
 
 impl Config {
@@ -163,6 +220,27 @@ impl Config {
             Err(_) => DEFAULT_WEBHOOK_INTERVAL_SECS,
         };
 
+        // Object storage (ADR-31) is all-or-nothing: any one of the five required
+        // `OBJECT_STORAGE_*` variables set means all must be present -- a half-configured
+        // mirror is a misconfiguration, not a degraded mode.
+        let object_storage = object_storage_from_env()?;
+
+        let image_mirror_interval_secs = match std::env::var("IMAGE_MIRROR_INTERVAL") {
+            Ok(s) => s
+                .parse::<u64>()
+                .with_context(|| format!("IMAGE_MIRROR_INTERVAL is not a u64 (seconds): {s}"))
+                .and_then(|v| {
+                    if v == 0 {
+                        Err(anyhow!(
+                            "IMAGE_MIRROR_INTERVAL must be greater than 0 seconds"
+                        ))
+                    } else {
+                        Ok(v)
+                    }
+                })?,
+            Err(_) => DEFAULT_IMAGE_MIRROR_INTERVAL_SECS,
+        };
+
         Ok(Self {
             database_url,
             alchemy_api_key,
@@ -179,6 +257,8 @@ impl Config {
             metadata_fetch_interval: Duration::from_secs(metadata_fetch_interval_secs),
             webhook_url,
             webhook_interval: Duration::from_secs(webhook_interval_secs),
+            object_storage,
+            image_mirror_interval: Duration::from_secs(image_mirror_interval_secs),
         })
     }
 
@@ -222,6 +302,86 @@ impl Config {
     }
 }
 
+/// The `OBJECT_STORAGE_*` variables (ADR-31), all-or-nothing: `None` (none set) disables the
+/// image mirror entirely; any one set means all five must be present and non-empty.
+fn object_storage_from_env() -> Result<Option<ObjectStorage>> {
+    let non_empty = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let endpoint = non_empty("OBJECT_STORAGE_ENDPOINT");
+    let bucket = non_empty("OBJECT_STORAGE_BUCKET");
+    let region = non_empty("OBJECT_STORAGE_REGION");
+    let access_key = non_empty("OBJECT_STORAGE_ACCESS_KEY");
+    let secret_key = non_empty("OBJECT_STORAGE_SECRET_KEY");
+
+    let missing: Vec<&str> = [
+        ("OBJECT_STORAGE_ENDPOINT", &endpoint),
+        ("OBJECT_STORAGE_BUCKET", &bucket),
+        ("OBJECT_STORAGE_REGION", &region),
+        ("OBJECT_STORAGE_ACCESS_KEY", &access_key),
+        ("OBJECT_STORAGE_SECRET_KEY", &secret_key),
+    ]
+    .into_iter()
+    .filter(|(_, v)| v.is_none())
+    .map(|(name, _)| name)
+    .collect();
+
+    match missing.len() {
+        // Not configured at all -> the mirror is disabled, which is a first-class state.
+        5 => Ok(None),
+        0 => {
+            let endpoint = endpoint.expect("checked above");
+            let bucket = bucket.expect("checked above");
+            let public_base_url = match non_empty("OBJECT_STORAGE_PUBLIC_BASE_URL") {
+                Some(base) => base,
+                None => public_base_from_endpoint(&endpoint, &bucket)?,
+            };
+            Ok(Some(ObjectStorage {
+                endpoint,
+                bucket,
+                region: region.expect("checked above"),
+                access_key: access_key.expect("checked above"),
+                secret_key: secret_key.expect("checked above"),
+                public_base_url,
+            }))
+        }
+        n => Err(anyhow!(
+            "Object storage is partially configured: {n} of the five required \
+             OBJECT_STORAGE_* variable(s) missing or empty ({}). Set all of \
+             OBJECT_STORAGE_ENDPOINT, OBJECT_STORAGE_BUCKET, OBJECT_STORAGE_REGION, \
+             OBJECT_STORAGE_ACCESS_KEY, OBJECT_STORAGE_SECRET_KEY -- or none of them to \
+             disable the image mirror",
+            missing.join(", ")
+        )),
+    }
+}
+
+/// `{scheme}://{bucket}.{host}` from the endpoint URL: Hetzner Object Storage serves objects
+/// in virtual-hosted style (the bucket name as a subdomain of the endpoint host -- the same
+/// shape its own docs use for object operations and the one the chain's metadata already
+/// exhibits, e.g. `https://xcavate-profile.fsn1.your-objectstorage.com/...`), so
+/// `OBJECT_STORAGE_PUBLIC_BASE_URL` can usually be left unset. (The endpoint must be a bare
+/// `scheme://host` -- Object Storage endpoints have no path component -- so cutting at the
+/// first `/` after the scheme is exact.)
+fn public_base_from_endpoint(endpoint: &str, bucket: &str) -> Result<String> {
+    let Some(scheme_end) = endpoint.find("://") else {
+        return Err(anyhow!(
+            "OBJECT_STORAGE_ENDPOINT is not a scheme://host URL: {endpoint:?}"
+        ));
+    };
+    let host = endpoint[scheme_end + 3..]
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    if host.is_empty() {
+        return Err(anyhow!("OBJECT_STORAGE_ENDPOINT has no host: {endpoint:?}"));
+    }
+    Ok(format!(
+        "{}://{}.{}",
+        &endpoint[..scheme_end + 3],
+        bucket,
+        host
+    ))
+}
+
 /// Hand-written so the API key (and the key embedded in `ALCHEMY_RPC_URL`) can never reach a
 /// log line via `{:?}`.
 impl fmt::Debug for Config {
@@ -249,6 +409,9 @@ impl fmt::Debug for Config {
             // credentials, it is never logged -- only whether it is set.
             .field("webhook_url", &self.webhook_url.as_ref().map(|_| "<set>"))
             .field("webhook_interval", &self.webhook_interval)
+            // ObjectStorage's Debug is hand-written to redact its keys.
+            .field("object_storage", &self.object_storage.as_ref())
+            .field("image_mirror_interval", &self.image_mirror_interval)
             .finish()
     }
 }

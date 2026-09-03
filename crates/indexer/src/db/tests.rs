@@ -1653,6 +1653,400 @@ async fn the_metadata_work_set_lists_exactly_what_needs_a_refetch(
     Ok(())
 }
 
+// --- mirrored property images (ADR-31) ------------------------------------------------------------------
+//
+// One row per image URI, keyed by its zero-based position within the metadata's
+// `property_images` array. A success replaces the row and resets the failure
+// counters; per-image backoff is independent of every other image's.
+
+// `count_pending` / `record_failure` / `upsert_success` collide with the property_metadata
+// imports above; the aliases keep the two work-set domains readable side by side.
+use super::property_images::{
+    count_pending as count_image_pending, pending_images, record_failure as record_image_failure,
+    upsert_success as upsert_image_success,
+};
+
+/// An asset whose metadata carries the given `property_images` JSON array.
+fn images_metadata(
+    pubkey: Vec<u8>,
+    asset_id: i64,
+    images: serde_json::Value,
+) -> PropertyMetadataRow {
+    let mut row = metadata_row(pubkey, asset_id, "https://example.com/prop.json");
+    row.property_images = Some(images);
+    row
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_image_work_set_lists_exactly_what_needs_a_mirror(pool: PgPool) -> sqlx::Result<()> {
+    // A: open, one image, no mirror row yet -> pending.
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(20), 900, 20, "https://example.com/p20.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            pk(20).clone(),
+            20,
+            serde_json::json!(["https://example.com/a-0.jpg"]),
+        ),
+    )
+    .await?;
+
+    // B: both images already mirrored for the current URIs -> not pending.
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(21), 901, 21, "https://example.com/p21.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            pk(21).clone(),
+            21,
+            serde_json::json!(["https://example.com/b-0.jpg", "https://example.com/b-1.jpg"]),
+        ),
+    )
+    .await?;
+    upsert_image_success(
+        &pool,
+        &pk(21),
+        0,
+        "https://example.com/b-0.jpg",
+        "https://static.example.com/b-0.jpg",
+        Utc::now(),
+    )
+    .await?;
+    upsert_image_success(
+        &pool,
+        &pk(21),
+        1,
+        "https://example.com/b-1.jpg",
+        "https://static.example.com/b-1.jpg",
+        Utc::now(),
+    )
+    .await?;
+
+    // C: image 0 is current, image 1 was mirrored for a STALE uri -> only index 1 due.
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(22), 902, 22, "https://example.com/p22.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            pk(22).clone(),
+            22,
+            serde_json::json!([
+                "https://example.com/c-0.jpg",
+                "https://example.com/c-1-v2.jpg"
+            ]),
+        ),
+    )
+    .await?;
+    upsert_image_success(
+        &pool,
+        &pk(22),
+        0,
+        "https://example.com/c-0.jpg",
+        "https://static.example.com/c-0.jpg",
+        Utc::now(),
+    )
+    .await?;
+    upsert_image_success(
+        &pool,
+        &pk(22),
+        1,
+        "https://example.com/c-1-v1.jpg", // the uri was replaced upstream.
+        "https://static.example.com/c-1.jpg",
+        Utc::now(),
+    )
+    .await?;
+
+    // D: one failure, backoff still open -> not yet due.
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(23), 903, 23, "https://example.com/p23.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            pk(23).clone(),
+            23,
+            serde_json::json!(["https://example.com/d-0.jpg"]),
+        ),
+    )
+    .await?;
+    record_image_failure(
+        &pool,
+        &pk(23),
+        0,
+        "https://example.com/d-0.jpg",
+        "404 from the source",
+    )
+    .await?;
+
+    // E: a failure whose backoff window has expired -> pending (retry).
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(24), 904, 24, "https://example.com/p24.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            pk(24).clone(),
+            24,
+            serde_json::json!(["https://example.com/e-0.jpg"]),
+        ),
+    )
+    .await?;
+    record_image_failure(
+        &pool,
+        &pk(24),
+        0,
+        "https://example.com/e-0.jpg",
+        "404 from the source",
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE marketplace_property_image SET next_attempt_at = now() - interval '1 minute' \
+         WHERE asset_pubkey = $1 AND image_index = $2",
+    )
+    .bind(pk(24))
+    .bind(0i32)
+    .execute(&pool)
+    .await?;
+
+    // F: closed asset -> never mirrored (the mirror never touches closed assets). The
+    // close slot must be strictly newer than the asset's own slot (905) or the guard in
+    // `close_in_table` (same-slot close, see its doc) leaves the row open.
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(25), 905, 25, "https://example.com/p25.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            pk(25).clone(),
+            25,
+            serde_json::json!(["https://example.com/f-0.jpg"]),
+        ),
+    )
+    .await?;
+    close_in_table(&pool, StateTable::MarketplacePropertyAsset, &pk(25), 906).await?;
+
+    // G: open but no metadata row yet -> nothing to mirror.
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(26), 906, 26, "https://example.com/p26.json"),
+    )
+    .await?;
+
+    // H: only non-string / empty entries remain and the one real image is already
+    // mirrored -> not pending.
+    upsert_property_asset(
+        &pool,
+        &property_asset(pk(27), 907, 27, "https://example.com/p27.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            pk(27).clone(),
+            27,
+            serde_json::json!(["https://example.com/h-0.jpg", 42, ""]),
+        ),
+    )
+    .await?;
+    upsert_image_success(
+        &pool,
+        &pk(27),
+        0,
+        "https://example.com/h-0.jpg",
+        "https://static.example.com/h-0.jpg",
+        Utc::now(),
+    )
+    .await?;
+
+    let pending = pending_images(&pool, 50).await?;
+    let got: Vec<(Vec<u8>, i32)> = pending
+        .iter()
+        .map(|i| (i.asset_pubkey.clone(), i.image_index))
+        .collect();
+    assert_eq!(
+        got,
+        vec![(pk(20), 0), (pk(22), 1), (pk(24), 0)],
+        "unseen images, uri-changed images, and backoff-expired failures only"
+    );
+    let uris: Vec<&str> = pending.iter().map(|i| i.source_uri.as_str()).collect();
+    assert_eq!(
+        uris,
+        vec![
+            "https://example.com/a-0.jpg",
+            "https://example.com/c-1-v2.jpg",
+            "https://example.com/e-0.jpg",
+        ],
+        "the current uri travels with each row"
+    );
+    assert_eq!(
+        count_image_pending(&pool).await?,
+        3,
+        "the gauge query must agree with the work set"
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_image_mirror_success_replaces_and_a_failure_backs_off_per_image(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    let key = pk(30);
+    upsert_property_asset(
+        &pool,
+        &property_asset(key.clone(), 908, 30, "https://example.com/p30.json"),
+    )
+    .await?;
+    upsert_success(
+        &pool,
+        &images_metadata(
+            key.clone(),
+            30,
+            serde_json::json!(["https://example.com/g-0-v1.jpg"]),
+        ),
+    )
+    .await?;
+
+    // v1 uploaded, then the uri is replaced and v2 uploaded: the row follows the
+    // new upload and the failure counters reset.
+    upsert_image_success(
+        &pool,
+        &key,
+        0,
+        "https://example.com/g-0-v1.jpg",
+        "https://static.example.com/v1.jpg",
+        Utc::now(),
+    )
+    .await?;
+    upsert_image_success(
+        &pool,
+        &key,
+        0,
+        "https://example.com/g-0-v2.jpg",
+        "https://static.example.com/v2.jpg",
+        Utc::now(),
+    )
+    .await?;
+    let row = sqlx::query(
+        "SELECT source_uri, thumb_uri, attempts, next_attempt_at, last_error \
+         FROM marketplace_property_image WHERE asset_pubkey = $1 AND image_index = $2",
+    )
+    .bind(&key)
+    .bind(0i32)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        row.get::<String, _>("source_uri"),
+        "https://example.com/g-0-v2.jpg"
+    );
+    assert_eq!(
+        row.get::<String, _>("thumb_uri"),
+        "https://static.example.com/v2.jpg"
+    );
+    assert_eq!(
+        row.get::<i32, _>("attempts"),
+        0,
+        "a success resets the backoff"
+    );
+    assert!(
+        row.get::<Option<chrono::DateTime<Utc>>, _>("next_attempt_at")
+            .is_none(),
+        "a success clears the retry deadline"
+    );
+    assert!(row.get::<Option<String>, _>("last_error").is_none());
+
+    // A failure keeps the last success, starts a fresh 30 s backoff, and a
+    // second failure on the same uri doubles it. A failure for a NEW uri resets
+    // to the first attempt again.
+    let before = Utc::now();
+    record_image_failure(
+        &pool,
+        &key,
+        0,
+        "https://example.com/g-0-v2.jpg",
+        "503 from the source",
+    )
+    .await?;
+    let row = sqlx::query(
+        "SELECT thumb_uri, attempts, next_attempt_at, last_error \
+         FROM marketplace_property_image WHERE asset_pubkey = $1 AND image_index = $2",
+    )
+    .bind(&key)
+    .bind(0i32)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        row.get::<String, _>("thumb_uri"),
+        "https://static.example.com/v2.jpg",
+        "a failure keeps the last successful thumbnail"
+    );
+    assert_eq!(row.get::<i32, _>("attempts"), 1);
+    assert_eq!(row.get::<String, _>("last_error"), "503 from the source");
+    let retry = row.get::<chrono::DateTime<Utc>, _>("next_attempt_at");
+    assert!(retry > before);
+    assert!(
+        retry <= before + chrono::Duration::seconds(120),
+        "first-attempt backoff is ~30 s, not yet escalated"
+    );
+
+    record_image_failure(
+        &pool,
+        &key,
+        0,
+        "https://example.com/g-0-v2.jpg",
+        "503 from the source",
+    )
+    .await?;
+    let row = sqlx::query(
+        "SELECT attempts FROM marketplace_property_image WHERE asset_pubkey = $1 AND image_index = $2",
+    )
+    .bind(&key)
+    .bind(0i32)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        row.get::<i32, _>("attempts"),
+        2,
+        "same uri: escalating backoff"
+    );
+
+    record_image_failure(&pool, &key, 0, "https://example.com/g-0-v3.jpg", "404").await?;
+    let row = sqlx::query(
+        "SELECT attempts, source_uri FROM marketplace_property_image \
+         WHERE asset_pubkey = $1 AND image_index = $2",
+    )
+    .bind(&key)
+    .bind(0i32)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        row.get::<i32, _>("attempts"),
+        1,
+        "a changed uri resets the counters"
+    );
+    assert_eq!(
+        row.get::<String, _>("source_uri"),
+        "https://example.com/g-0-v3.jpg",
+        "record_failure upserts the row it is failing for"
+    );
+    Ok(())
+}
+
 // --- webhook events (ADR-28) ------------------------------------------------------------------
 
 // `count_pending` / `record_failure` collide with the property_metadata imports above; the

@@ -57,6 +57,18 @@ services:
       # `webhook_events` rows are still recorded). See RUNBOOK.md "Property-asset
       # registration webhooks".
       WEBHOOK_URL: ${WEBHOOK_URL:-}
+      # ADR-31 property-image mirror: five all-or-nothing variables (all unset = the mirror
+      # is never spawned; exactly one or some set makes the indexer refuse to start --
+      # crates/indexer/src/config.rs). OBJECT_STORAGE_PUBLIC_BASE_URL and IMAGE_MIRROR_INTERVAL
+      # are optional and independent. Compressed 720x720 JPEGs land in a PUBLIC bucket, so
+      # ACCESS/SECRET KEY should be a write-only key (see RUNBOOK.md "Property-image mirror").
+      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-}
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-}
+      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:-}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-}
+      OBJECT_STORAGE_PUBLIC_BASE_URL: ${OBJECT_STORAGE_PUBLIC_BASE_URL:-}
+      IMAGE_MIRROR_INTERVAL: ${IMAGE_MIRROR_INTERVAL:-}
       # ALCHEMY_GRPC_URL / ALCHEMY_RPC_URL / RPC_FALLBACK_URL / PROGRAMS / METRICS_ADDR /
       # RECONCILE_INTERVAL / METADATA_FETCH_INTERVAL / WEBHOOK_INTERVAL all have working
       # defaults baked into the binary (crates/indexer/src/config.rs; the default

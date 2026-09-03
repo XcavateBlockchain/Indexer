@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, seller, amount, price\n        FROM realxhub_share_listing\n        WHERE ($1::bytea IS NULL OR seller = $1)\n          AND ($2::bool IS NULL OR (closed_at_slot IS NULL) = $2)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $3 OFFSET $4\n        ",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, hub_id, owner, amount, listed, per_share, pending\n        FROM realxhub_holding\n        WHERE ($1::bool IS NULL OR (closed_at_slot IS NULL) = $1)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $2 OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -25,23 +25,37 @@
       },
       {
         "ordinal": 4,
-        "name": "seller",
-        "type_info": "Bytea"
+        "name": "hub_id",
+        "type_info": "Int8"
       },
       {
         "ordinal": 5,
+        "name": "owner",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
         "name": "amount",
         "type_info": "Int8"
       },
       {
-        "ordinal": 6,
-        "name": "price",
+        "ordinal": 7,
+        "name": "listed",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "per_share",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "pending",
         "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
-        "Bytea",
         "Bool",
         "Int8",
         "Int8"
@@ -54,8 +68,11 @@
       true,
       false,
       false,
+      false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "87ba60e37773e9491e446295137b5455f3dc914508a5b5930fdbc53b7efee827"
+  "hash": "9188e42fbc8a7ad3ae391700ffe53746b1b07fa8fd209009f2c0cd49505b0fa0"
 }

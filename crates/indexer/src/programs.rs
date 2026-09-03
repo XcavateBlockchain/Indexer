@@ -125,13 +125,13 @@ pub static PROGRAMS: &[ProgramSpec] = &[
             StateTable::PropertyResignationNotice,
         ],
     },
-    // Not deployed on devnet yet (ADR-30): the slot is 0 until the first signature lands,
-    // pinned in addresses.json and here the moment it deploys.
+    // First deploy landed on devnet at slot 489635042 (ADR-30 addendum, 2026-09-03); the IDL
+    // was corrected in place to the deployed layout, so the single decoder covers the boundary.
     ProgramSpec {
         name: "realxhub",
         id: carbon_realxhub_decoder::PROGRAM_ID,
-        deploy_slot: 0,
-        decoder_covers_boundary: 0,
+        deploy_slot: 489_635_042,
+        decoder_covers_boundary: 489_635_042,
         snapshot_write_op: crate::mapping::realxhub::snapshot_write_op,
         tables: &[
             StateTable::RealxhubConfig,

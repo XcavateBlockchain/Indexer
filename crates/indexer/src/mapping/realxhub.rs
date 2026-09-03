@@ -5,9 +5,10 @@
 //! per-seller listing (one live listing per seller per hub). It is the fifth
 //! program onboarded to this indexer (ADR-30); the decoder is generated from
 //! `idls/realxhub.json` and this mapper follows the same pattern as the other
-//! four programs. The program is **not yet deployed** on devnet (ADR-30), so
-//! its registry entry pins `deploy_slot: 0` and every state account that
-//! appears before the first `initialize` is noise the batcher filters.
+//! four programs. The program first deployed to devnet at slot 489635042 —
+//! *after* this repo's pre-deploy IDL had been captured — so the IDL was
+//! corrected in place to the deployed layout and the registry pins that
+//! deploy slot (ADR-30 addendum, 2026-09-03).
 //!
 //! Instructions
 //!
@@ -204,6 +205,8 @@ pub fn account_write_op(
             pubkey: pubkey.clone(),
             slot,
             lamports,
+            hub_id: h.hub_id as i64,
+            owner: h.owner.to_bytes().to_vec(),
             amount: h.amount as i64,
             listed: h.listed as i64,
             per_share: h.per_share.to_string(),
@@ -231,6 +234,7 @@ pub fn account_write_op(
                 pubkey,
                 slot,
                 lamports,
+                hub_id: l.hub_id as i64,
                 seller: l.seller.to_bytes().to_vec(),
                 amount: l.amount as i64,
                 price: l.price as i64,

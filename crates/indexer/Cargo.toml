@@ -75,6 +75,26 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = [
     "http-listener",
 ] }
+# --- Property image mirror (ADR-31) ----------------------------------------------------------
+# default-features OFF: the default set pulls avif/tiff/gd/icc extras (and, on Windows,
+# windows-* crates) that we never use. We only decode what the marketplace ships — jpeg,
+# png, webp — and always re-encode to JPEG, so those three decoders plus the jpeg encoder
+# are the whole surface we need.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# S3-compatible PUT for Hetzner Object Storage. Async client: the `with-tokio` backend is
+# plain `reqwest` (same 0.12 line as our own fetch client), so `images.rs` just `.await`s
+# the PUT. `default-features` OFF because the default set is `tokio-native-tls`, which pulls
+# native-tls/OpenSSL into the container build; `tokio-rustls-tls` matches sqlx's
+# `runtime-tokio-rustls` and is already in the graph. `fail-on-err` (a default feature, hence
+# listed explicitly) makes non-2xx PUTs (bad key, bucket denied) surface as `Err` instead of
+# being returned as a `ResponseData` we would have logged as success.
+rust-s3 = { version = "0.37", default-features = false, features = [
+    "fail-on-err",
+    "tokio-rustls-tls",
+] }
+# Already in the lockfile transitively (sqlx). We compute SHA-256 of the source URI so
+# `object_key` is deterministic per (pubkey, index, uri).
+sha2 = "0.10"
 
 [dev-dependencies]
 solana-message = "3.0.0"

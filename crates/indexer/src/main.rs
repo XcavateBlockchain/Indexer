@@ -6,6 +6,7 @@
 //! indexer backfill       # resumable history walk down to the floor slot
 //! indexer smoke-grpc     # connectivity/auth/filter check against the Yellowstone endpoint
 //! indexer fetch-metadata # one cycle of the off-chain property-metadata fetch (ADR-27)
+//! indexer mirror-images    # one cycle of the property image mirror (ADR-31)
 //! ```
 //!
 //! `snapshot` and `backfill` are subcommands precisely so they can be run by hand against a
@@ -29,6 +30,7 @@ use indexer::batcher;
 use indexer::block_time::BlockTimeResolver;
 use indexer::config::{redact_key, redact_url_password, Config};
 use indexer::db;
+use indexer::images;
 use indexer::metadata;
 use indexer::metrics::PrometheusMetrics;
 use indexer::pipeline::{self, PipeDeps};
@@ -116,6 +118,11 @@ enum Command {
     /// safe to re-run. No RPC endpoint or API key is needed -- only `DATABASE_URL` and
     /// outbound HTTPS.
     FetchMetadata,
+    /// Run one cycle of the off-chain property-image mirror (ADR-31): every pending
+    /// `marketplace_property_image` row is fetched, cropped to a 720x720 JPEG, and uploaded
+    /// to the configured object storage. Idempotent; safe to re-run. Needs `DATABASE_URL`
+    /// and the `OBJECT_STORAGE_*` variables (refuses to start when they are unset).
+    MirrorImages,
 }
 
 #[tokio::main]
@@ -152,6 +159,7 @@ async fn main() -> Result<()> {
         }
         Command::Snapshot { program, metrics } => run_snapshot(program, metrics).await,
         Command::FetchMetadata => run_fetch_metadata().await,
+        Command::MirrorImages => run_mirror_images().await,
     }
 }
 
@@ -404,6 +412,28 @@ async fn run_live() -> Result<()> {
             None
         };
 
+    // The off-chain property-image mirror (ADR-31): its own loop with its own backoff, so a
+    // flaky upstream image host never delays the gRPC stream and vice versa. Its work set
+    // is the durable `marketplace_property_image` table; with no `OBJECT_STORAGE_*`
+    // variables the loop is never spawned and no upload is ever attempted.
+    let image_mirror =
+        if cfg.object_storage.is_some() && cfg.programs.iter().any(|p| p.name == "marketplace") {
+            let object_storage = cfg
+                .object_storage
+                .clone()
+                .expect("guarded by the is_some() check above");
+            let mirror = images::ImageMirror::new(&object_storage)
+                .context("constructing the image mirror")?;
+            let pool = started.pool.clone();
+            let interval = cfg.image_mirror_interval;
+            let shutdown = shutdown.clone();
+            Some(tokio::spawn(async move {
+                images::supervise(&mirror, &pool, interval, shutdown).await
+            }))
+        } else {
+            None
+        };
+
     let mut backoff = RECONNECT_BACKOFF_MIN;
     while !shutdown.is_cancelled() {
         // Child token so cancelling the process cancels the datasource, but a datasource
@@ -488,6 +518,9 @@ async fn run_live() -> Result<()> {
     }
     if let Some(delivery) = webhook_delivery {
         delivery.await.ok();
+    }
+    if let Some(mirror) = image_mirror {
+        mirror.await.ok();
     }
 
     // Dropping the last Batcher closes the channel, which makes the flusher commit its final
@@ -754,6 +787,36 @@ async fn run_snapshot(program_filter: Option<String>, serve_metrics: bool) -> Re
             }
         );
     }
+    Ok(())
+}
+
+/// One cycle of the off-chain property-image mirror (ADR-31), run by hand: the same job the
+/// live mirror does each interval, as a one-shot -- like `fetch-metadata`, it works against
+/// a production `DATABASE_URL` without redeploying and is idempotent. Unlike it, it needs
+/// the `OBJECT_STORAGE_*` variables (refuses to start when they are unset), since its job is
+/// to upload, not just fetch.
+#[allow(clippy::print_stdout)]
+async fn run_mirror_images() -> Result<()> {
+    let started = start().await?;
+
+    let object_storage = started.cfg.object_storage.as_ref().context(
+        "the image mirror is not configured: set the OBJECT_STORAGE_* variables (see .env.example)",
+    )?;
+    let mirror =
+        images::ImageMirror::new(object_storage).context("constructing the image mirror")?;
+
+    let shutdown = CancellationToken::new();
+    spawn_ctrl_c_watcher(shutdown.clone());
+
+    let summary = mirror
+        .cycle(&started.pool, &shutdown)
+        .await
+        .context("the image mirror cycle failed")?;
+
+    println!(
+        "mirror-images complete: {} attempted, {} uploaded, {} failed (backed off)",
+        summary.attempted, summary.uploaded, summary.failed
+    );
     Ok(())
 }
 
