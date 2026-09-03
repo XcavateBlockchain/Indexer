@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT asset_pubkey, image_index, thumb_uri\n        FROM marketplace_property_image\n        WHERE asset_pubkey = ANY($1) AND thumb_uri IS NOT NULL\n        ORDER BY image_index\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "asset_pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "image_index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "thumb_uri",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "ByteaArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "762084d62f7a5e63b98d723082287a9ac4f46db63d966527f0455a352f4fbb36"
+}

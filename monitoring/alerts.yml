@@ -198,3 +198,38 @@ groups:
             backoff (30 s doubling, 1 h cap) until the endpoint answers 2xx. Check
             the endpoint and the per-row last_error; see RUNBOOK.md "Property-asset
             registration webhooks".
+
+      # PropertyImageMirrorFailing -- counter-based, for the same reason as
+      # WebhookDeliveryFailing.
+      #
+      # `property_images_pending > 0 for 30m` does NOT work with the ADR-31 per-image
+      # backoff: a failing image is excluded from the work set (and the gauge) while its
+      # backoff runs, and at the 1 h cap it is in the set only for the <=cycle retry, then
+      # out for up to an hour again -- the series spikes to zero and back a scrape can miss.
+      # The failure COUNTER is the stable signal: every failed mirror attempt bumps
+      # property_images_mirrored_total{result="failure"} (pre-registered at zero in
+      # metrics.rs's install(), like webhooks_delivered_total), and the 1 h backoff cap
+      # guarantees at least one failed attempt -- hence one bump -- inside any 2 h window
+      # while a source stays down. The alert also fires on a single transient failure
+      # (house stance, cf. DecodeFailures) and stays lit until the failure ages out of the
+      # window; the durable per-image state (last_error / attempts / next_attempt_at) is in
+      # `marketplace_property_image`. Note the rule is latent while the mirror is disabled
+      # (OBJECT_STORAGE_* unset): no cycle runs, so no failure series ever exists -- and
+      # there is nothing to fail.
+      - alert: PropertyImageMirrorFailing
+        expr: increase(property_images_mirrored_total{result="failure"}[2h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Property-image mirroring to object storage has been failing"
+          description: >-
+            property_images_mirrored_total{result="failure"} increased in the last 2
+            hours: the indexer's property-image mirror loop (ADR-31) has been
+            downloading propertyImages source URIs and/or uploading the compressed
+            720x720 JPEGs to OBJECT_STORAGE_BUCKET and failing (source fetch error,
+            non-image body, or S3 PUT error). Images are NOT lost -- each source URI is
+            a durable row in marketplace_property_image that retries with exponential
+            backoff (30 s doubling, 1 h cap) until the upload succeeds. Check the
+            per-row last_error and the OBJECT_STORAGE_* credentials; see RUNBOOK.md
+            "Property-image mirror".

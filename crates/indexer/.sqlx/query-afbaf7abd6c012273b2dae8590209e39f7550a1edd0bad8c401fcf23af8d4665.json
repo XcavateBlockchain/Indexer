@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO marketplace_property_image (\n            asset_pubkey, image_index, source_uri, thumb_uri, uploaded_at,\n            attempts, next_attempt_at, last_error\n        )\n        VALUES ($1, $2, $3, $4, $5, 0, NULL, NULL)\n        ON CONFLICT (asset_pubkey, image_index) DO UPDATE SET\n            source_uri      = EXCLUDED.source_uri,\n            thumb_uri       = EXCLUDED.thumb_uri,\n            uploaded_at     = EXCLUDED.uploaded_at,\n            attempts        = 0,\n            next_attempt_at = NULL,\n            last_error      = NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int4",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "afbaf7abd6c012273b2dae8590209e39f7550a1edd0bad8c401fcf23af8d4665"
+}

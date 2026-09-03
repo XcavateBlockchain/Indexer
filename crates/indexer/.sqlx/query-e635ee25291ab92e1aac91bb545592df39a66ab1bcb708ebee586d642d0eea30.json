@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.pubkey AS asset_pubkey,\n               (el.ord - 1)::int AS image_index,\n               el.value #>> '{}' AS source_uri\n        FROM marketplace_property_asset a\n        JOIN marketplace_property_metadata m ON m.pubkey = a.pubkey\n        CROSS JOIN LATERAL jsonb_array_elements(m.property_images) WITH ORDINALITY\n             AS el(value, ord)\n        LEFT JOIN marketplace_property_image p\n             ON p.asset_pubkey = a.pubkey AND p.image_index = (el.ord - 1)::int\n        WHERE a.closed_at_slot IS NULL\n          AND jsonb_typeof(el.value) = 'string'\n          AND el.value #>> '{}' <> ''\n          AND (\n                p.asset_pubkey IS NULL\n             OR p.source_uri <> (el.value #>> '{}')\n             OR (p.last_error IS NOT NULL\n                 AND (p.next_attempt_at IS NULL OR p.next_attempt_at <= now()))\n          )\n        ORDER BY a.pubkey ASC, el.ord ASC\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "asset_pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "image_index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "source_uri",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "e635ee25291ab92e1aac91bb545592df39a66ab1bcb708ebee586d642d0eea30"
+}
