@@ -1359,3 +1359,54 @@ gauntlet not applicable (no Rust changed).
   Caveat: the last good image predates the realxhub layout fix
   (2026-09-03, ADR-30 addendum), so `seller`/`amount`/`price` stay wrong until
   the fixed build is live — API-up outranks field-correctness.
+
+## Indexer: treat empty interval env vars as unset — 2026-09-03
+
+### What was built
+
+Incident (same host, hours after the glibc pin): with the glibc-fixed image
+live, `indexer` and `api` crash-looped again at startup with
+`Error: IMAGE_MIRROR_INTERVAL is not a u64 (seconds): Caused by: cannot parse
+integer from empty string`. Root cause: `docker-compose.yml` declares
+`IMAGE_MIRROR_INTERVAL: ${IMAGE_MIRROR_INTERVAL:-}` — when the host `.env`
+leaves it unset, Docker passes the variable **present but empty**. In
+`crates/indexer/src/config.rs::from_env`, the `Ok("")` fell into the
+`u64`-parse arm instead of the unset/default arm. The other three interval
+vars (`RECONCILE_INTERVAL`, `METADATA_FETCH_INTERVAL`, `WEBHOOK_INTERVAL`)
+were not in compose and had not bitten yet, but shared the identical
+latent bug.
+
+The fix (in `crates/indexer/src/config.rs` only): all four interval parsers
+now treat empty/whitespace-only as *unset* and fall back to the built-in
+default — `Ok(s) if !s.trim().is_empty()` guards the parse arm, `_ =>
+DEFAULT_*_SECS` absorbs unset *and* empty (defaults: reconcile 300s,
+metadata fetch 30s, webhook 5s, image mirror 30s). Deliberately **not**
+softened: an explicit `0` is still a hard error (`must be greater than 0
+seconds`) and a non-numeric value is still a hard error (`is not a u64
+(seconds): <value>`) — both are misconfiguration signals, not "unset". No
+compose change needed: the `${VAR:-}` pattern is correct, the parser was the
+wrong half. `OBJECT_STORAGE_*` / `WEBHOOK_URL` already filter empty via
+`non_empty`; the four intervals were the only gap.
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy
+  --workspace --all-targets -- -D warnings` clean; `SQLX_OFFLINE=true cargo
+  build --workspace --locked` clean.
+* `cargo test --workspace --locked` (test Postgres): **194 passed, 0
+  failed** (30 api + 164 indexer; no test changes needed — the config
+  defaulting has no dedicated env tests by design, the manual `env -i`
+  proofs below cover it).
+* Manual proof with a fresh `target/debug/indexer run` under `env -i`
+  (no other config env):
+  - `IMAGE_MIRROR_INTERVAL=` (empty, the exact prod shape) → **no parse
+    error**; the process proceeds and only fails later with
+    `Error: DATABASE_URL is required` — i.e. config parsing got past all
+    four intervals, which is the exact prod failure mode, gone.
+  - `IMAGE_MIRROR_INTERVAL=0` → `must be greater than 0 seconds` (still a
+    hard error, by design).
+  - `IMAGE_MIRROR_INTERVAL=abc` → `is not a u64 (seconds): abc` (still a
+    hard error, by design).
+* Immediate ops stopgap until this ships: add `IMAGE_MIRROR_INTERVAL=30` to
+  `/opt/indexer/.env`, then `cd /opt/indexer && docker compose up -d` —
+  any numeric value works; the code fix makes the variable optional again.

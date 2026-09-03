@@ -172,8 +172,12 @@ impl Config {
             format!("METRICS_ADDR is not a host:port address: {metrics_addr_str}")
         })?;
 
+        // Intervals come from the environment; an empty or whitespace-only value means
+        // "use the default" -- docker compose's `${VAR:-}` expands to exactly this when the
+        // host variable is unset, and crashing on it was a 2026-09-03 prod restart loop.
+        // Only a non-numeric value, or 0, is a hard error. Applies to every interval below.
         let reconcile_interval_secs = match std::env::var("RECONCILE_INTERVAL") {
-            Ok(s) => s
+            Ok(s) if !s.trim().is_empty() => s
                 .parse::<u64>()
                 .with_context(|| format!("RECONCILE_INTERVAL is not a u64 (seconds): {s}"))
                 .and_then(|v| {
@@ -183,11 +187,11 @@ impl Config {
                         Ok(v)
                     }
                 })?,
-            Err(_) => DEFAULT_RECONCILE_INTERVAL_SECS,
+            _ => DEFAULT_RECONCILE_INTERVAL_SECS,
         };
 
         let metadata_fetch_interval_secs = match std::env::var("METADATA_FETCH_INTERVAL") {
-            Ok(s) => s
+            Ok(s) if !s.trim().is_empty() => s
                 .parse::<u64>()
                 .with_context(|| format!("METADATA_FETCH_INTERVAL is not a u64 (seconds): {s}"))
                 .and_then(|v| {
@@ -199,7 +203,7 @@ impl Config {
                         Ok(v)
                     }
                 })?,
-            Err(_) => DEFAULT_METADATA_FETCH_INTERVAL_SECS,
+            _ => DEFAULT_METADATA_FETCH_INTERVAL_SECS,
         };
 
         // `WEBHOOK_URL` is optional: `None` (or empty) disables the webhook -- the durable
@@ -207,7 +211,7 @@ impl Config {
         let webhook_url = std::env::var("WEBHOOK_URL").ok().filter(|u| !u.is_empty());
 
         let webhook_interval_secs = match std::env::var("WEBHOOK_INTERVAL") {
-            Ok(s) => s
+            Ok(s) if !s.trim().is_empty() => s
                 .parse::<u64>()
                 .with_context(|| format!("WEBHOOK_INTERVAL is not a u64 (seconds): {s}"))
                 .and_then(|v| {
@@ -217,7 +221,7 @@ impl Config {
                         Ok(v)
                     }
                 })?,
-            Err(_) => DEFAULT_WEBHOOK_INTERVAL_SECS,
+            _ => DEFAULT_WEBHOOK_INTERVAL_SECS,
         };
 
         // Object storage (ADR-31) is all-or-nothing: any one of the five required
@@ -226,7 +230,7 @@ impl Config {
         let object_storage = object_storage_from_env()?;
 
         let image_mirror_interval_secs = match std::env::var("IMAGE_MIRROR_INTERVAL") {
-            Ok(s) => s
+            Ok(s) if !s.trim().is_empty() => s
                 .parse::<u64>()
                 .with_context(|| format!("IMAGE_MIRROR_INTERVAL is not a u64 (seconds): {s}"))
                 .and_then(|v| {
@@ -238,7 +242,7 @@ impl Config {
                         Ok(v)
                     }
                 })?,
-            Err(_) => DEFAULT_IMAGE_MIRROR_INTERVAL_SECS,
+            _ => DEFAULT_IMAGE_MIRROR_INTERVAL_SECS,
         };
 
         Ok(Self {
