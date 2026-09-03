@@ -127,6 +127,15 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // ADR-32: install the process-level rustls CryptoProvider before any TLS use. The unified
+    // feature set enables BOTH provider crate-features (`ring` via sqlx's `runtime-tokio-rustls`
+    // ring path and the solana stack, `aws_lc_rs` via attohttpc's `rustls/default` under
+    // rust-s3 -> aws-creds), and rustls 0.23 refuses to auto-select on an ambiguous set — it
+    // panics at the first TLS connection (the 2026-09-03 prod crash). `ring` is the provider
+    // sqlx's default rustls path and the solana stack are built for. Nothing runs before this
+    // line, so the install cannot already be taken — the Result is dropped deliberately.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // `RUST_LOG` controls verbosity; default to info for our crate and warn for the noisy
     // transport crates underneath.
     env_logger::Builder::from_env(

@@ -51,6 +51,11 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = [
     "http-listener",
 ] }
+# ADR-32: same rationale as the indexer crate (see crates/indexer/Cargo.toml) — the shared
+# dependency graph enables both rustls provider crate-features, and rustls 0.23 panics at the
+# first TLS use unless the process installs a provider explicitly (src/main.rs does, first
+# thing). The `ring` feature here is what makes `rustls::crypto::ring` resolvable in this crate.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
