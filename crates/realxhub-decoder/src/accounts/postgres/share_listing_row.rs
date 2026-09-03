@@ -10,6 +10,7 @@ use carbon_core::postgres::primitives::U8;
 pub struct ShareListingRow {
     #[sqlx(flatten)]
     pub account_metadata: AccountRowMetadata,
+    pub hub_id: U64,
     pub seller: Pubkey,
     pub amount: U32,
     pub price: U64,
@@ -20,6 +21,7 @@ impl ShareListingRow {
     pub fn from_parts(source: crate::accounts::share_listing::ShareListing, metadata: AccountMetadata) -> Self {
         Self {
             account_metadata: metadata.into(),
+            hub_id: source.hub_id.into(),
             seller: source.seller.into(),
             amount: source.amount.into(),
             price: source.price.into(),
@@ -32,6 +34,7 @@ impl TryFrom<ShareListingRow> for crate::accounts::share_listing::ShareListing {
     type Error = carbon_core::error::Error;
     fn try_from(source: ShareListingRow) -> Result<Self, Self::Error> {
         Ok(Self {
+            hub_id: *source.hub_id,
             seller: *source.seller,
             amount: source.amount.try_into().map_err(|_| carbon_core::error::Error::Custom("Failed to convert value from postgres primitive".to_string()))?,
             price: *source.price,
@@ -49,6 +52,7 @@ impl carbon_core::postgres::operations::Table for crate::accounts::share_listing
         vec![
             "__pubkey",
             "__slot",
+            "hub_id",
             "seller",
             "amount",
             "price",
@@ -62,14 +66,16 @@ impl carbon_core::postgres::operations::Insert for ShareListingRow {
     async fn insert(&self, pool: &sqlx::PgPool) -> carbon_core::error::CarbonResult<()> {
         sqlx::query(r#"
             INSERT INTO share_listing_account (
+                "hub_id",
                 "seller",
                 "amount",
                 "price",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6
+                $1, $2, $3, $4, $5, $6, $7
             )"#)
+        .bind(self.hub_id.clone())
         .bind(self.seller.clone())
         .bind(self.amount.clone())
         .bind(self.price.clone())
@@ -86,22 +92,25 @@ impl carbon_core::postgres::operations::Insert for ShareListingRow {
 impl carbon_core::postgres::operations::Upsert for ShareListingRow {
     async fn upsert(&self, pool: &sqlx::PgPool) -> carbon_core::error::CarbonResult<()> {
         sqlx::query(r#"INSERT INTO share_listing_account (
+                "hub_id",
                 "seller",
                 "amount",
                 "price",
                 "bump",
                 __pubkey, __slot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6
+                $1, $2, $3, $4, $5, $6, $7
             ) ON CONFLICT (
                 __pubkey
             ) DO UPDATE SET
+                "hub_id" = EXCLUDED."hub_id",
                 "seller" = EXCLUDED."seller",
                 "amount" = EXCLUDED."amount",
                 "price" = EXCLUDED."price",
                 "bump" = EXCLUDED."bump",
                 __slot = EXCLUDED.__slot
             "#)
+        .bind(self.hub_id.clone())
         .bind(self.seller.clone())
         .bind(self.amount.clone())
         .bind(self.price.clone())
@@ -151,6 +160,7 @@ impl sqlx_migrator::Operation<sqlx::Postgres> for ShareListingMigrationOperation
     async fn up(&self, connection: &mut sqlx::PgConnection) -> Result<(), sqlx_migrator::error::Error> {
         sqlx::query(r#"CREATE TABLE IF NOT EXISTS share_listing_account (
                 -- Account data
+                "hub_id" NUMERIC(20) NOT NULL,
                 "seller" BYTEA NOT NULL,
                 "amount" INT8 NOT NULL,
                 "price" NUMERIC(20) NOT NULL,

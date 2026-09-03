@@ -938,25 +938,6 @@
           "signer": true
         },
         {
-          "name": "hub",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  104,
-                  117,
-                  98
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "hub_id"
-              }
-            ]
-          }
-        },
-        {
           "name": "holding",
           "writable": true,
           "pda": {
@@ -1052,6 +1033,24 @@
           "name": "payer",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "hub",
@@ -1524,6 +1523,14 @@
         "kind": "struct",
         "fields": [
           {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
             "name": "amount",
             "type": "u32"
           },
@@ -1727,6 +1734,10 @@
         "kind": "struct",
         "fields": [
           {
+            "name": "hub_id",
+            "type": "u64"
+          },
+          {
             "name": "seller",
             "type": "pubkey"
           },
@@ -1788,6 +1799,10 @@
           {
             "name": "seller",
             "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u32"
           }
         ]
       }

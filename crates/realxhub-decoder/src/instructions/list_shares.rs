@@ -17,7 +17,6 @@ pub struct ListShares {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ListSharesInstructionAccounts {
     pub seller: solana_pubkey::Pubkey,
-    pub hub: solana_pubkey::Pubkey,
     pub holding: solana_pubkey::Pubkey,
     pub listing: solana_pubkey::Pubkey,
     pub system_program: solana_pubkey::Pubkey,
@@ -51,7 +50,6 @@ impl ArrangeAccounts for ListShares {
         let mut iter = accounts.iter();
 
         let seller = next_account(&mut iter)?;
-        let hub = next_account(&mut iter)?;
         let holding = next_account(&mut iter)?;
         let listing = next_account(&mut iter)?;
         let system_program = next_account(&mut iter)?;
@@ -60,7 +58,6 @@ impl ArrangeAccounts for ListShares {
 
         Some(ListSharesInstructionAccounts {
             seller,
-            hub,
             holding,
             listing,
             system_program,

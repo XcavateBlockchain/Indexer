@@ -838,3 +838,112 @@ DETECTED` from `check-program-upgrades.py`. A breaking IDL change before the fir
 plain additive regeneration (nothing on-chain to protect); after it, the versioned-decoder
 mechanism (ADR-25) applies unchanged. Mainnet promotion (agentic-maintenance §8) inherits the
 sentinel pattern if a mainnet program ever lands ahead of its own deploy.
+
+**Addendum (2026-09-03): the deploy landed, and it outranked the IDL.** The first
+devnet deploy did at slot **489635042** — exactly what the watcher's
+`check-program-upgrades.py` reported (exit 10, `FIRST DEPLOY DETECTED`) and what
+`addresses.json` was pinned to (the registry↔addresses.json pinned test now
+constrains the slot). But the deployed program was not what the pre-deploy IDL had
+described: the on-chain `Holding` and `ShareListing` state carry a leading
+`hub_id: u64` (`Holding` also carries `owner: Pubkey` as its second word, shifting
+`amount`/`listed`/`per_share` by two words), and the `list_shares`/`record_sale`
+instruction accounts differ (a `hub` PDA removed / a `config` PDA added
+respectively). A client symptom reported the shift directly:
+`realxhubShareListings` returned `seller: 4uQeVj5t…` — the leading `hub_id` word
+decoded into the `seller` field. Hard rule 6 (the chain outranks the repo) applies,
+and the correction was made *in place* in `idls/realxhub.json` rather than through
+the ADR-25 versioned-decoder mechanism: ADR-25 exists to protect on-chain data
+written under an old layout that a new decoder can no longer read, and there is
+none — the program had no deploy before 489635042, so no pre-deploy state exists.
+The decoder was regenerated from the corrected IDL (the same command, still
+byte-identical), the mapper/db/API now carry `hub_id`/`owner`, `migrations/0017`
+added the columns, and the one-time heal is a re-snapshot (`indexer snapshot`):
+the slot-guarded upsert accepts the corrected decode over the rows the old decoder
+had poisoned (the snapshot's tag slot postdates them — the RUNBOOK's rebuild
+section carries the duty). The ADR-25 mechanism remains the mandatory path for any
+*future* breaking realxhub change, at which point real data written under the
+2026-09-03 layout will exist.
+
+## ADR-31: Property images are mirrored to public object storage as 720x720 thumbnails
+
+**Context.** ADR-27's `marketplace_property_metadata` stores the protocol team's off-chain
+metadata document, and each open asset's document carries a `propertyImages` array of image
+URIs. Those originals are full-resolution marketing photography (often several MiB each),
+served from the protocol team's storage — external, and outside this repo's control for
+liveness, rate limits, and delivery performance. Any client that renders a card or a list
+downloads multi-MiB originals for what it displays as a thumbnail, and the API's own
+`property_images` field only re-publishes those third-party URIs. A transaction's on-chain
+meaning does not depend on the images ever downloading, so the fix is the ADR-27 shape
+again: a bounded, per-item-backed-off background loop outside the account pipeline — here
+mirroring each image into the operator's own object storage so the API can serve small,
+stable, public thumbnails.
+
+**Decision.** The indexer downloads each source image, re-encodes it as a 720x720
+center-cropped JPEG (quality 85), and uploads it to the operator's public object storage
+(Hetzner Object Storage in production; the S3 endpoint, region, and credentials come from
+the `OBJECT_STORAGE_*` environment variables). The pieces:
+
+- **Storage — migration 0016.** `marketplace_property_image` is a DERIVED table (same
+  exclusion as ADR-27's metadata table and ADR-28's `webhook_events`: no slot guard, no
+  soft close, no `db::close::StateTable` roster entry). Primary key `(asset_pubkey,
+  image_index)`; `image_index` is the ZERO-BASED position in the `propertyImages` array —
+  the document carries no per-image ids. `source_uri` is the URI the mirror LAST ATTEMPTED;
+  `thumb_uri` / `uploaded_at` are the last SUCCESSFUL upload (NULL until one exists — a
+  failure never erases the last published thumbnail); `attempts` / `next_attempt_at` /
+  `last_error` are the per-image backoff chain. The object key is deterministic —
+  `properties/<base58 pubkey>/<index>/<sha256(source_uri)>.jpg` — so a changed URI uploads
+  a NEW object under a NEW key, which doubles as the client-side cache-buster (the new
+  `thumb_uri` changes the URL).
+- **The mirror — `crates/indexer/src/images.rs`.** The supervisor is spawned from
+  `indexer run` only when object storage is configured AND the marketplace program is in
+  the registry, and drains the work set (never-attempted, failed-and-backoff-expired, or
+  source-URI-changed rows; bounded to 50 per cycle) every `IMAGE_MIRROR_INTERVAL` (default
+  30 s). For each image, in order: SSRF-guard the URI with the existing
+  `metadata::uri_allowed`, download it with a bounded streaming read (5 s connect / 15 s
+  request timeouts, 10 MiB cap), decode it, center-crop it to a square, resize it to
+  720x720, JPEG-encode at quality 85, and `PUT` the fully-encoded body in one call. A
+  non-image or undecodable body (an HTML error page served with a 200) is a FAILURE — the
+  mirror backs off rather than uploading garbage.
+- **Backoff — per image, independent, computed in the SQL upsert.** A failure bumps
+  `attempts` and schedules the next attempt at 30 s doubling per consecutive failure of
+  the SAME URI, capped at 1 h (the ADR-27 shape); a changed URI restarts the chain. A dead
+  URI (404, host outage) never blocks its siblings, and a success resets the chain and
+  records the public thumbnail URL.
+- **By hand — `indexer mirror-images`.** A one-shot cycle (like `fetch-metadata`),
+  runnable against a production `DATABASE_URL` without redeploying; idempotent, and it
+  refuses to start when `OBJECT_STORAGE_*` is unset since its job is to upload, not just
+  fetch.
+- **Configuration — all-or-nothing.** Any one of the five `OBJECT_STORAGE_*` variables
+  (`ENDPOINT`, `BUCKET`, `REGION`, `ACCESS_KEY`, `SECRET_KEY`) set means all five must be
+  present and non-empty; a half-configured mirror is a hard startup error, not a degraded
+  mode. None set = the mirror is DISABLED — a first-class state: the supervisor is never
+  spawned, no external call is ever made, and the API keeps serving
+  `propertyImageThumbnails: null`. The keys are never logged (hand-written `Debug`). An
+  optional `OBJECT_STORAGE_PUBLIC_BASE_URL` overrides the public thumbnail-URL prefix,
+  which defaults to `{scheme}://{host}/{bucket}` derived from the endpoint (the shape
+  every Hetzner Object Storage bucket serves public objects from).
+- **API — `PropertyMetadata.propertyImageThumbnails`.** `Option<Vec<String>>` in
+  `image_index` order, `null` until the mirror's first upload succeeds; the schema change
+  is additive (existing queries still parse and answer). One `ANY(...)` lookup per
+  `propertyAssets` page covers the derived table (the partial index on
+  `thumb_uri IS NOT NULL` keeps it cheap as the backlog grows); rows whose `image_index`
+  is at or beyond the asset's CURRENT `propertyImages` array length are dropped in the
+  resolver, since a shrunken array leaves orphan rows behind.
+- **Observability.** `property_images_mirrored_total{result=success|failure}` counter and
+  the `property_images_pending` work-set gauge (deliberately NOT pre-registered: an absent
+  series means the mirror is disabled, which the operator can read off the config), plus
+  the counter-based `PropertyImageMirrorFailing` alert (same rationale as
+  `WebhookDeliveryFailing`).
+
+**Consequences.** The public bucket deliberately serves third-party marketing photography
+to API clients — the images are public by design, and only the bucket's write path takes
+credentials. This is a new OUTBOUND network surface (arbitrary third-party URIs), guarded
+by the same `metadata::uri_allowed` and size/timeout bounds as the ADR-27 fetcher. A
+changed source URI orphans the old object in the bucket (a few hundred KB, never
+referenced again): the indexer never deletes objects — an object-storage lifecycle rule or
+a manual `s3://<bucket>/properties/` sweep is the right tool for pruning, not the loop.
+Leftover rows from a shrunken `propertyImages` array are harmless orphans the API filters
+out. With the mirror disabled, `propertyImageThumbnails` stays `null` and clients fall
+back to the original `property_images` URIs; enabling it later drains the whole backlog
+through the work set. Mainnet promotion (agentic-maintenance §8) inherits the surface
+unchanged: same table, same loop, a different bucket.

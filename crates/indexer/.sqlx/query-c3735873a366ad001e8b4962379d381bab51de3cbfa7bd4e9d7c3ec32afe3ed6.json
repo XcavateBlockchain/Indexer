@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO realxhub_share_listing (pubkey, slot, lamports, closed_at_slot, hub_id, seller, amount, price, bump)\n        VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8)\n        ON CONFLICT (pubkey) DO UPDATE SET\n            slot = EXCLUDED.slot,\n            lamports = EXCLUDED.lamports,\n            closed_at_slot = EXCLUDED.closed_at_slot,\n            hub_id = EXCLUDED.hub_id,\n            seller = EXCLUDED.seller,\n            amount = EXCLUDED.amount,\n            price = EXCLUDED.price,\n            bump = EXCLUDED.bump\n        WHERE realxhub_share_listing.slot < EXCLUDED.slot\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c3735873a366ad001e8b4962379d381bab51de3cbfa7bd4e9d7c3ec32afe3ed6"
+}

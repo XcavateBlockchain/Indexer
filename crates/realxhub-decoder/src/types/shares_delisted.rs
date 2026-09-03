@@ -7,5 +7,6 @@ use solana_pubkey::Pubkey;
 pub struct SharesDelisted {
     pub hub_id: u64,
     pub seller: Pubkey,
+    pub amount: u32,
 }
 
