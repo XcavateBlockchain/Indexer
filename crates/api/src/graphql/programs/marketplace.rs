@@ -149,8 +149,9 @@ pub struct LawyerVoteConnection {
 /// PropertyAsset PDA is seeded from the same id as the listing -- so it cannot duplicate
 /// nodes. `null` if the asset's state row is absent (defensive: `list_property` writes
 /// both accounts in one instruction, so this should not occur). The nested asset's
-/// `metadata` is always `null` on this path (the metadata table is not joined here; see
-/// `PropertyAsset`).
+/// `metadata` is the fetched document attached by the same keyed lookup as the
+/// `propertyAssets` connection (ADR-33) — `null` only while the enricher has no row for
+/// the asset's PDA, exactly as on that path.
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct Listing {
     pub id: ID,
@@ -213,11 +214,11 @@ pub struct ListingConnection {
 /// `Listing.propertyAsset` (the `listings` resolver LEFT-JOINs this table, so one query
 /// returns both). `metadata` is the fetched-and-decomposed off-chain document
 /// `metadata_uri` points at (ADR-27), attached so asset and document answer in ONE
-/// query; `null` while the enricher has no row for this PDA (fetch pending or still
-/// failing). On the `listings` path it is always `null`: that resolver joins only the
-/// mirror `marketplace_property_asset` table (the derived metadata table is outside the
-/// mirror by design, ADR-27), so the fetched document is attached only by the
-/// `propertyAssets` connection.
+/// query. BOTH resolvers attach it the same way — one keyed `ANY(...)` lookup over the
+/// derived 1:1 table for the page's PDA pubkeys (ADR-29, extended to the `listings`
+/// path by ADR-33; the derived table stays outside the mirror join by design, ADR-27) —
+/// so `null` means exactly that the enricher has no row for this PDA (fetch pending or
+/// still failing), never a missing join.
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct PropertyAsset {
     pub id: ID,
@@ -1069,6 +1070,44 @@ pub async fn listings(
     .await?
     .unwrap_or(0);
 
+    // Attach the fetched metadata document (ADR-27) and its mirrored thumbnails (ADR-31)
+    // the same way the `propertyAssets` connection does (ADR-33): one keyed lookup over
+    // the derived 1:1 tables for the page's asset PDA pubkeys, skipped when the page
+    // carries no asset rows (a `LEFT JOIN` miss). The metadata query is byte-identical to
+    // the `property_assets` site's, so both share its cached sqlx provenance.
+    let asset_pubkeys: Vec<Vec<u8>> = rows.iter().filter_map(|r| r.pa_pubkey.clone()).collect();
+    let mut metadata_by_pubkey: HashMap<Vec<u8>, PropertyMetadata> = HashMap::new();
+    if !asset_pubkeys.is_empty() {
+        let mrows = sqlx::query!(
+            r#"
+            SELECT pubkey, asset_id, metadata_uri, fetched_at, attempts, last_error, raw,
+                   property_id, property_name, property_type, status, tenure, property_description,
+                   planning_code, building_control_code, user_pubkey, company_id, company_name,
+                   company_logo, company_wallet_address, created_at, updated_at,
+                   address_street, address_town_city, address_flat_or_unit, address_post_code,
+                   address_local_authority, address_region, address_location,
+                   area, quality, outdoor_space, number_of_bedrooms, number_of_bathrooms,
+                   construction_date, off_street_parking,
+                   property_price, number_of_shares, share_price, estimated_rental_income,
+                   annual_service_charge, stamp_duty_tax, stamp_duty_paid,
+                   annual_service_charge_paid,
+                   floor_plan, map_url, sales_agreement, other_documents, property_images
+            FROM marketplace_property_metadata
+            WHERE pubkey = ANY($1)
+            "#,
+            asset_pubkeys.as_slice(),
+        )
+        .fetch_all(&context.pool)
+        .await?;
+        for r in mrows {
+            // The macro body moves the row's fields, so capture the map key first.
+            let key = r.pubkey.clone();
+            let metadata = property_metadata_from_row!(r);
+            metadata_by_pubkey.insert(key, metadata);
+        }
+    }
+    let mut thumbs_by_pubkey = image_thumbnails(&context.pool, &asset_pubkeys).await?;
+
     let nodes = rows
         .into_iter()
         .map(|r| {
@@ -1087,48 +1126,52 @@ pub async fn listings(
                 .ok_or_else(|| unknown_enum_value("status", &r.status))?;
             let property_asset = match r.pa_pubkey {
                 None => None, // no asset row for this listing (see `Listing` doc)
-                Some(pa_pubkey) => Some(PropertyAsset {
-                    id: ID::new(b58(&pa_pubkey)),
-                    slot: I64(r.pa_slot.ok_or_else(|| asset_column_missing("slot"))?),
-                    lamports: I64(r
-                        .pa_lamports
-                        .ok_or_else(|| asset_column_missing("lamports"))?),
-                    active: r.pa_closed_at_slot.is_none(),
-                    closed_at_slot: r.pa_closed_at_slot.map(I64),
-                    asset_id: I64(r
-                        .pa_asset_id
-                        .ok_or_else(|| asset_column_missing("asset_id"))?),
-                    name: r.pa_name.ok_or_else(|| asset_column_missing("name"))?,
-                    metadata_uri: r
-                        .pa_metadata_uri
-                        .ok_or_else(|| asset_column_missing("metadata_uri"))?,
-                    // This resolver does not join the derived metadata table (ADR-27);
-                    // the fetched document is attached only on the `propertyAssets`
-                    // path (ADR-29).
-                    metadata: None,
-                    share_mint: b58(&r
-                        .pa_share_mint
-                        .ok_or_else(|| asset_column_missing("share_mint"))?),
-                    region_id: r
-                        .pa_region_id
-                        .ok_or_else(|| asset_column_missing("region_id"))?,
-                    location: utf8_lossy(
-                        &r.pa_location
-                            .ok_or_else(|| asset_column_missing("location"))?,
-                    ),
-                    share_amount: I64(r
-                        .pa_share_amount
-                        .ok_or_else(|| asset_column_missing("share_amount"))?),
-                    spv_created: r
-                        .pa_spv_created
-                        .ok_or_else(|| asset_column_missing("spv_created"))?,
-                    finalized: r
-                        .pa_finalized
-                        .ok_or_else(|| asset_column_missing("finalized"))?,
-                    holder_count: I64(r
-                        .pa_holder_count
-                        .ok_or_else(|| asset_column_missing("holder_count"))?),
-                }),
+                Some(pa_pubkey) => {
+                    // The join is 1:1 (see the `Listing` doc), so the page's asset PDA
+                    // pubkeys are unique and each metadata row is consumed exactly once.
+                    let metadata = metadata_by_pubkey
+                        .remove(&pa_pubkey)
+                        .map(|m| with_thumbnails(m, thumbs_by_pubkey.remove(&pa_pubkey)));
+                    Some(PropertyAsset {
+                        id: ID::new(b58(&pa_pubkey)),
+                        slot: I64(r.pa_slot.ok_or_else(|| asset_column_missing("slot"))?),
+                        lamports: I64(r
+                            .pa_lamports
+                            .ok_or_else(|| asset_column_missing("lamports"))?),
+                        active: r.pa_closed_at_slot.is_none(),
+                        closed_at_slot: r.pa_closed_at_slot.map(I64),
+                        asset_id: I64(r
+                            .pa_asset_id
+                            .ok_or_else(|| asset_column_missing("asset_id"))?),
+                        name: r.pa_name.ok_or_else(|| asset_column_missing("name"))?,
+                        metadata_uri: r
+                            .pa_metadata_uri
+                            .ok_or_else(|| asset_column_missing("metadata_uri"))?,
+                        metadata,
+                        share_mint: b58(&r
+                            .pa_share_mint
+                            .ok_or_else(|| asset_column_missing("share_mint"))?),
+                        region_id: r
+                            .pa_region_id
+                            .ok_or_else(|| asset_column_missing("region_id"))?,
+                        location: utf8_lossy(
+                            &r.pa_location
+                                .ok_or_else(|| asset_column_missing("location"))?,
+                        ),
+                        share_amount: I64(r
+                            .pa_share_amount
+                            .ok_or_else(|| asset_column_missing("share_amount"))?),
+                        spv_created: r
+                            .pa_spv_created
+                            .ok_or_else(|| asset_column_missing("spv_created"))?,
+                        finalized: r
+                            .pa_finalized
+                            .ok_or_else(|| asset_column_missing("finalized"))?,
+                        holder_count: I64(r
+                            .pa_holder_count
+                            .ok_or_else(|| asset_column_missing("holder_count"))?),
+                    })
+                }
             };
             Ok(Listing {
                 id: ID::new(b58(&r.pubkey)),

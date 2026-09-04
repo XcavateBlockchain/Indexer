@@ -988,3 +988,43 @@ was rejected: it fights upstream defaults and re-breaks silently on the next bum
 the explicit install is stable under any future feature unification. The binaries' `ring`
 requirement is now pinned by their own direct edges, so it cannot be lost by a
 transitive change.
+
+## ADR-33: The `listings` resolver attaches the fetched property metadata too (closes the `PropertyAsset.metadata` null gap)
+
+**Context.** ADR-29 nested the fetched property-metadata document as
+`PropertyAsset.metadata` but scoped the attachment to the `propertyAssets`
+connection: the `listings` resolver LEFT-JOINs the `marketplace_property_asset`
+mirror for `Listing.propertyAsset` and hardcoded `metadata: None` there, with the
+"always `null` on this path" fact documented on both GraphQL types. From a
+consumer that reads as a bug: the natural one-query
+`listings { propertyAsset { metadata { ... } } }` returned `metadata: null` even
+when `propertyAssets` for the SAME asset returned the fully fetched document.
+Devnet verified the pipeline healthy (verify-devnet's ADR-27 assertion: 4/4 live
+assets fetched, 0 failures, 2026-09-04), so the `null` was purely the missing
+attachment on the `listings` path, not a fetch fault.
+
+**Decision.** Attach the document on the `listings` path with the EXACT mechanism
+ADR-29 chose for `propertyAssets` — no new machinery. After the page query and its
+`count(*)`, the resolver collects the page's asset PDA pubkeys from the LEFT-JOIN
+columns (skipping `None` — listings whose asset row is absent), skips on an empty
+set, then issues one keyed
+`SELECT <the same 50 columns> FROM marketplace_property_metadata WHERE pubkey =
+ANY($1)` — the query text is byte-identical to the `property_assets` site's, so both
+sites share ONE cached `.sqlx` provenance entry — decomposed by the shared
+`property_metadata_from_row!` macro; the mirrored image thumbnails (ADR-31) attach
+the same way through the existing `image_thumbnails` helper. The derived table
+stays outside the mirror `LEFT JOIN` (ADR-27's separation is untouched — this is
+attachment, not a join). `metadata: null` on the `listings` path now means exactly
+what it means on the `propertyAssets` path: the enricher has no row for that PDA
+(fetch pending or failing).
+
+**Consequences.** `listings { propertyAsset { metadata { ... } } }` answers
+listing + asset + document in one query, and `null` metadata is no longer
+path-dependent. Cost: at most two extra PK-keyed lookups per `listings` page
+(metadata + thumbnails), both skipped on empty pages and pages with no asset rows
+— the same cost ADR-29 already accepted for `propertyAssets`, and likewise run even
+when the client does not select `metadata` (juniper resolvers here are not
+selection-aware; at devnet data volumes the wasted lookup is cheaper than the
+machinery). API-only and additive: no migration, no indexer or fetcher change, the
+field already existed and was `null` before; `cargo sqlx prepare --check` is clean
+with a ZERO query-cache delta (both sites hash to the same cached entry).

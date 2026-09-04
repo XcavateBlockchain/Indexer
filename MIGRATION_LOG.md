@@ -1478,3 +1478,60 @@ uses. The lockfile-level alternative (forcing attohttpc/rust-s3 off
   programs' deploys unchanged on devnet.
 * `Cargo.lock` diff: +2 lines — a `rustls` dependency edge under `api` and
   `indexer`; no version changes, no new packages.
+
+## API: listings { propertyAsset { metadata } } now returns the fetched document — 2026-09-04
+
+### What was built
+
+A user report: `PropertyAsset.metadata` comes back `null` from the `listings`
+resolver (whereas `propertyAssets` returns the fetched document), which reads as
+an error. Investigation: the document is not on-chain — ADR-27's background
+enricher fetches each asset's off-chain `metadataUri` into the derived table
+`marketplace_property_metadata`, and ADR-29 nested it as `PropertyAsset.metadata`.
+ADR-29 scoped that attachment to the `propertyAssets` connection only: the
+`listings` resolver LEFT-JOINs the `marketplace_property_asset` mirror for
+`Listing.propertyAsset` and hardcoded `metadata: None`, with the "always `null`
+on this path" fact documented on both GraphQL types. The devnet pipeline is
+healthy (verify-devnet's ADR-27 assertion: 4/4 live assets fetched, 0 failures,
+2026-09-04), so the `null` was purely the missing attachment on the `listings`
+path, not a fetch fault.
+
+The fix (ADR-33) is API-only and reuses ADR-29's exact mechanism — no new
+machinery, no migration, no indexer or fetcher change. After the `listings` page
+query and its `count(*)`, the resolver collects the page's asset PDA pubkeys from
+the LEFT-JOIN columns (skipping `None` — listings whose asset row is absent),
+skips on an empty set, then issues one keyed `SELECT <the same 50 columns> FROM
+marketplace_property_metadata WHERE pubkey = ANY($1)` — byte-identical to the
+`property_assets` site's query, so both sites share ONE cached `.sqlx` provenance
+entry — decomposed by the shared `property_metadata_from_row!` macro. The ADR-31
+image thumbnails attach the same way through the existing `image_thumbnails`
+helper. `metadata: null` on the `listings` path now means exactly what it means on
+the `propertyAssets` path: the enricher has no row for that PDA (fetch pending or
+failing).
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy
+  --workspace --all-targets -- -D warnings` clean; `SQLX_OFFLINE=true cargo
+  build --workspace --locked` clean.
+* `cargo test --workspace --locked` (test Postgres): **194 passed, 0 failed**
+  (30 api + 164 indexer; no test changes needed).
+* `cargo sqlx prepare --check` (`-- --bin api` and `-- --lib`): clean, with a
+  **zero** query-cache delta — both metadata sites hash to the same `.sqlx` entry.
+* `bash scripts/lint-migrations.sh`: "no migration changes vs origin/main".
+* `bash scripts/agent/verify-devnet.sh`: VERIFY OK (the ADR-27 fetcher asserts
+  4/4 live assets fetched, 0 failures).
+* End-to-end against a fresh throwaway Postgres (snapshot + backfill +
+  fetch-metadata, then the `api` binary on a scratch port): the control
+  `propertyAssets { metadata { ... } }` query and the fixed
+  `listings { propertyAsset { metadata { ... } } }` query BOTH now return the
+  fetched document. Two `listings` nodes returned non-null metadata:
+  `9KBfLRS26tmivnKBB2byboEDvBWgaMt84xoAgucaT8yj` → "Oakwood Place – Flat 2"
+  (propertyPrice 340000, sharePrice 3400, Oakwood Place / Hemel Hempstead,
+  fetchedAt 2026-09-04T12:19:59Z) and `DYjNDUZn3x2Xt4EZZpXKsfuEnrAcXcE3x27edhM25Rno`
+  → "The Willows – Apartment 2B" (propertyPrice 395000, sharePrice 3950, The
+  Willows / St Albans, fetchedAt 2026-09-04T12:19:59Z) — the same rows the
+  `propertyAssets` control query returns for those PDA ids.
+* Change footprint: `crates/api/src/graphql/programs/marketplace.rs` only (doc
+  comments on `Listing` and `PropertyAsset` + the keyed lookup in `listings`);
+  no `.sqlx` cache change, no migration.
