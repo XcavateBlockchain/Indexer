@@ -192,7 +192,7 @@ groups:
           description: >-
             webhooks_delivered_total{result="failure"} increased in the last 2
             hours: the indexer's webhook delivery loop (ADR-28) has been POSTing
-            property-asset-registration payloads to WEBHOOK_URL and the endpoint
+            property-asset-registration payloads to INIT_PROPERTY_ASSET_WEBHOOK_URL and the endpoint
             is failing (non-2xx, connect error, or timeout). Events are NOT lost --
             they are durable rows in webhook_events that retry with exponential
             backoff (30 s doubling, 1 h cap) until the endpoint answers 2xx. Check

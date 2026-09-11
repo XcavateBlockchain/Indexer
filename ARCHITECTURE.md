@@ -72,7 +72,7 @@ day-2 operations, see [RUNBOOK.md](RUNBOOK.md).
   One outbound notification rides the batcher (webhooks.rs, ADR-28): when a new property
   asset is registered (marketplace init_property_assets), the batcher durably records a
   webhook_events row in the same Postgres transaction; a background loop then POSTs the
-  payload to WEBHOOK_URL with per-event backoff. Detection is in-pipeline; delivery
+  payload to INIT_PROPERTY_ASSET_WEBHOOK_URL with per-event backoff. Detection is in-pipeline; delivery
   never touches the pipeline.
 ```
 

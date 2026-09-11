@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use sqlx::postgres::PgQueryResult;
 use sqlx::PgExecutor;
 
-/// One undelivered webhook event, ready to POST to `WEBHOOK_URL`.
+/// One undelivered webhook event, ready to POST to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
 #[derive(Debug, Clone)]
 pub struct PendingEvent {
     /// The `webhook_events` primary key (`<event_type>:<base58 subject>`).

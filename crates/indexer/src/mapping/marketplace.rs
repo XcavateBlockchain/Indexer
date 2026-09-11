@@ -291,7 +291,7 @@ pub fn map_instruction(
     // ADR-28: `init_property_assets` is the registration of a property asset -- the moment the
     // `PropertyAsset` PDA (account index 3, seeded `["property", listing_id]`) gets its name +
     // metadata_uri + share mint (index 4). Record a durable, idempotent webhook event
-    // (deduped by the asset PDA) that the background loop delivers to `WEBHOOK_URL`.
+    // (deduped by the asset PDA) that the background loop delivers to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
     let webhook_events = match &decoded.data {
         MarketplaceInstruction::InitPropertyAssets(args) => {
             let property_pubkey = account_bytes_at(accounts, 3, name)?;

@@ -400,11 +400,11 @@ async fn run_live() -> Result<()> {
         None
     };
 
-    // The outbound webhook delivery loop (ADR-28): only when `WEBHOOK_URL` is set AND the
+    // The outbound webhook delivery loop (ADR-28): only when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set AND the
     // marketplace program is configured (the only source of webhook events today). Its work
     // set is the durable `webhook_events` table, so on startup it drains any backlog (e.g. a
     // fresh index's backfill) and then delivers each new registration within one interval.
-    // With no `WEBHOOK_URL` the loop is never spawned and no external call is ever made.
+    // With no `INIT_PROPERTY_ASSET_WEBHOOK_URL` the loop is never spawned and no external call is ever made.
     let webhook_delivery =
         if cfg.webhook_url.is_some() && cfg.programs.iter().any(|p| p.name == "marketplace") {
             let pool = started.pool.clone();

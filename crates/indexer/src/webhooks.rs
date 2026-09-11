@@ -1,5 +1,5 @@
 //! The outbound webhook delivery loop (ADR-28): the background task that turns each durable
-//! `webhook_events` row into a delivered `POST` to `WEBHOOK_URL`.
+//! `webhook_events` row into a delivered `POST` to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
 //!
 //! ## Why a separate loop and not the write path
 //!
@@ -16,7 +16,7 @@
 //!
 //! 1. `db::webhooks::pending_events` selects the work set: undelivered events whose backoff
 //!    has elapsed (or has no backoff yet), bounded by [`CYCLE_LIMIT`].
-//! 2. Each item (sequential): `POST WEBHOOK_URL` with the event's `payload`. A 2xx marks the
+//! 2. Each item (sequential): `POST INIT_PROPERTY_ASSET_WEBHOOK_URL` with the event's `payload`. A 2xx marks the
 //!    row delivered; a failure records its error + exponential backoff (30 s, doubling, 1 h
 //!    cap) and moves on; one event's fault never fails the loop.
 //! 3. The `webhooks_pending` gauge is set to the remaining work-set size.
@@ -27,7 +27,7 @@
 //! endpoint can dedupe. The at-most-once part is the RECORD (the
 //! `ON CONFLICT (event_id) DO NOTHING` insert), so an asset is enqueued once.
 //!
-//! Active only when `WEBHOOK_URL` is set (and `marketplace` is in `PROGRAMS`); with no URL the
+//! Active only when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set (and `marketplace` is in `PROGRAMS`); with no URL the
 //! supervisor is never spawned and no external calls are ever made.
 
 use std::time::Duration;

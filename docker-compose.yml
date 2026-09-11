@@ -56,7 +56,7 @@ services:
       # the delivery loop is not spawned and no external call is made; the durable
       # `webhook_events` rows are still recorded). See RUNBOOK.md "Property-asset
       # registration webhooks".
-      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      INIT_PROPERTY_ASSET_WEBHOOK_URL: ${INIT_PROPERTY_ASSET_WEBHOOK_URL:-}
       # ADR-31 property-image mirror: five all-or-nothing variables (all unset = the mirror
       # is never spawned; exactly one or some set makes the indexer refuse to start --
       # crates/indexer/src/config.rs). OBJECT_STORAGE_PUBLIC_BASE_URL and IMAGE_MIRROR_INTERVAL

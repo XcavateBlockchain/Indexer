@@ -202,7 +202,7 @@ pub fn install(addr: SocketAddr) -> Result<()> {
     }
     // WEBHOOKS_PENDING is deliberately not pre-registered (same convention as the slot gauges
     // and property_metadata_pending): an absent series reads as "this process has not run a
-    // delivery cycle yet" (which is exactly the case when WEBHOOK_URL is unset), while 0
+    // delivery cycle yet" (which is exactly the case when INIT_PROPERTY_ASSET_WEBHOOK_URL is unset), while 0
     // would be indistinguishable from "caught up".
     // PROPERTY_METADATA_PENDING is deliberately not pre-registered: an absent series reads as
     // "this process has not run a fetch cycle yet" (same convention as the slot gauges),

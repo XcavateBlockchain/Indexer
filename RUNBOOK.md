@@ -292,17 +292,17 @@ URIs — no other step is needed.
 When a new property asset is registered on-chain (the marketplace `init_property_assets`
 instruction creates the `PropertyAsset` PDA — the moment the asset's `name`,
 `metadata_uri`, and share mint all exist), the indexer POSTs one JSON document to
-`WEBHOOK_URL` (ADR-28).
+`INIT_PROPERTY_ASSET_WEBHOOK_URL` (ADR-28).
 
-**Enable it.** Set `WEBHOOK_URL` to an http(s) endpoint the indexer can reach from the
+**Enable it.** Set `INIT_PROPERTY_ASSET_WEBHOOK_URL` to an http(s) endpoint the indexer can reach from the
 compose network (the operator's own endpoint — the ADR-27 SSRF guard applies:
-http/https only, non-global IP literals rejected). In Docker, add `WEBHOOK_URL=...` to
+http/https only, non-global IP literals rejected). In Docker, add `INIT_PROPERTY_ASSET_WEBHOOK_URL=...` to
 `.env` (`docker-compose.yml` passes it through; empty/unset = disabled). Bare cargo:
 export it before starting `indexer run`. Optionally: `WEBHOOK_INTERVAL` (seconds,
 default 5) — the delivery poll interval; the loop costs nothing while nothing is
-pending. **The loop only spawns when `WEBHOOK_URL` is set AND `marketplace` is in
+pending. **The loop only spawns when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set AND `marketplace` is in
 `PROGRAMS`;** with no URL the durable `webhook_events` rows are still recorded (below)
-but no external call is ever made. `WEBHOOK_URL` is read at startup — restart the
+but no external call is ever made. `INIT_PROPERTY_ASSET_WEBHOOK_URL` is read at startup — restart the
 indexer after changing it.
 
 **How it works.** Detection and delivery are separate (ADR-28): the mapper records one
@@ -311,7 +311,7 @@ durable row in `webhook_events` (migration 0014) per `init_property_assets` —
 at most once even when backfill re-walks the range — committed atomically with the rest
 of the transaction's rows. A background loop (5 s interval, ≤50 events per cycle)
 drains the work set (undelivered rows whose backoff has elapsed) and POSTs each
-`payload` to `WEBHOOK_URL`. A 2xx marks the row delivered; a failure records
+`payload` to `INIT_PROPERTY_ASSET_WEBHOOK_URL`. A 2xx marks the row delivered; a failure records
 `last_error` and backs off per event (30 s, doubling, 1 h cap) and retries. A dead
 endpoint degrades to lagging, retried-and-logged rows — never to a stalled ingest,
 never to a lost notification. Delivery is AT LEAST ONCE: a POST that reached the
@@ -336,7 +336,7 @@ asset registers exactly once).
 **Not firing / not delivered.** Check, in order:
 
 1. `docker compose logs indexer | grep webhook` — "webhook delivery loop started"
-   (the loop spawned; if absent, `WEBHOOK_URL` is unset or `marketplace` is not in
+   (the loop spawned; if absent, `INIT_PROPERTY_ASSET_WEBHOOK_URL` is unset or `marketplace` is not in
    `PROGRAMS`), then the per-event `webhook delivered:` / `webhook delivery failed for
    ...` lines.
 2. `SELECT event_id, attempts, next_attempt_at, last_error, delivered_at FROM
@@ -419,7 +419,7 @@ nothing pages anyone on its own; check Prometheus's `/alerts` page or Grafana's 
 | `ReconnectStorm` | `grpc_reconnects_total` increased by more than 5 in 15m | Repeated gRPC stream rebuilds — usually Alchemy throttling, a network problem, or an unhealthy upstream. Undercounts brief blips the datasource heals internally (same caveat as `IndexerDown`); treat as a lower bound. |
 | `BackfillStalled` | `(chain_tip_slot - last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0` for 5m | No backfill-walk progress while the indexer is behind — most likely a stuck history walk (a poison signature, or every RPC endpoint failing). Also fires for a stalled *reconciler* long after the initial backfill finished, since the underlying gauge never resumes post-completion — check `backfillComplete` via `/health`/`syncStatus` to tell the two apart (see "Frozen frontier" above). |
 | `ProgramUpgradeDetected` | `program_upgrades_detected_total` increased in 1h | A tracked program's bytecode was upgraded on-chain (`ADR-24`) — the running decoder was generated from the pre-upgrade IDL. First observations only (crawl re-walks can't re-fire it); the durable record is the `program_upgrades` table / `programUpgrades` GraphQL query. Follow "After a program upgrade" above. |
-| `WebhookDeliveryFailing` | `increase(webhooks_delivered_total{result="failure"}[2h]) > 0` | Outbound property-asset webhook deliveries (`ADR-28`) have been failing over a 2 h window — the endpoint behind `WEBHOOK_URL` is rejecting or unreachable. Events are NOT lost: durable `webhook_events` rows retry with per-event backoff (30 s doubling, 1 h cap); the 2 h counter window is derived from that 1 h cap (see the rule's comment in alerts.yml). Per-row reason in `last_error`. See "Property-asset registration webhooks" above. |
+| `WebhookDeliveryFailing` | `increase(webhooks_delivered_total{result="failure"}[2h]) > 0` | Outbound property-asset webhook deliveries (`ADR-28`) have been failing over a 2 h window — the endpoint behind `INIT_PROPERTY_ASSET_WEBHOOK_URL` is rejecting or unreachable. Events are NOT lost: durable `webhook_events` rows retry with per-event backoff (30 s doubling, 1 h cap); the 2 h counter window is derived from that 1 h cap (see the rule's comment in alerts.yml). Per-row reason in `last_error`. See "Property-asset registration webhooks" above. |
 | `PropertyImageMirrorFailing` | `increase(property_images_mirrored_total{result="failed"}[15m]) > 0` | Property-image mirror uploads (`ADR-31`) have been failing over a 15 m window — 3× the 30 s mirror cycle, so a single failed cycle cannot trip it; it means an image has failed at least three consecutive cycles (upstream 404s, non-image bodies, or a broken bucket credential/policy). Images are NOT lost: durable `marketplace_property_image` rows retry with per-image backoff (30 s doubling, 1 h cap), per-image `last_error` in the table, `property_images_pending` gauge for backlog. Check the `OBJECT_STORAGE_*` secrets first, then the failing URIs. Only active when the mirror is configured (disabled = no series, no false alarms). See "Property-image mirror" above. |
 
 ## Secrets / rotation

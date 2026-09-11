@@ -142,14 +142,14 @@ pub enum WriteOp {
     /// re-delivering the same instruction is a no-op and the notification is recorded at most
     /// once. The row is both the durable "this event happened" record and the delivery queue:
     /// the background loop ([`crate::webhooks`]) reads the undelivered rows and POSTs each
-    /// `payload` to `WEBHOOK_URL`, stamping the delivery timestamps (at-least-once delivery
+    /// `payload` to `INIT_PROPERTY_ASSET_WEBHOOK_URL`, stamping the delivery timestamps (at-least-once delivery
     /// with per-event backoff).
     RecordWebhookEvent {
         /// `<event_type>:<base58 subject key>` -- the `webhook_events` primary key.
         event_id: String,
         /// Low-cardinality event label (`property_asset_registered`).
         event_type: &'static str,
-        /// The JSON document the delivery loop POSTs to `WEBHOOK_URL`.
+        /// The JSON document the delivery loop POSTs to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
         payload: serde_json::Value,
         /// Slot of the transaction that produced the event (provenance).
         slot: i64,

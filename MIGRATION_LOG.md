@@ -904,7 +904,7 @@ the document verbatim plus a flattened, typed projection of it (ADR-27).
 
 When the marketplace `init_property_assets` instruction registers a new property asset
 (the `PropertyAsset` PDA gets its `name`, `metadata_uri`, and share mint), the indexer
-now POSTs one JSON document to a configurable `WEBHOOK_URL` — detection inside the
+now POSTs one JSON document to a configurable `INIT_PROPERTY_ASSET_WEBHOOK_URL` — detection inside the
 batched pipeline, delivery by a separate retrying background loop (ADR-28).
 
 ### What was built
@@ -924,7 +924,7 @@ batched pipeline, delivery by a separate retrying background loop (ADR-28).
   close, absent from the `db::close` roster and `StateTable`) — the same carve-out as
   `marketplace_property_metadata` (ADR-27).
 * **Delivery loop** (`crates/indexer/src/webhooks.rs`): background task in `run_live`
-  (spawned only when `WEBHOOK_URL` is set AND `marketplace` ∈ `PROGRAMS`); one SQL
+  (spawned only when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set AND `marketplace` ∈ `PROGRAMS`); one SQL
   work-set query per cycle (undelivered, backoff elapsed; `WEBHOOK_INTERVAL`, default 5
   s), ≤50 per cycle, sequential, reusing the metadata fetcher's SSRF-guarded reqwest
   client; a 2xx marks the row delivered, a failure records `last_error` (≤500 chars) +
@@ -932,9 +932,9 @@ batched pipeline, delivery by a separate retrying background loop (ADR-28).
   CONFLICT (event_id) DO NOTHING` — idempotent under backfill re-walks), AT-LEAST-ONCE
   delivery (endpoints dedupe on `pubkey`). No URL → no loop, no external call, rows
   still recorded.
-* **Config**: `WEBHOOK_URL` (optional; empty = disabled; never logged — an operator may
+* **Config**: `INIT_PROPERTY_ASSET_WEBHOOK_URL` (optional; empty = disabled; never logged — an operator may
   encode a bearer token in the query string) and `WEBHOOK_INTERVAL` (seconds, default
-  5, must be > 0). `WEBHOOK_URL` wired through docker-compose; `.env.example` documents
+  5, must be > 0). `INIT_PROPERTY_ASSET_WEBHOOK_URL` wired through docker-compose; `.env.example` documents
   both.
 * **Metrics**: `webhooks_delivered_total{result=success|failure}` (both labels
   pre-registered at zero) and the `webhooks_pending` gauge (work-set size after the last
@@ -973,7 +973,7 @@ batched pipeline, delivery by a separate retrying background loop (ADR-28).
 * End-to-end record proof: an `indexer backfill` re-walk of the live devnet history into
   the :54329 dev test DB recorded exactly 4 `webhook_events` rows -- one per historical
   `init_property_assets`, `event_id` = `property_asset_registered:<asset PDA>`, all
-  undelivered (no `WEBHOOK_URL` is configured there).
+  undelivered (no `INIT_PROPERTY_ASSET_WEBHOOK_URL` is configured there).
 
 ## Nested property metadata under `propertyAssets` (ADR-29) — 2026-08-26
 
@@ -1385,7 +1385,7 @@ softened: an explicit `0` is still a hard error (`must be greater than 0
 seconds`) and a non-numeric value is still a hard error (`is not a u64
 (seconds): <value>`) — both are misconfiguration signals, not "unset". No
 compose change needed: the `${VAR:-}` pattern is correct, the parser was the
-wrong half. `OBJECT_STORAGE_*` / `WEBHOOK_URL` already filter empty via
+wrong half. `OBJECT_STORAGE_*` / `INIT_PROPERTY_ASSET_WEBHOOK_URL` already filter empty via
 `non_empty`; the four intervals were the only gap.
 
 ### Verification

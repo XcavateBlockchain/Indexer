@@ -73,7 +73,7 @@ pub struct Config {
     /// `METADATA_FETCH_INTERVAL` (seconds), default
     /// [`DEFAULT_METADATA_FETCH_INTERVAL_SECS`].
     pub metadata_fetch_interval: Duration,
-    /// `WEBHOOK_URL`: the endpoint the property-asset-registration webhook POSTs to (ADR-28).
+    /// `INIT_PROPERTY_ASSET_WEBHOOK_URL`: the endpoint the property-asset-registration webhook POSTs to (ADR-28).
     /// `None` = the webhook is disabled -- the durable `webhook_events` rows are still
     /// recorded (the record), but the delivery loop is never spawned and no external call is
     /// ever made. Never logged (an operator may encode a bearer token in the query string).
@@ -206,9 +206,11 @@ impl Config {
             _ => DEFAULT_METADATA_FETCH_INTERVAL_SECS,
         };
 
-        // `WEBHOOK_URL` is optional: `None` (or empty) disables the webhook -- the durable
+        // `INIT_PROPERTY_ASSET_WEBHOOK_URL` is optional: `None` (or empty) disables the webhook -- the durable
         // `webhook_events` rows are still recorded, but the delivery loop is never spawned.
-        let webhook_url = std::env::var("WEBHOOK_URL").ok().filter(|u| !u.is_empty());
+        let webhook_url = std::env::var("INIT_PROPERTY_ASSET_WEBHOOK_URL")
+            .ok()
+            .filter(|u| !u.is_empty());
 
         let webhook_interval_secs = match std::env::var("WEBHOOK_INTERVAL") {
             Ok(s) if !s.trim().is_empty() => s

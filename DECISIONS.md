@@ -725,14 +725,14 @@ idempotent under backfill re-walks, so each asset is recorded at most once, ever
 `marketplace_property_metadata`, the table is NOT an account-state mirror: no slot guard,
 no soft close, outside the `StateTable` roster. *Delivery* (out of the pipeline): a
 background supervisor (`crates/indexer/src/webhooks.rs`, spawned by `run` next to the
-metadata fetcher; `WEBHOOK_INTERVAL`, default 5 s; spawned only when `WEBHOOK_URL` is set
+metadata fetcher; `WEBHOOK_INTERVAL`, default 5 s; spawned only when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set
 **and** `marketplace` ∈ `PROGRAMS`) each cycle drains the work set — undelivered rows
 whose backoff has elapsed, ≤50 per cycle, ordered by `event_id` — POSTing each `payload`
-verbatim to `WEBHOOK_URL` (reusing the metadata fetcher's SSRF-guarded reqwest client);
+verbatim to `INIT_PROPERTY_ASSET_WEBHOOK_URL` (reusing the metadata fetcher's SSRF-guarded reqwest client);
 a 2xx marks the row delivered, a failure records `last_error`/`attempts` and schedules
 the next attempt with exponential backoff in SQL (30 s, doubling, 1 h cap — the ADR-27
 shape). A dead endpoint degrades to lagging, retried-and-logged rows, never to a stalled
-pipeline or a lost notification. With no `WEBHOOK_URL` the events are still recorded but
+pipeline or a lost notification. With no `INIT_PROPERTY_ASSET_WEBHOOK_URL` the events are still recorded but
 the loop is never spawned and no external call is ever made. Metrics:
 `webhooks_delivered_total{result=success|failure}` (both labels pre-registered at zero)
 and the `webhooks_pending` gauge (work-set size after the last cycle; the series is

@@ -54,7 +54,7 @@ pub struct MappedInstruction {
 /// One durable, idempotent webhook notification the mapper wants recorded (ADR-28).
 ///
 /// Carries only the on-chain evidence: the delivery loop (which owns the clock and the
-/// network) POSTs [`WebhookEvent::payload`] to `WEBHOOK_URL` and stamps the delivery
+/// network) POSTs [`WebhookEvent::payload`] to `INIT_PROPERTY_ASSET_WEBHOOK_URL` and stamps the delivery
 /// timestamps in `webhook_events`. `event_id` is the `ON CONFLICT` key, so a backfill
 /// re-walk re-delivering the same instruction is a no-op and the notification fires at most
 /// once.
@@ -64,7 +64,7 @@ pub struct WebhookEvent {
     pub event_id: String,
     /// Low-cardinality event label (`property_asset_registered`).
     pub event_type: &'static str,
-    /// The JSON document the delivery loop POSTs to `WEBHOOK_URL`.
+    /// The JSON document the delivery loop POSTs to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
     pub payload: serde_json::Value,
     /// Slot of the transaction that produced this event (provenance).
     pub slot: i64,
