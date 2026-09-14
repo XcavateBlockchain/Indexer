@@ -617,6 +617,33 @@ impl QueryRoot {
         .await
     }
 
+    /// One investor's reserved/purchased properties (position + full listing, ADR-34).
+    #[allow(clippy::too_many_arguments)]
+    async fn investor_properties(
+        context: &GraphQLContext,
+        investor: String,
+        owned: Option<bool>,
+        reserved: Option<bool>,
+        name: Option<String>,
+        town_city: Option<String>,
+        property_type: Option<String>,
+        first: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<programs::marketplace::InvestorPropertyConnection> {
+        programs::marketplace::investor_properties(
+            context,
+            investor,
+            owned,
+            reserved,
+            name,
+            town_city,
+            property_type,
+            first,
+            offset,
+        )
+        .await
+    }
+
     /// The marketplace's lawyer registry.
     async fn lawyers(
         context: &GraphQLContext,

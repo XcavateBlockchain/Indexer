@@ -1,0 +1,467 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT p.pubkey AS \"p_pubkey\", p.slot AS \"p_slot\", p.lamports AS \"p_lamports\",\n               p.closed_at_slot AS \"p_closed_at_slot\", p.listing_id AS \"p_listing_id\",\n               p.investor AS \"p_investor\", p.payment_mint AS \"p_payment_mint\",\n               p.payment_account AS \"p_payment_account\",\n               p.share_amount AS \"p_share_amount\",\n               p.reserved_share_amount AS \"p_reserved_share_amount\",\n               p.paid_funds AS \"p_paid_funds\", p.paid_tax AS \"p_paid_tax\",\n               p.paid_fee AS \"p_paid_fee\", p.reserved_funds AS \"p_reserved_funds\",\n               p.reserved_tax AS \"p_reserved_tax\", p.reserved_fee AS \"p_reserved_fee\",\n               p.cancelled AS \"p_cancelled\",\n               l.pubkey, l.slot, l.lamports, l.closed_at_slot, l.listing_id, l.developer,\n               l.asset_id, l.share_price, l.listed_share_amount, l.sold_share_amount,\n               l.reserved_share_amount, l.tax_paid_by_developer, l.tax_bps,\n               l.marketplace_fee_bps, l.investor_fee_bps, l.max_ownership_bps,\n               l.listing_expiry, l.claiming_time, l.claim_deadline, l.legal_process_time,\n               l.lawyer_voting_time, l.min_voting_quorum_bps, l.position_count,\n               l.legal_deadline, l.deposit, l.developer_lawyer, l.developer_lawyer_costs,\n               l.developer_lawyer_doc_status, l.developer_lawyer_documents_hash, l.spv_lawyer,\n               l.spv_lawyer_costs, l.spv_lawyer_doc_status, l.spv_lawyer_documents_hash,\n               l.second_attempt, l.developer_engaged, l.spv_costs_due, l.spv_costs_payee,\n               l.collected_fee_quote, l.collected, l.spv_election_expiry,\n               l.spv_election_candidate_count, l.spv_election_round, l.status,\n               pa.pubkey AS \"pa_pubkey?\", pa.slot AS \"pa_slot?\",\n               pa.lamports AS \"pa_lamports?\",\n               pa.closed_at_slot AS \"pa_closed_at_slot?\",\n               pa.asset_id AS \"pa_asset_id?\",\n               pa.name AS \"pa_name?\",\n               pa.metadata_uri AS \"pa_metadata_uri?\",\n               pa.share_mint AS \"pa_share_mint?\",\n               pa.region_id AS \"pa_region_id?\",\n               pa.location AS \"pa_location?\",\n               pa.share_amount AS \"pa_share_amount?\",\n               pa.spv_created AS \"pa_spv_created?\",\n               pa.finalized AS \"pa_finalized?\",\n               pa.holder_count AS \"pa_holder_count?\"\n        FROM marketplace_investor_position AS p\n        JOIN marketplace_listing AS l ON l.listing_id = p.listing_id\n        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id\n        WHERE p.investor = $1\n          AND p.cancelled = false\n          AND p.closed_at_slot IS NULL\n          AND ($2::bool IS NULL OR (p.share_amount > 0) = $2)\n          AND ($3::bool IS NULL OR (p.reserved_share_amount > 0) = $3)\n          AND ($4::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md\n               WHERE md.pubkey = pa.pubkey\n                 AND (md.property_name ILIKE '%' || $4 || '%'\n                   OR md.address_post_code ILIKE '%' || $4 || '%')))\n          AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md\n               WHERE md.pubkey = pa.pubkey\n                 AND md.address_town_city ILIKE '%' || $5 || '%'))\n          AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md\n               WHERE md.pubkey = pa.pubkey\n                 AND md.property_type ILIKE '%' || $6 || '%'))\n        ORDER BY p.slot DESC, p.pubkey ASC\n        LIMIT $7 OFFSET $8\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "p_pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "p_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "p_lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "p_closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "p_listing_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "p_investor",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "p_payment_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "p_payment_account",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "p_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "p_reserved_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "p_paid_funds",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "p_paid_tax",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "p_paid_fee",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "p_reserved_funds",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "p_reserved_tax",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "p_reserved_fee",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "p_cancelled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 17,
+        "name": "pubkey",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 18,
+        "name": "slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 19,
+        "name": "lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 20,
+        "name": "closed_at_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 21,
+        "name": "listing_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 22,
+        "name": "developer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 23,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 24,
+        "name": "share_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 25,
+        "name": "listed_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 26,
+        "name": "sold_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 27,
+        "name": "reserved_share_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 28,
+        "name": "tax_paid_by_developer",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 29,
+        "name": "tax_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 30,
+        "name": "marketplace_fee_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 31,
+        "name": "investor_fee_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 32,
+        "name": "max_ownership_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 33,
+        "name": "listing_expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 34,
+        "name": "claiming_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 35,
+        "name": "claim_deadline",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 36,
+        "name": "legal_process_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 37,
+        "name": "lawyer_voting_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 38,
+        "name": "min_voting_quorum_bps",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 39,
+        "name": "position_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 40,
+        "name": "legal_deadline",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 41,
+        "name": "deposit",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 42,
+        "name": "developer_lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 43,
+        "name": "developer_lawyer_costs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 44,
+        "name": "developer_lawyer_doc_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 45,
+        "name": "developer_lawyer_documents_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 46,
+        "name": "spv_lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 47,
+        "name": "spv_lawyer_costs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 48,
+        "name": "spv_lawyer_doc_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 49,
+        "name": "spv_lawyer_documents_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 50,
+        "name": "second_attempt",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 51,
+        "name": "developer_engaged",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 52,
+        "name": "spv_costs_due",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 53,
+        "name": "spv_costs_payee",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 54,
+        "name": "collected_fee_quote",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 55,
+        "name": "collected",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 56,
+        "name": "spv_election_expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 57,
+        "name": "spv_election_candidate_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 58,
+        "name": "spv_election_round",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 59,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 60,
+        "name": "pa_pubkey?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 61,
+        "name": "pa_slot?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 62,
+        "name": "pa_lamports?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 63,
+        "name": "pa_closed_at_slot?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 64,
+        "name": "pa_asset_id?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 65,
+        "name": "pa_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 66,
+        "name": "pa_metadata_uri?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 67,
+        "name": "pa_share_mint?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 68,
+        "name": "pa_region_id?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 69,
+        "name": "pa_location?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 70,
+        "name": "pa_share_amount?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 71,
+        "name": "pa_spv_created?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 72,
+        "name": "pa_finalized?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 73,
+        "name": "pa_holder_count?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bool",
+        "Bool",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "50a12f9238ff05e4b724b232417ea810e7f11517d0a4073ece63f0eec7c5bf87"
+}

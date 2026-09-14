@@ -1535,3 +1535,64 @@ failing).
 * Change footprint: `crates/api/src/graphql/programs/marketplace.rs` only (doc
   comments on `Listing` and `PropertyAsset` + the keyed lookup in `listings`);
   no `.sqlx` cache change, no migration.
+
+## API: new `investorProperties` query — one investor's reserved/purchased properties in a single query — 2026-09-15
+
+### What was built
+
+The mobile app's investor view wanted an investor's reserved/purchased
+properties — each with the full listing (including the nested
+`propertyAsset { metadata }` document, ADR-29/33) and the position's share
+amounts — filterable by owned/reserved, name, town/city and property type,
+and paginated for infinite scroll. The pre-existing surface forced an N+1:
+`listings(investor: ...)` resolves one position's listing per node but exposes
+no position fields and no `totalCount`, so the app fetched a page, re-fetched
+every listing one by one, then filtered and paginated client-side.
+
+The fix (ADR-34) is API-only: one additive root query
+`investorProperties(investor, owned, reserved, name, townCity, propertyType,
+first, offset)` → `{ nodes: [InvestorProperty], totalCount: Int }`. One
+position-scoped page query — `marketplace_investor_position AS p JOIN
+marketplace_listing AS l ON l.listing_id = p.listing_id LEFT JOIN
+marketplace_property_asset AS pa ON pa.asset_id = l.asset_id`, WHERE the
+investor plus the open-position predicate (`p.cancelled = false AND
+p.closed_at_slot IS NULL`) plus five independent NULL-skippable filters: the
+two booleans in equality form (so `owned: false` / `reserved: false` work),
+and the three strings as `ILIKE '%'||$||'%'` — name against
+`property_name OR address_post_code`, town/city against `address_town_city`,
+property type against `property_type`, all through a PK-keyed `EXISTS` on
+ADR-27's derived `marketplace_property_metadata` table (never joined into the
+position scope). `ORDER BY p.slot DESC, p.pubkey ASC LIMIT $first OFFSET
+$offset`; a companion `count(*)` over the identical scope powers
+`totalCount`. The 50-column listing projection shared verbatim by `listings`
+and `investorProperties` became the `listing_from_row!` macro (each `query!`
+site binds its own private row struct); `listings` is refactored onto it with
+unchanged behavior. Metadata and thumbnails attach via ADR-33's exact
+keyed-lookup mechanism (the byte-identical `WHERE pubkey = ANY($1)` query —
+zero delta on that `.sqlx` entry — plus the existing `image_thumbnails`
+helper).
+
+### Verification
+
+* `cargo fmt` / `cargo fmt --check` clean (never `--all`); `cargo clippy
+  --workspace --all-targets -- -D warnings` clean; `SQLX_OFFLINE=true cargo
+  build --workspace --locked` clean.
+* `cargo test --workspace --locked` (test Postgres): **194 passed, 0 failed**
+  (30 api + 164 indexer).
+* `cargo sqlx prepare --check` (per crate, `-- --bin api` / `-- --lib`):
+  clean, with exactly **2 new** `.sqlx` entries (the investor-properties page
+  query and its `count(*)`) and a **zero** delta on the shared metadata
+  lookup site.
+* `bash scripts/lint-migrations.sh`: "no migration changes vs origin/main".
+* `bash scripts/agent/verify-devnet.sh`: **VERIFY OK: 5 programs, 84
+  instructions, 5 snapshots, 5 deploy boundaries, 0 chain upgrades** — the
+  full devnet rebuild also exercises the ADR-27 metadata fetcher (4/4 live
+  assets fetched, 0 failures).
+* Live verification of the new query against the devnet API pending merge
+  (a push to `main` auto-deploys; the PR is opened for a human to merge).
+* Change footprint: `crates/api/src/graphql/query.rs` (root method) and
+  `crates/api/src/graphql/programs/marketplace.rs` (new `InvestorProperty` /
+  `InvestorPropertyConnection` types, the `listing_from_row!` macro, `listings`
+  refactored onto it, new `investor_properties` resolver); 2 new
+  `crates/api/.sqlx/` entries; this log section + ADR-34. No migration, no
+  indexer change.

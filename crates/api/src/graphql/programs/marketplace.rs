@@ -77,6 +77,40 @@ pub struct InvestorPositionConnection {
     pub total_count: i32,
 }
 
+/// One investor's reserved/purchased property: an `InvestorPosition` plus its full `Listing`
+/// (asset + metadata nested). A page of an investor's holdings then costs exactly one joined
+/// query plus the `count(*)` and the two keyed per-page lookups, same shape as `listings`
+/// (ADR-34). The position's listing always exists (positions are keyed by `listing_id`), so
+/// `listing` is non-optional.
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct InvestorProperty {
+    pub id: ID,
+    pub slot: I64,
+    pub lamports: I64,
+    pub active: bool,
+    pub closed_at_slot: Option<I64>,
+    pub listing_id: I64,
+    pub investor: String,
+    pub payment_mint: String,
+    pub payment_account: String,
+    pub share_amount: I64,
+    pub reserved_share_amount: I64,
+    pub paid_funds: I64,
+    pub paid_tax: I64,
+    pub paid_fee: I64,
+    pub reserved_funds: I64,
+    pub reserved_tax: I64,
+    pub reserved_fee: I64,
+    pub cancelled: bool,
+    pub listing: Listing,
+}
+
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct InvestorPropertyConnection {
+    pub nodes: Vec<InvestorProperty>,
+    pub total_count: i32,
+}
+
 /// A lawyer registered with the marketplace (the registry PDA keyed by the lawyer's wallet).
 #[derive(GraphQLObject, Clone, Debug)]
 pub struct Lawyer {
@@ -981,6 +1015,140 @@ fn asset_column_missing(column: &str) -> FieldError {
     )
 }
 
+// ============================================================================================
+// Row -> `Listing` decomposition, SHARED by the `listings` connection and the
+// `investor_properties` connection (ADR-34). Both SELECT the identical listing projection
+// (the `l.*` columns) plus the same `pa_*` LEFT-JOIN columns with `?` overrides, but
+// `query!` binds each query SITE to its own private `Record` row type that implements
+// nothing shareable (no `sqlx::Row`, no `FromRow`), so a plain function cannot name the
+// row. `macro_rules!` expands the decomposition textually against whichever row it is
+// handed: each site keeps the `query!` macro's full per-field compile-time binding (a
+// renamed or mistyped column still fails `prepare --check` per site), and the mapping
+// itself lives in exactly one place (same rationale as `property_metadata_from_row!`).
+// The body MOVES the row's fields (partial moves of disjoint fields, e.g. the
+// `match row.pa_pubkey` arm, are fine because `row` is a fresh local); `investor_properties`
+// builds the `InvestorPosition` from its `p_*` fields first, then hands the same row to
+// this macro for the `Listing`. The page-scoped per-page keyed lookups
+// (`metadata_by_pubkey` / `thumbs_by_pubkey`) are passed in as `$metadata` / `$thumbs`
+// because `macro_rules!` cannot see the caller's locals (hygiene); each call site passes
+// its own maps.
+// ============================================================================================
+macro_rules! listing_from_row {
+    ($row:expr, $metadata:expr, $thumbs:expr) => {{
+        let row = $row;
+
+        let developer_lawyer_doc_status =
+            DocumentStatus::from_db_str(&row.developer_lawyer_doc_status).ok_or_else(|| {
+                unknown_enum_value(
+                    "developer_lawyer_doc_status",
+                    &row.developer_lawyer_doc_status,
+                )
+            })?;
+        let spv_lawyer_doc_status = DocumentStatus::from_db_str(&row.spv_lawyer_doc_status)
+            .ok_or_else(|| {
+                unknown_enum_value("spv_lawyer_doc_status", &row.spv_lawyer_doc_status)
+            })?;
+        let status = ListingStatus::from_db_str(&row.status)
+            .ok_or_else(|| unknown_enum_value("status", &row.status))?;
+        let property_asset = match row.pa_pubkey {
+            None => None, // no asset row for this listing (see `Listing` doc)
+            Some(pa_pubkey) => {
+                // The join is 1:1 (see the `Listing` doc), so the page's asset PDA
+                // pubkeys are unique and each metadata row is consumed exactly once.
+                let metadata = $metadata
+                    .remove(&pa_pubkey)
+                    .map(|m| with_thumbnails(m, $thumbs.remove(&pa_pubkey)));
+                Some(PropertyAsset {
+                    id: ID::new(b58(&pa_pubkey)),
+                    slot: I64(row.pa_slot.ok_or_else(|| asset_column_missing("slot"))?),
+                    lamports: I64(row
+                        .pa_lamports
+                        .ok_or_else(|| asset_column_missing("lamports"))?),
+                    active: row.pa_closed_at_slot.is_none(),
+                    closed_at_slot: row.pa_closed_at_slot.map(I64),
+                    asset_id: I64(row
+                        .pa_asset_id
+                        .ok_or_else(|| asset_column_missing("asset_id"))?),
+                    name: row.pa_name.ok_or_else(|| asset_column_missing("name"))?,
+                    metadata_uri: row
+                        .pa_metadata_uri
+                        .ok_or_else(|| asset_column_missing("metadata_uri"))?,
+                    metadata,
+                    share_mint: b58(&row
+                        .pa_share_mint
+                        .ok_or_else(|| asset_column_missing("share_mint"))?),
+                    region_id: row
+                        .pa_region_id
+                        .ok_or_else(|| asset_column_missing("region_id"))?,
+                    location: utf8_lossy(
+                        &row.pa_location
+                            .ok_or_else(|| asset_column_missing("location"))?,
+                    ),
+                    share_amount: I64(row
+                        .pa_share_amount
+                        .ok_or_else(|| asset_column_missing("share_amount"))?),
+                    spv_created: row
+                        .pa_spv_created
+                        .ok_or_else(|| asset_column_missing("spv_created"))?,
+                    finalized: row
+                        .pa_finalized
+                        .ok_or_else(|| asset_column_missing("finalized"))?,
+                    holder_count: I64(row
+                        .pa_holder_count
+                        .ok_or_else(|| asset_column_missing("holder_count"))?),
+                })
+            }
+        };
+        Ok(Listing {
+            id: ID::new(b58(&row.pubkey)),
+            slot: I64(row.slot),
+            lamports: I64(row.lamports),
+            active: row.closed_at_slot.is_none(),
+            closed_at_slot: row.closed_at_slot.map(I64),
+            listing_id: I64(row.listing_id),
+            developer: b58(&row.developer),
+            asset_id: I64(row.asset_id),
+            share_price: I64(row.share_price),
+            listed_share_amount: I64(row.listed_share_amount),
+            sold_share_amount: I64(row.sold_share_amount),
+            reserved_share_amount: I64(row.reserved_share_amount),
+            tax_paid_by_developer: row.tax_paid_by_developer,
+            tax_bps: row.tax_bps,
+            marketplace_fee_bps: row.marketplace_fee_bps,
+            investor_fee_bps: row.investor_fee_bps,
+            max_ownership_bps: row.max_ownership_bps,
+            listing_expiry: I64(row.listing_expiry),
+            claiming_time: I64(row.claiming_time),
+            claim_deadline: I64(row.claim_deadline),
+            legal_process_time: I64(row.legal_process_time),
+            lawyer_voting_time: I64(row.lawyer_voting_time),
+            min_voting_quorum_bps: row.min_voting_quorum_bps,
+            position_count: I64(row.position_count),
+            legal_deadline: I64(row.legal_deadline),
+            deposit: I64(row.deposit),
+            developer_lawyer: b58(&row.developer_lawyer),
+            developer_lawyer_costs: I64(row.developer_lawyer_costs),
+            developer_lawyer_doc_status,
+            developer_lawyer_documents_hash: hex_string(&row.developer_lawyer_documents_hash),
+            spv_lawyer: b58(&row.spv_lawyer),
+            spv_lawyer_costs: I64(row.spv_lawyer_costs),
+            spv_lawyer_doc_status,
+            spv_lawyer_documents_hash: hex_string(&row.spv_lawyer_documents_hash),
+            second_attempt: row.second_attempt,
+            developer_engaged: row.developer_engaged,
+            spv_costs_due: I64(row.spv_costs_due),
+            spv_costs_payee: b58(&row.spv_costs_payee),
+            collected_fee_quote: I64(row.collected_fee_quote),
+            collected: json_string(&row.collected),
+            spv_election_expiry: I64(row.spv_election_expiry),
+            spv_election_candidate_count: I64(row.spv_election_candidate_count),
+            spv_election_round: I64(row.spv_election_round),
+            status,
+            property_asset,
+        })
+    }};
+}
+
 pub async fn listings(
     context: &GraphQLContext,
     listing_id: Option<I64>,
@@ -1110,120 +1278,237 @@ pub async fn listings(
 
     let nodes = rows
         .into_iter()
+        .map(|r| listing_from_row!(r, metadata_by_pubkey, thumbs_by_pubkey))
+        .collect::<FieldResult<Vec<_>>>()?;
+
+    Ok(ListingConnection {
+        nodes,
+        total_count: total_count_i32(total),
+    })
+}
+
+/// One page of a single investor's reserved/purchased properties (ADR-34): each node is the
+/// `InvestorPosition` (shares bought, shares reserved, funds/tax/fee paid and reserved) plus
+/// the full `Listing` with its asset and metadata nested, so the mobile app renders the page
+/// with exactly ONE query. All filtering happens server-side in the same SQL: `owned`
+/// (`share_amount > 0`), `reserved` (`reserved_share_amount > 0`), and `name` / `townCity` /
+/// `propertyType` ILIKE matches against the joined `marketplace_property_metadata`. Closed
+/// and cancelled positions never match (the investor still owns a closed listing's shares).
+#[allow(clippy::too_many_arguments)]
+pub async fn investor_properties(
+    context: &GraphQLContext,
+    investor: String,
+    owned: Option<bool>,
+    reserved: Option<bool>,
+    name: Option<String>,
+    town_city: Option<String>,
+    property_type: Option<String>,
+    first: Option<i32>,
+    offset: Option<i32>,
+) -> FieldResult<InvestorPropertyConnection> {
+    let limit = clamp_first(first);
+    let skip = clamp_offset(offset);
+    let investor = parse_b58("investor", &investor)?;
+
+    // Positions joined to their listing (1:1 key `listing_id`) and the listing's asset
+    // (the `LEFT JOIN` keeps listings without an asset row; metadata filters simply do
+    // not match them). Each metadata filter is its own `EXISTS` so that a `NULL` argument
+    // is skipped independently of the others. `p.*` carries no `?` overrides: the
+    // position columns are the query's driving table and all NOT NULL (sqlx derives the
+    // `Option` for `closed_at_slot` from its nullable type).
+    let rows = sqlx::query!(
+        r#"
+        SELECT p.pubkey AS "p_pubkey", p.slot AS "p_slot", p.lamports AS "p_lamports",
+               p.closed_at_slot AS "p_closed_at_slot", p.listing_id AS "p_listing_id",
+               p.investor AS "p_investor", p.payment_mint AS "p_payment_mint",
+               p.payment_account AS "p_payment_account",
+               p.share_amount AS "p_share_amount",
+               p.reserved_share_amount AS "p_reserved_share_amount",
+               p.paid_funds AS "p_paid_funds", p.paid_tax AS "p_paid_tax",
+               p.paid_fee AS "p_paid_fee", p.reserved_funds AS "p_reserved_funds",
+               p.reserved_tax AS "p_reserved_tax", p.reserved_fee AS "p_reserved_fee",
+               p.cancelled AS "p_cancelled",
+               l.pubkey, l.slot, l.lamports, l.closed_at_slot, l.listing_id, l.developer,
+               l.asset_id, l.share_price, l.listed_share_amount, l.sold_share_amount,
+               l.reserved_share_amount, l.tax_paid_by_developer, l.tax_bps,
+               l.marketplace_fee_bps, l.investor_fee_bps, l.max_ownership_bps,
+               l.listing_expiry, l.claiming_time, l.claim_deadline, l.legal_process_time,
+               l.lawyer_voting_time, l.min_voting_quorum_bps, l.position_count,
+               l.legal_deadline, l.deposit, l.developer_lawyer, l.developer_lawyer_costs,
+               l.developer_lawyer_doc_status, l.developer_lawyer_documents_hash, l.spv_lawyer,
+               l.spv_lawyer_costs, l.spv_lawyer_doc_status, l.spv_lawyer_documents_hash,
+               l.second_attempt, l.developer_engaged, l.spv_costs_due, l.spv_costs_payee,
+               l.collected_fee_quote, l.collected, l.spv_election_expiry,
+               l.spv_election_candidate_count, l.spv_election_round, l.status,
+               pa.pubkey AS "pa_pubkey?", pa.slot AS "pa_slot?",
+               pa.lamports AS "pa_lamports?",
+               pa.closed_at_slot AS "pa_closed_at_slot?",
+               pa.asset_id AS "pa_asset_id?",
+               pa.name AS "pa_name?",
+               pa.metadata_uri AS "pa_metadata_uri?",
+               pa.share_mint AS "pa_share_mint?",
+               pa.region_id AS "pa_region_id?",
+               pa.location AS "pa_location?",
+               pa.share_amount AS "pa_share_amount?",
+               pa.spv_created AS "pa_spv_created?",
+               pa.finalized AS "pa_finalized?",
+               pa.holder_count AS "pa_holder_count?"
+        FROM marketplace_investor_position AS p
+        JOIN marketplace_listing AS l ON l.listing_id = p.listing_id
+        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id
+        WHERE p.investor = $1
+          AND p.cancelled = false
+          AND p.closed_at_slot IS NULL
+          AND ($2::bool IS NULL OR (p.share_amount > 0) = $2)
+          AND ($3::bool IS NULL OR (p.reserved_share_amount > 0) = $3)
+          AND ($4::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md
+               WHERE md.pubkey = pa.pubkey
+                 AND (md.property_name ILIKE '%' || $4 || '%'
+                   OR md.address_post_code ILIKE '%' || $4 || '%')))
+          AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md
+               WHERE md.pubkey = pa.pubkey
+                 AND md.address_town_city ILIKE '%' || $5 || '%'))
+          AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md
+               WHERE md.pubkey = pa.pubkey
+                 AND md.property_type ILIKE '%' || $6 || '%'))
+        ORDER BY p.slot DESC, p.pubkey ASC
+        LIMIT $7 OFFSET $8
+        "#,
+        investor.as_slice(),
+        owned,
+        reserved,
+        name.as_deref(),
+        town_city.as_deref(),
+        property_type.as_deref(),
+        limit,
+        skip,
+    )
+    .fetch_all(&context.pool)
+    .await?;
+
+    let total = sqlx::query_scalar!(
+        r#"
+        SELECT count(*)
+        FROM marketplace_investor_position AS p
+        JOIN marketplace_listing AS l ON l.listing_id = p.listing_id
+        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id
+        WHERE p.investor = $1
+          AND p.cancelled = false
+          AND p.closed_at_slot IS NULL
+          AND ($2::bool IS NULL OR (p.share_amount > 0) = $2)
+          AND ($3::bool IS NULL OR (p.reserved_share_amount > 0) = $3)
+          AND ($4::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md
+               WHERE md.pubkey = pa.pubkey
+                 AND (md.property_name ILIKE '%' || $4 || '%'
+                   OR md.address_post_code ILIKE '%' || $4 || '%')))
+          AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md
+               WHERE md.pubkey = pa.pubkey
+                 AND md.address_town_city ILIKE '%' || $5 || '%'))
+          AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md
+               WHERE md.pubkey = pa.pubkey
+                 AND md.property_type ILIKE '%' || $6 || '%'))
+        "#,
+        investor.as_slice(),
+        owned,
+        reserved,
+        name.as_deref(),
+        town_city.as_deref(),
+        property_type.as_deref(),
+    )
+    .fetch_one(&context.pool)
+    .await?
+    .unwrap_or(0);
+
+    // Attach the fetched metadata document (ADR-27) and its mirrored thumbnails (ADR-31)
+    // exactly the way `listings` does (ADR-33): one keyed lookup over the derived 1:1
+    // tables for the page's asset PDA pubkeys, skipped when the page carries no asset
+    // rows. The metadata query is byte-identical to the `property_assets` site's, so all
+    // three share its cached sqlx provenance.
+    let asset_pubkeys: Vec<Vec<u8>> = rows.iter().filter_map(|r| r.pa_pubkey.clone()).collect();
+    let mut metadata_by_pubkey: HashMap<Vec<u8>, PropertyMetadata> = HashMap::new();
+    if !asset_pubkeys.is_empty() {
+        let mrows = sqlx::query!(
+            r#"
+            SELECT pubkey, asset_id, metadata_uri, fetched_at, attempts, last_error, raw,
+                   property_id, property_name, property_type, status, tenure, property_description,
+                   planning_code, building_control_code, user_pubkey, company_id, company_name,
+                   company_logo, company_wallet_address, created_at, updated_at,
+                   address_street, address_town_city, address_flat_or_unit, address_post_code,
+                   address_local_authority, address_region, address_location,
+                   area, quality, outdoor_space, number_of_bedrooms, number_of_bathrooms,
+                   construction_date, off_street_parking,
+                   property_price, number_of_shares, share_price, estimated_rental_income,
+                   annual_service_charge, stamp_duty_tax, stamp_duty_paid,
+                   annual_service_charge_paid,
+                   floor_plan, map_url, sales_agreement, other_documents, property_images
+            FROM marketplace_property_metadata
+            WHERE pubkey = ANY($1)
+            "#,
+            asset_pubkeys.as_slice(),
+        )
+        .fetch_all(&context.pool)
+        .await?;
+        for r in mrows {
+            // The macro body moves the row's fields, so capture the map key first.
+            let key = r.pubkey.clone();
+            let metadata = property_metadata_from_row!(r);
+            metadata_by_pubkey.insert(key, metadata);
+        }
+    }
+    let mut thumbs_by_pubkey = image_thumbnails(&context.pool, &asset_pubkeys).await?;
+
+    let nodes = rows
+        .into_iter()
         .map(|r| {
-            let developer_lawyer_doc_status =
-                DocumentStatus::from_db_str(&r.developer_lawyer_doc_status).ok_or_else(|| {
-                    unknown_enum_value(
-                        "developer_lawyer_doc_status",
-                        &r.developer_lawyer_doc_status,
-                    )
-                })?;
-            let spv_lawyer_doc_status = DocumentStatus::from_db_str(&r.spv_lawyer_doc_status)
-                .ok_or_else(|| {
-                    unknown_enum_value("spv_lawyer_doc_status", &r.spv_lawyer_doc_status)
-                })?;
-            let status = ListingStatus::from_db_str(&r.status)
-                .ok_or_else(|| unknown_enum_value("status", &r.status))?;
-            let property_asset = match r.pa_pubkey {
-                None => None, // no asset row for this listing (see `Listing` doc)
-                Some(pa_pubkey) => {
-                    // The join is 1:1 (see the `Listing` doc), so the page's asset PDA
-                    // pubkeys are unique and each metadata row is consumed exactly once.
-                    let metadata = metadata_by_pubkey
-                        .remove(&pa_pubkey)
-                        .map(|m| with_thumbnails(m, thumbs_by_pubkey.remove(&pa_pubkey)));
-                    Some(PropertyAsset {
-                        id: ID::new(b58(&pa_pubkey)),
-                        slot: I64(r.pa_slot.ok_or_else(|| asset_column_missing("slot"))?),
-                        lamports: I64(r
-                            .pa_lamports
-                            .ok_or_else(|| asset_column_missing("lamports"))?),
-                        active: r.pa_closed_at_slot.is_none(),
-                        closed_at_slot: r.pa_closed_at_slot.map(I64),
-                        asset_id: I64(r
-                            .pa_asset_id
-                            .ok_or_else(|| asset_column_missing("asset_id"))?),
-                        name: r.pa_name.ok_or_else(|| asset_column_missing("name"))?,
-                        metadata_uri: r
-                            .pa_metadata_uri
-                            .ok_or_else(|| asset_column_missing("metadata_uri"))?,
-                        metadata,
-                        share_mint: b58(&r
-                            .pa_share_mint
-                            .ok_or_else(|| asset_column_missing("share_mint"))?),
-                        region_id: r
-                            .pa_region_id
-                            .ok_or_else(|| asset_column_missing("region_id"))?,
-                        location: utf8_lossy(
-                            &r.pa_location
-                                .ok_or_else(|| asset_column_missing("location"))?,
-                        ),
-                        share_amount: I64(r
-                            .pa_share_amount
-                            .ok_or_else(|| asset_column_missing("share_amount"))?),
-                        spv_created: r
-                            .pa_spv_created
-                            .ok_or_else(|| asset_column_missing("spv_created"))?,
-                        finalized: r
-                            .pa_finalized
-                            .ok_or_else(|| asset_column_missing("finalized"))?,
-                        holder_count: I64(r
-                            .pa_holder_count
-                            .ok_or_else(|| asset_column_missing("holder_count"))?),
-                    })
-                }
+            let position = InvestorPosition {
+                id: ID::new(b58(&r.p_pubkey)),
+                slot: I64(r.p_slot),
+                lamports: I64(r.p_lamports),
+                active: r.p_closed_at_slot.is_none(),
+                closed_at_slot: r.p_closed_at_slot.map(I64),
+                listing_id: I64(r.p_listing_id),
+                investor: b58(&r.p_investor),
+                payment_mint: b58(&r.p_payment_mint),
+                payment_account: b58(&r.p_payment_account),
+                share_amount: I64(r.p_share_amount),
+                reserved_share_amount: I64(r.p_reserved_share_amount),
+                paid_funds: I64(r.p_paid_funds),
+                paid_tax: I64(r.p_paid_tax),
+                paid_fee: I64(r.p_paid_fee),
+                reserved_funds: I64(r.p_reserved_funds),
+                reserved_tax: I64(r.p_reserved_tax),
+                reserved_fee: I64(r.p_reserved_fee),
+                cancelled: r.p_cancelled,
             };
-            Ok(Listing {
-                id: ID::new(b58(&r.pubkey)),
-                slot: I64(r.slot),
-                lamports: I64(r.lamports),
-                active: r.closed_at_slot.is_none(),
-                closed_at_slot: r.closed_at_slot.map(I64),
-                listing_id: I64(r.listing_id),
-                developer: b58(&r.developer),
-                asset_id: I64(r.asset_id),
-                share_price: I64(r.share_price),
-                listed_share_amount: I64(r.listed_share_amount),
-                sold_share_amount: I64(r.sold_share_amount),
-                reserved_share_amount: I64(r.reserved_share_amount),
-                tax_paid_by_developer: r.tax_paid_by_developer,
-                tax_bps: r.tax_bps,
-                marketplace_fee_bps: r.marketplace_fee_bps,
-                investor_fee_bps: r.investor_fee_bps,
-                max_ownership_bps: r.max_ownership_bps,
-                listing_expiry: I64(r.listing_expiry),
-                claiming_time: I64(r.claiming_time),
-                claim_deadline: I64(r.claim_deadline),
-                legal_process_time: I64(r.legal_process_time),
-                lawyer_voting_time: I64(r.lawyer_voting_time),
-                min_voting_quorum_bps: r.min_voting_quorum_bps,
-                position_count: I64(r.position_count),
-                legal_deadline: I64(r.legal_deadline),
-                deposit: I64(r.deposit),
-                developer_lawyer: b58(&r.developer_lawyer),
-                developer_lawyer_costs: I64(r.developer_lawyer_costs),
-                developer_lawyer_doc_status,
-                developer_lawyer_documents_hash: hex_string(&r.developer_lawyer_documents_hash),
-                spv_lawyer: b58(&r.spv_lawyer),
-                spv_lawyer_costs: I64(r.spv_lawyer_costs),
-                spv_lawyer_doc_status,
-                spv_lawyer_documents_hash: hex_string(&r.spv_lawyer_documents_hash),
-                second_attempt: r.second_attempt,
-                developer_engaged: r.developer_engaged,
-                spv_costs_due: I64(r.spv_costs_due),
-                spv_costs_payee: b58(&r.spv_costs_payee),
-                collected_fee_quote: I64(r.collected_fee_quote),
-                collected: json_string(&r.collected),
-                spv_election_expiry: I64(r.spv_election_expiry),
-                spv_election_candidate_count: I64(r.spv_election_candidate_count),
-                spv_election_round: I64(r.spv_election_round),
-                status,
-                property_asset,
+            // Map the macro's result instead of `?`-ing it: the closure's error type is
+            // only pinned by the `collect` below, and a `?` here would have to pick a
+            // `From` impl for a not-yet-pinned type.
+            let listing = listing_from_row!(r, metadata_by_pubkey, thumbs_by_pubkey);
+            listing.map(|listing| InvestorProperty {
+                id: position.id,
+                slot: position.slot,
+                lamports: position.lamports,
+                active: position.active,
+                closed_at_slot: position.closed_at_slot,
+                listing_id: position.listing_id,
+                investor: position.investor,
+                payment_mint: position.payment_mint,
+                payment_account: position.payment_account,
+                share_amount: position.share_amount,
+                reserved_share_amount: position.reserved_share_amount,
+                paid_funds: position.paid_funds,
+                paid_tax: position.paid_tax,
+                paid_fee: position.paid_fee,
+                reserved_funds: position.reserved_funds,
+                reserved_tax: position.reserved_tax,
+                reserved_fee: position.reserved_fee,
+                cancelled: position.cancelled,
+                listing,
             })
         })
         .collect::<FieldResult<Vec<_>>>()?;
 
-    Ok(ListingConnection {
+    Ok(InvestorPropertyConnection {
         nodes,
         total_count: total_count_i32(total),
     })

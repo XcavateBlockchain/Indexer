@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*)\n        FROM marketplace_investor_position AS p\n        JOIN marketplace_listing AS l ON l.listing_id = p.listing_id\n        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id\n        WHERE p.investor = $1\n          AND p.cancelled = false\n          AND p.closed_at_slot IS NULL\n          AND ($2::bool IS NULL OR (p.share_amount > 0) = $2)\n          AND ($3::bool IS NULL OR (p.reserved_share_amount > 0) = $3)\n          AND ($4::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md\n               WHERE md.pubkey = pa.pubkey\n                 AND (md.property_name ILIKE '%' || $4 || '%'\n                   OR md.address_post_code ILIKE '%' || $4 || '%')))\n          AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md\n               WHERE md.pubkey = pa.pubkey\n                 AND md.address_town_city ILIKE '%' || $5 || '%'))\n          AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM marketplace_property_metadata AS md\n               WHERE md.pubkey = pa.pubkey\n                 AND md.property_type ILIKE '%' || $6 || '%'))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bool",
+        "Bool",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4ffe2fc9da8da867d0342218dfe9511322b84686432ddbc4a1531628d2fcaaa3"
+}

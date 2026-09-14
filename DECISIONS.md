@@ -1028,3 +1028,64 @@ selection-aware; at devnet data volumes the wasted lookup is cheaper than the
 machinery). API-only and additive: no migration, no indexer or fetcher change, the
 field already existed and was `null` before; `cargo sqlx prepare --check` is clean
 with a ZERO query-cache delta (both sites hash to the same cached entry).
+
+## ADR-34: The `investorProperties` root query — one investor's reserved/purchased properties in a single query
+
+**Context.** A mobile app wanted one investor's reserved and purchased
+properties: every position's full listing (with the nested
+`propertyAsset { metadata }` document, ADR-29/33) plus the position's share
+amounts, filterable by "owned vs reserved", property name, town/city and
+property type, and paginated. The pre-existing surface forced a consumer into
+an N+1: `listings(investor: ...)` resolves one position's LISTING per node
+but exposes no position fields (investor, `shareAmount`,
+`reservedShareAmount`) and no connection `totalCount` — so the app fetched a
+listing page, then re-fetched each listing one by one, then filtered and
+paginated CLIENT-SIDE. Five server-side filters (two boolean, three string)
+plus offset pagination composed cleanly against one shared predicate only if
+the filter inputs were query parameters, not hand-written `WHERE` fragments —
+which sqlx's compile-time-checked `query!` macros require.
+
+**Decision.** Add a single additive root query `investorProperties(investor,
+owned, reserved, name, townCity, propertyType, first, offset)` that answers
+it all in ONE round trip, mirroring the `listings` resolver's architecture
+(ADR-27's separation of mirrors and derived data, ADR-33's metadata
+attachment). One position-scoped page query:
+`marketplace_investor_position AS p JOIN marketplace_listing AS l ON
+l.listing_id = p.listing_id LEFT JOIN marketplace_property_asset AS pa ON
+pa.asset_id = l.asset_id`, WHERE `p.investor = $1` plus the open-position
+predicate `p.cancelled = false AND p.closed_at_slot IS NULL`, plus five
+independent NULL-skippable filters — the two booleans in equality form
+`($2::bool IS NULL OR (p.share_amount > 0) = $2)` and
+`($3::bool IS NULL OR (p.reserved_share_amount > 0) = $3)` so `owned: false`
+/ `reserved: false` are expressible, and the three strings as `ILIKE
+'%'||$4||'%'` (name matched against `property_name OR address_post_code`,
+ADR-27's derived table reachable only through a PK-keyed `EXISTS` on
+`marketplace_property_metadata` — the derived table is never joined into the
+position scope), ordered by `p.slot DESC, p.pubkey ASC` with
+`LIMIT $7 OFFSET $8`. A companion `count(*)` over the identical scope powers
+`totalCount`, so filters and pagination compose on the server. The 50-column
+listing projection is the one shared verbatim by `listings` and
+`investorProperties` — each `query!` site binds its own private row struct, so
+the shared half is a `macro_rules!` helper (`listing_from_row!` taking the row,
+the asset metadata and the thumbnails) whose expansion both sites map over;
+`listings` is refactored onto the same macro (its behavior is unchanged).
+Metadata and thumbnails attach via ADR-33's exact keyed-lookup mechanism (the
+byte-identical `WHERE pubkey = ANY($1)` 50-column query — so `cargo sqlx
+prepare --check` shows a ZERO delta on that site — decomposed by the shared
+`property_metadata_from_row!` macro; thumbnails via the existing
+`image_thumbnails` helper). The `Listing` nodes are constructed through the
+existing `listing_from_rows` path, so a node's `propertyAsset.metadata` carries
+the same semantics as on the `listings` path.
+
+**Consequences.** The app's per-investor view collapses to one query per page:
+all five filters plus pagination are server-side, `totalCount` reflects the
+post-filter set, and the metadata/thumbnail attachment cost is at most two
+PK-keyed lookups per page — identical to what ADR-33 already accepted for
+`listings`. Cost of the extraction: one more `.sqlx` provenance entry per
+resolver (the page query and its `count(*)`), two new GraphQL types
+(`InvestorProperty` = 17 position fields + `listing: Listing`, and
+`InvestorPropertyConnection { nodes, totalCount }`), and a shared macro where
+there was previously inline code. API-only and additive: no migration, no
+indexer change, the new resolver is the only new surface;
+`cargo sqlx prepare --check` is clean with exactly the two new entries and no
+delta elsewhere.
