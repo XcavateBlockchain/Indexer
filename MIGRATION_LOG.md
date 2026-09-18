@@ -1627,3 +1627,65 @@ indexer, incl. the new `reset_wipes_every_table_on_the_list`, which also proves 
 post-wipe `sync_state` re-seed path); `cargo sqlx prepare --check` clean for both crates
 (no new compile-checked queries — the truncate is a runtime statement over compile-time
 table-name constants, same pattern as `close_in_table`).
+
+
+## Deploy: OBJECT_STORAGE_* / webhook URL never reached the server .env (image mirror silently disabled) — 2026-09-18
+
+**Symptom**: property images were never compressed or uploaded to Hetzner object storage —
+`propertyImageThumbnails` stayed `null`, `marketplace_property_image` stayed empty, no
+error anywhere.
+
+**Root cause**: not the mirror code. `.github/workflows/deploy.yml`'s "Render server .env"
+step wrote only `ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`, `GRAFANA_PASSWORD`, image tags, and
+ports — it had never contained the five `OBJECT_STORAGE_*` secrets (nor
+`INIT_PROPERTY_ASSET_WEBHOOK_URL`), and every deploy *overwrites* `/opt/indexer/.env`
+wholesale, so even hand-added values were wiped on the next deploy. Compose then passed
+empty strings (`${OBJECT_STORAGE_ENDPOINT:-}`), `config.rs`'s `non_empty` treats empty as
+unset, and all-unset is the mirror's first-class DISABLED state (ADR-31): the supervisor
+is never spawned, no log line, no gauge. Docs even claimed "a fresh git pull + docker
+compose up -d picks them up", which was never true.
+
+**Fix**:
+* deploy.yml renders `OBJECT_STORAGE_ENDPOINT/BUCKET/REGION/ACCESS_KEY/SECRET_KEY` (plus
+  optional `OBJECT_STORAGE_PUBLIC_BASE_URL`, `IMAGE_MIRROR_INTERVAL` variables) into
+  `server.env` when all five secrets exist, omits them when none do, and FAILS the deploy
+  on a partial set (`dotenv_optional` helper + an explicit count check — the same
+  all-or-nothing contract as `ObjectStorageConfig::from_env`, enforced at render time
+  instead of as a crash-loop on the server). `INIT_PROPERTY_ASSET_WEBHOOK_URL` is rendered
+  the same optional way — it had never reached the server either, so the webhook delivery
+  loop (ADR-28) was equally disabled in production.
+* `crates/indexer/src/main.rs`: the disabled branches of the webhook-delivery and
+  image-mirror gates now log an explicit `... disabled (...)` info line at boot, so
+  "no config" is greppable instead of indistinguishable from "healthy but idle".
+* Doc corrections uncovered by the diagnosis: RUNBOOK.md "Property-image mirror"
+  diagnostics used a nonexistent column (`uri` → `source_uri`), promised per-cycle summary
+  log lines that only the one-shot subcommand prints, and cited metric labels
+  `uploaded|failed` where the code emits `success|failure` (also fixed in the alert-list
+  table; `alerts.yml` itself was already correct); docs/deployment.md's "secrets picked up
+  on next deploy" claim replaced with what deploy.yml actually does; DECISIONS.md ADR-31's
+  public-URL shape corrected to the virtual-hosted form the code builds.
+
+**Operator action required**: set the five `OBJECT_STORAGE_*` repository secrets (Hetzner
+bucket + write-only key per docs/deployment.md's table), optionally the two variables and
+the webhook-URL secret, then redeploy (merge to `main` or `workflow_dispatch`). Verify
+with `docker compose logs indexer | grep 'image mirror'` → `image mirror supervisor
+started`, and optionally a one-shot `docker compose exec -T indexer indexer mirror-images`.
+
+**Verification**: render-step shell logic exercised locally in all three modes (none set
+→ lines omitted; partial set → render fails naming the count; all set → single-quoted
+lines survive `$`/spaces/`#`); workflow YAML parses; `cargo fmt --check`,
+`clippy --workspace --all-targets -- -D warnings`, `build --workspace --locked`,
+`test --workspace --locked` (30 api + 165 indexer, 0 failed), `lint-migrations.sh` all
+clean.
+
+
+### Addendum (2026-09-18): complete .env coverage
+
+Follow-up to the section above: the render step now covers EVERY variable
+`docker-compose.yml` reads from `.env` — `RUST_LOG` and `CORS_ALLOWED_ORIGINS` (optional
+repository variables) were the last two that could only be set by hand-editing the server
+file (which every deploy wipes). A completeness comment in deploy.yml's render step
+requires keeping the block in sync with compose's `${...}` references; verified
+mechanically: `comm` of the two name lists is empty. docs/deployment.md §2 now lists all
+secrets and variables in two tables and states the rule: the server `.env` is
+workflow-rendered only, hand edits are unsupported.

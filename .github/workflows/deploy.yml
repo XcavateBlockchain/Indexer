@@ -143,6 +143,24 @@ jobs:
           GRAPHQL_PORT: ${{ vars.GRAPHQL_PORT || '3010' }}
           GRAFANA_PORT: ${{ vars.GRAFANA_PORT || '3011' }}
           PROMETHEUS_PORT: ${{ vars.PROMETHEUS_PORT || '9090' }}
+          # ADR-31 image mirror + ADR-28 webhooks: OPTIONAL. Unset = the line is
+          # omitted from server.env, compose passes an empty string, and
+          # crates/indexer/src/config.rs treats that as unset (the mirror/webhook
+          # loop simply never spawns). The five OBJECT_STORAGE_* secrets are
+          # all-or-nothing, mirroring config.rs exactly: a partial set fails HERE,
+          # at render time, instead of crash-looping the indexer on the server.
+          OBJECT_STORAGE_ENDPOINT: ${{ secrets.OBJECT_STORAGE_ENDPOINT }}
+          OBJECT_STORAGE_BUCKET: ${{ secrets.OBJECT_STORAGE_BUCKET }}
+          OBJECT_STORAGE_REGION: ${{ secrets.OBJECT_STORAGE_REGION }}
+          OBJECT_STORAGE_ACCESS_KEY: ${{ secrets.OBJECT_STORAGE_ACCESS_KEY }}
+          OBJECT_STORAGE_SECRET_KEY: ${{ secrets.OBJECT_STORAGE_SECRET_KEY }}
+          OBJECT_STORAGE_PUBLIC_BASE_URL: ${{ vars.OBJECT_STORAGE_PUBLIC_BASE_URL }}
+          IMAGE_MIRROR_INTERVAL: ${{ vars.IMAGE_MIRROR_INTERVAL }}
+          INIT_PROPERTY_ASSET_WEBHOOK_URL: ${{ secrets.INIT_PROPERTY_ASSET_WEBHOOK_URL }}
+          # Also optional, not sensitive: logging verbosity and the API's browser CORS
+          # allow-list (compose supplies its own defaults when the lines are absent).
+          RUST_LOG: ${{ vars.RUST_LOG }}
+          CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
         run: |
           # Secrets are written single-quoted: docker compose's dotenv parser
           # takes single-quoted values literally, so `$`, spaces and `#` in a
@@ -163,6 +181,19 @@ jobs:
             esac
             printf "%s='%s'\n" "$1" "$2"
           }
+          # Optional values: unset/empty = the line is omitted entirely (the
+          # feature stays disabled); set = the same quoting rules as a secret.
+          dotenv_optional() {
+            if [ -z "$2" ]; then
+              return 0
+            fi
+            case "$2" in
+              *\'* | *$'\n'* )
+                echo "::error::$1 must not contain single quotes or newlines" >&2
+                exit 1;;
+            esac
+            printf "%s='%s'\n" "$1" "$2"
+          }
           # A typo in a port variable should fail here, with a readable message,
           # rather than as an opaque compose error midway through the deploy.
           dotenv_port() {
@@ -177,6 +208,23 @@ jobs:
             fi
             printf '%s=%s\n' "$1" "$2"
           }
+          # The image mirror's five secrets are all-or-nothing (same contract as
+          # ObjectStorageConfig::from_env in crates/indexer/src/config.rs): count
+          # how many are set and fail the render on a partial set.
+          object_storage_set=0
+          for v in "$OBJECT_STORAGE_ENDPOINT" "$OBJECT_STORAGE_BUCKET" "$OBJECT_STORAGE_REGION" \
+                   "$OBJECT_STORAGE_ACCESS_KEY" "$OBJECT_STORAGE_SECRET_KEY"; do
+            [ -n "$v" ] && object_storage_set=$((object_storage_set + 1))
+          done
+          if [ "$object_storage_set" -gt 0 ] && [ "$object_storage_set" -lt 5 ]; then
+            echo "::error::OBJECT_STORAGE_* is all-or-nothing: $object_storage_set of 5 set — set all five secrets or none" >&2
+            exit 1
+          fi
+          # COMPLETENESS CONTRACT: this block must render EVERY line compose can read
+          # from .env (see the `${...}` references in docker-compose.yml). The server
+          # file is replaced wholesale on every deploy, so a value that is not rendered
+          # here cannot be set at all -- hand edits do not survive. Keep this list in
+          # sync when compose gains a new `${VAR}`.
           {
             dotenv_secret ALCHEMY_API_KEY "$ALCHEMY_API_KEY"
             dotenv_secret POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
@@ -187,6 +235,18 @@ jobs:
             dotenv_port GRAPHQL_PORT "$GRAPHQL_PORT"
             dotenv_port GRAFANA_PORT "$GRAFANA_PORT"
             dotenv_port PROMETHEUS_PORT "$PROMETHEUS_PORT"
+            if [ "$object_storage_set" -eq 5 ]; then
+              dotenv_secret OBJECT_STORAGE_ENDPOINT "$OBJECT_STORAGE_ENDPOINT"
+              dotenv_secret OBJECT_STORAGE_BUCKET "$OBJECT_STORAGE_BUCKET"
+              dotenv_secret OBJECT_STORAGE_REGION "$OBJECT_STORAGE_REGION"
+              dotenv_secret OBJECT_STORAGE_ACCESS_KEY "$OBJECT_STORAGE_ACCESS_KEY"
+              dotenv_secret OBJECT_STORAGE_SECRET_KEY "$OBJECT_STORAGE_SECRET_KEY"
+              dotenv_optional OBJECT_STORAGE_PUBLIC_BASE_URL "$OBJECT_STORAGE_PUBLIC_BASE_URL"
+              dotenv_optional IMAGE_MIRROR_INTERVAL "$IMAGE_MIRROR_INTERVAL"
+            fi
+            dotenv_optional INIT_PROPERTY_ASSET_WEBHOOK_URL "$INIT_PROPERTY_ASSET_WEBHOOK_URL"
+            dotenv_optional RUST_LOG "$RUST_LOG"
+            dotenv_optional CORS_ALLOWED_ORIGINS "$CORS_ALLOWED_ORIGINS"
           } > server.env
 
       - name: Upload compose file, monitoring config and .env

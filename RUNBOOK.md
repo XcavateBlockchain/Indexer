@@ -179,9 +179,13 @@ rollback schema described below): stop the indexer, wipe every indexed table, st
 
 ```bash
 docker compose stop indexer
-docker compose run --rm --no-deps indexer indexer reset --confirm
+docker compose run --rm --no-deps indexer reset --confirm   # the image's ENTRYPOINT is `indexer` already
 docker compose up -d
 ```
+
+(Requires an indexer image new enough to contain the `reset` subcommand. Against an older
+image, run the equivalent SQL by hand instead: `docker compose exec postgres psql -U
+postgres -d postgres -c "TRUNCATE TABLE <the wipe list in crates/indexer/src/db/reset.rs>"`.)
 
 `indexer reset` truncates all account-state, history (`program_instructions`,
 `whitelist_actions`), webhook-outbox, derived (`marketplace_property_metadata`,
@@ -406,16 +410,24 @@ object-storage config (or if `marketplace` is not in `sync_state`).
 
 **Diagnostics.**
 
-1. Logs: `docker compose logs -f indexer | grep -i 'image mirror'` — per-cycle
-   `N uploaded, N failed, M pending` lines; the access/secret keys never appear
-   (hand-rolled `Debug` on the config).
-2. Database: `SELECT asset_pubkey, image_index, uri, attempts, last_error,
+1. Logs: `docker compose logs indexer | grep 'image mirror'` — the boot line `image
+   mirror supervisor started`, or `image mirror disabled (OBJECT_STORAGE_* unset …)` if
+   the variables never reached the server `.env` (the deploy workflow renders them only
+   when the five GitHub secrets are set, see docs/deployment.md), then one
+   `image mirrored:` (info) or
+   `image mirror failed:` (warn) line per image. The per-cycle `N uploaded, N failed`
+   summary is printed only by the one-shot subcommand. The access/secret keys never
+   appear (hand-rolled `Debug` on the config).
+2. Database: `SELECT asset_pubkey, image_index, source_uri, attempts, last_error,
    next_attempt_at FROM marketplace_property_image WHERE thumb_uri IS NULL ORDER BY
    next_attempt_at;` — the pending work set; `last_error` (≤500 chars) carries the
-   fetch/upload failure. Force a stuck image to retry immediately (bypasses its
-   backoff): `UPDATE marketplace_property_image SET next_attempt_at = now() WHERE
-   asset_pubkey = '<PDA>' AND image_index = <i>;`
-3. Metrics: `property_images_mirrored_total{result=uploaded|failed}` and
+   fetch/upload failure. (Empty table is NOT proof of health: the mirror itself creates
+   rows lazily from `marketplace_property_metadata.property_images`, so a disabled
+   mirror leaves the table empty — check the metadata side with `SELECT count(*) FROM
+   marketplace_property_metadata WHERE property_images IS NOT NULL;`.) Force a stuck
+   image to retry immediately (bypasses its backoff): `UPDATE marketplace_property_image
+   SET next_attempt_at = now() WHERE asset_pubkey = '<PDA>' AND image_index = <i>;`
+3. Metrics: `property_images_mirrored_total{result=success|failure}` and
    `property_images_pending` (gauge; **series absent = mirror disabled** — that is the
    dashboard's enabled/disabled signal, not a scrape error). The
    `PropertyImageMirrorFailing` alert fires after 15 minutes of failing uploads
@@ -441,7 +453,7 @@ nothing pages anyone on its own; check Prometheus's `/alerts` page or Grafana's 
 | `BackfillStalled` | `(chain_tip_slot - last_contiguous_slot > 3000) and changes(backfill_last_processed_slot[15m]) == 0` for 5m | No backfill-walk progress while the indexer is behind — most likely a stuck history walk (a poison signature, or every RPC endpoint failing). Also fires for a stalled *reconciler* long after the initial backfill finished, since the underlying gauge never resumes post-completion — check `backfillComplete` via `/health`/`syncStatus` to tell the two apart (see "Frozen frontier" above). |
 | `ProgramUpgradeDetected` | `program_upgrades_detected_total` increased in 1h | A tracked program's bytecode was upgraded on-chain (`ADR-24`) — the running decoder was generated from the pre-upgrade IDL. First observations only (crawl re-walks can't re-fire it); the durable record is the `program_upgrades` table / `programUpgrades` GraphQL query. Follow "After a program upgrade" above. |
 | `WebhookDeliveryFailing` | `increase(webhooks_delivered_total{result="failure"}[2h]) > 0` | Outbound property-asset webhook deliveries (`ADR-28`) have been failing over a 2 h window — the endpoint behind `INIT_PROPERTY_ASSET_WEBHOOK_URL` is rejecting or unreachable. Events are NOT lost: durable `webhook_events` rows retry with per-event backoff (30 s doubling, 1 h cap); the 2 h counter window is derived from that 1 h cap (see the rule's comment in alerts.yml). Per-row reason in `last_error`. See "Property-asset registration webhooks" above. |
-| `PropertyImageMirrorFailing` | `increase(property_images_mirrored_total{result="failed"}[15m]) > 0` | Property-image mirror uploads (`ADR-31`) have been failing over a 15 m window — 3× the 30 s mirror cycle, so a single failed cycle cannot trip it; it means an image has failed at least three consecutive cycles (upstream 404s, non-image bodies, or a broken bucket credential/policy). Images are NOT lost: durable `marketplace_property_image` rows retry with per-image backoff (30 s doubling, 1 h cap), per-image `last_error` in the table, `property_images_pending` gauge for backlog. Check the `OBJECT_STORAGE_*` secrets first, then the failing URIs. Only active when the mirror is configured (disabled = no series, no false alarms). See "Property-image mirror" above. |
+| `PropertyImageMirrorFailing` | `increase(property_images_mirrored_total{result="failure"}[15m]) > 0` | Property-image mirror uploads (`ADR-31`) have been failing over a 15 m window — 3× the 30 s mirror cycle, so a single failed cycle cannot trip it; it means an image has failed at least three consecutive cycles (upstream 404s, non-image bodies, or a broken bucket credential/policy). Images are NOT lost: durable `marketplace_property_image` rows retry with per-image backoff (30 s doubling, 1 h cap), per-image `last_error` in the table, `property_images_pending` gauge for backlog. Check the `OBJECT_STORAGE_*` secrets first, then the failing URIs. Only active when the mirror is configured (disabled = no series, no false alarms). See "Property-image mirror" above. |
 
 ## Secrets / rotation
 

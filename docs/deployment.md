@@ -50,7 +50,10 @@ variables below rather than editing the compose file.
 
 ## 2. GitHub repository secrets
 
-`Settings → Secrets and variables → Actions`:
+`Settings → Secrets and variables → Actions`. **Every line of the server's
+`/opt/indexer/.env` is rendered by the deploy workflow from these secrets/variables** (plus
+the computed GHCR image tags) — the file is replaced wholesale on each deploy, so hand
+edits on the server do not survive and are not a supported way to configure anything.
 
 | Secret | Value |
 |---|---|
@@ -63,13 +66,21 @@ variables below rather than editing the compose file.
 | `POSTGRES_PASSWORD` | Any strong password (stack-internal only) |
 | `GRAFANA_PASSWORD` | Grafana admin password. **Required** — the deploy fails fast if unset, because Grafana is published on `GRAFANA_PORT` and would otherwise fall back to `admin`/`admin`. |
 | `GHCR_PULL_TOKEN` | Optional: PAT with `read:packages`, only needed while the GHCR images are private. Alternatively make the packages public and omit this. |
+| `OBJECT_STORAGE_ENDPOINT` | Optional, part of the all-or-nothing image-mirror set (ADR-31) — see "Property image mirror" below for the five values |
+| `OBJECT_STORAGE_BUCKET` | Optional, all-or-nothing with the other four |
+| `OBJECT_STORAGE_REGION` | Optional, all-or-nothing with the other four |
+| `OBJECT_STORAGE_ACCESS_KEY` | Optional, all-or-nothing with the other four |
+| `OBJECT_STORAGE_SECRET_KEY` | Optional, all-or-nothing with the other four |
+| `INIT_PROPERTY_ASSET_WEBHOOK_URL` | Optional: HTTPS endpoint for the ADR-28 property-asset registration webhooks. Unset = the delivery loop never spawns (events still accumulate durably in `webhook_events`). |
 
-Unchanged from the pre-migration stack — this migration introduced no new secrets (verified
-in `task-8-report.md`'s secrets accounting).
+The three required stack secrets (`ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`, `GRAFANA_PASSWORD`)
+fail the deploy fast when unset. The five `OBJECT_STORAGE_*` secrets fail the deploy when
+only *some* are set — set all five or none (the same all-or-nothing contract the indexer
+enforces at startup, caught at render time instead of as a crash-loop).
 
 ### Repository variables
 
-Same page, **Variables** tab. All are optional and change only the *host* port that the
+Same page, **Variables** tab. The port variables change only the *host* port that the
 service is published on — the container-internal ports (`3010`, `3000`, `9090`) stay fixed,
 so healthchecks, scrape targets and inter-service URLs are unaffected. Use these when a port
 is already taken on the server (`Bind for 0.0.0.0:3010 failed: port is already allocated`).
@@ -79,8 +90,13 @@ is already taken on the server (`Bind for 0.0.0.0:3010 failed: port is already a
 | `GRAPHQL_PORT` | `3010` | Host port for GraphQL + GraphiQL |
 | `GRAFANA_PORT` | `3011` | Host port for Grafana |
 | `PROMETHEUS_PORT` | `9090` | Host port for Prometheus, bound to `127.0.0.1` only — changing it only changes what an SSH tunnel targets |
+| `OBJECT_STORAGE_PUBLIC_BASE_URL` | `{scheme}://{bucket}.{endpoint-host}` | Public thumbnail URL prefix; only override when a CDN/proxy fronts the bucket |
+| `IMAGE_MIRROR_INTERVAL` | `30` (seconds) | Image-mirror cycle interval |
+| `RUST_LOG` | compose's per-service default | Log verbosity for both Rust services |
+| `CORS_ALLOWED_ORIGINS` | unset = allow all | Comma-separated browser origins allowed to call `/graphql` |
 
-Must be a bare port number in `1-65535`; the deploy fails fast with a clear error otherwise.
+Ports must be a bare number in `1-65535`; the deploy fails fast with a clear error
+otherwise.
 
 `GRPC_PORT` (the old stack's gRPC API port variable) is no longer read by the rendering
 script — safe to delete from repo Settings → Variables whenever convenient; leaving it in
@@ -157,7 +173,7 @@ In place, keeping the `pgdata` volume (and the SubQuery rollback schema on it):
 ```bash
 cd /opt/indexer
 docker compose stop indexer
-docker compose run --rm --no-deps indexer indexer reset --confirm
+docker compose run --rm --no-deps indexer reset --confirm   # ENTRYPOINT is `indexer` already
 docker compose up -d
 ```
 
@@ -258,8 +274,14 @@ it activates only when object-storage configuration is present.
    `{scheme}://{bucket}.{endpoint-host}`, derived virtual-hosted — correct for Hetzner;
    only override if a CDN/proxy fronts the bucket) and `IMAGE_MIRROR_INTERVAL`
    (default 30 seconds).
-   `docker-compose.yml` passes all seven through; a fresh `git pull` +
-   `docker compose up -d` on the server picks them up on the next deploy.
+
+   The deploy workflow (`.github/workflows/deploy.yml`, "Render server .env") writes all
+   seven into the server `.env` **when the five secrets are set** (a partial set fails the
+   deploy with an error naming what's missing — the same all-or-nothing contract the
+   indexer enforces at startup), and omits them otherwise. Since every deploy regenerates
+   the server `.env` from scratch, hand-edits to `/opt/indexer/.env` do not survive — the
+   GitHub secrets/variables are the only place to set these. Unsetting the five secrets
+   and redeploying disables the mirror again.
 
 **All-or-nothing semantics**: with zero of the five set, the mirror is disabled (the
 `property_images_pending` gauge is absent in Prometheus — that absence is the
@@ -282,8 +304,12 @@ docker compose exec -T postgres psql -U postgres -c \
   "UPDATE marketplace_property_image SET next_attempt_at = now() WHERE last_error IS NOT NULL;"
 ```
 
-**Verifying**: `docker compose logs -f indexer | grep -i 'image mirror'` (per-cycle
-`N uploaded, N failed, M pending` lines, never the key), or `GET <public base URL>/
+**Verifying**: `docker compose logs indexer | grep 'image mirror'` — you must see
+`image mirror supervisor started` at boot (or the explicit `image mirror disabled
+(OBJECT_STORAGE_* unset …)` line if the secrets never reached the server `.env`), then
+one `image mirrored:` /
+`image mirror failed:` line per image; the `N uploaded, N failed` summary is printed only
+by the one-shot `indexer mirror-images`. Or `GET <public base URL>/
 properties/<assetPubkey>/<i>/<sha256-hex(uri)>.jpg`, or
 `propertyAsset(assetId: …) { propertyImageThumbnails }` via the API. Failing uploads
 alert after 15 minutes (`PropertyImageMirrorFailing`) — see the RUNBOOK alert list.

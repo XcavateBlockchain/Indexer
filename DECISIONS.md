@@ -920,8 +920,10 @@ the `OBJECT_STORAGE_*` environment variables). The pieces:
   spawned, no external call is ever made, and the API keeps serving
   `propertyImageThumbnails: null`. The keys are never logged (hand-written `Debug`). An
   optional `OBJECT_STORAGE_PUBLIC_BASE_URL` overrides the public thumbnail-URL prefix,
-  which defaults to `{scheme}://{host}/{bucket}` derived from the endpoint (the shape
-  every Hetzner Object Storage bucket serves public objects from).
+  which defaults to `{scheme}://{bucket}.{host}` derived from the endpoint
+  (virtual-hosted style — the shape every Hetzner Object Storage bucket serves public
+  objects from). *(Corrected 2026-09-18: this ADR originally wrote
+  `{scheme}://{host}/{bucket}`; the code always built the virtual-hosted form.)*
 - **API — `PropertyMetadata.propertyImageThumbnails`.** `Option<Vec<String>>` in
   `image_index` order, `null` until the mirror's first upload succeeds; the schema change
   is additive (existing queries still parse and answer). One `ANY(...)` lookup per

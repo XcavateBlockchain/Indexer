@@ -431,6 +431,12 @@ async fn run_live() -> Result<()> {
                 webhooks::supervise(&pool, url, interval, shutdown).await
             }))
         } else {
+            // A first-class disabled state must still be greppable: an unset webhook URL
+            // otherwise looks identical to a healthy-but-idle loop in the logs.
+            log::info!(
+                "webhook delivery loop disabled (INIT_PROPERTY_ASSET_WEBHOOK_URL unset or \
+                 marketplace not configured); recorded events accumulate undelivered"
+            );
             None
         };
 
@@ -453,6 +459,12 @@ async fn run_live() -> Result<()> {
                 images::supervise(&mirror, &pool, interval, shutdown).await
             }))
         } else {
+            // Same argument as the webhook loop above: a disabled mirror must leave a
+            // boot-time log line, or "no uploads" is indistinguishable from "no config".
+            log::info!(
+                "image mirror disabled (OBJECT_STORAGE_* unset or marketplace not \
+                 configured); propertyImageThumbnails stays null"
+            );
             None
         };
 
