@@ -7,6 +7,7 @@
 //! indexer smoke-grpc     # connectivity/auth/filter check against the Yellowstone endpoint
 //! indexer fetch-metadata # one cycle of the off-chain property-metadata fetch (ADR-27)
 //! indexer mirror-images    # one cycle of the property image mirror (ADR-31)
+//! indexer reset --confirm  # wipe all indexed data so the next `run` re-indexes from scratch
 //! ```
 //!
 //! `snapshot` and `backfill` are subcommands precisely so they can be run by hand against a
@@ -123,6 +124,17 @@ enum Command {
     /// to the configured object storage. Idempotent; safe to re-run. Needs `DATABASE_URL`
     /// and the `OBJECT_STORAGE_*` variables (refuses to start when they are unset).
     MirrorImages,
+    /// Wipe ALL indexed data in place -- every account-state, history, webhook-outbox,
+    /// derived, and sync-bookkeeping table -- so the next `run` re-snapshots and
+    /// re-backfills every program from its deploy slot and RE-DELIVERS every webhook event.
+    /// The in-place equivalent of RUNBOOK.md's volume drop, but the `pgdata` volume (and
+    /// the SubQuery rollback schema on it, ADR-21) survives. STOP the indexer first;
+    /// migrations are left applied.
+    Reset {
+        /// Required acknowledgement that this destroys all indexed data.
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[tokio::main]
@@ -169,6 +181,7 @@ async fn main() -> Result<()> {
         Command::Snapshot { program, metrics } => run_snapshot(program, metrics).await,
         Command::FetchMetadata => run_fetch_metadata().await,
         Command::MirrorImages => run_mirror_images().await,
+        Command::Reset { confirm } => run_reset(confirm).await,
     }
 }
 
@@ -847,6 +860,39 @@ async fn run_fetch_metadata() -> Result<()> {
     println!(
         "fetch-metadata complete: {} attempted, {} fetched, {} failed (backed off)",
         summary.attempted, summary.succeeded, summary.failed
+    );
+    Ok(())
+}
+
+/// Wipe all indexed data in place (see `indexer::db::reset`). Deliberately does NOT go
+/// through `start()`: seeding `sync_state` before wiping it would be pointless, and nothing
+/// here needs a gRPC key -- migrations first (a fresh database is a valid reset target),
+/// then the truncate. The operator is told to stop the indexer first; the command refuses
+/// to run without `--confirm`.
+async fn run_reset(confirm: bool) -> Result<()> {
+    if !confirm {
+        anyhow::bail!(
+            "reset destroys ALL indexed data (the next `indexer run` re-indexes from scratch \
+             and re-delivers every webhook); re-run with --confirm to proceed"
+        );
+    }
+
+    let cfg = Config::from_env()?;
+    let database_url = cfg.require_database_url()?.to_string();
+    let pool = db::connect(&database_url)
+        .await
+        .with_context(|| format!("connecting to {}", redact_url_password(&database_url)))?;
+    db::run_migrations(&pool)
+        .await
+        .context("running migrations")?;
+
+    let tables = db::reset::all_tables();
+    let truncated = db::reset::reset_all(&pool).await?;
+    println!(
+        "reset complete: truncated {truncated} tables ({}). Schema and migrations untouched. \
+         Start the indexer (`indexer run`) to re-snapshot and re-backfill every program from \
+         its deploy slot; the webhook backlog is re-recorded and re-delivered by that rebuild.",
+        tables.join(", ")
     );
     Ok(())
 }

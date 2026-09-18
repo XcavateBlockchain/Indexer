@@ -24,6 +24,7 @@ pub mod property_images;
 pub mod property_metadata;
 pub mod realxhub;
 pub mod regions;
+pub mod reset;
 pub mod sync_state;
 pub mod upgrades;
 pub mod webhooks;

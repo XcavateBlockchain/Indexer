@@ -152,12 +152,27 @@ curl -s -X POST http://localhost:3010/graphql -H "Content-Type: application/json
 
 ### Reindex from scratch (e.g. after a devnet ledger reset, or a schema change)
 
+In place, keeping the `pgdata` volume (and the SubQuery rollback schema on it):
+
+```bash
+cd /opt/indexer
+docker compose stop indexer
+docker compose run --rm --no-deps indexer indexer reset --confirm
+docker compose up -d
+```
+
+Or by dropping the volume entirely:
+
 ```bash
 cd /opt/indexer
 docker compose down
 docker volume rm indexer_pgdata   # check the name: docker volume ls
 docker compose up -d
 ```
+
+Either way, the next `indexer run` re-snapshots and re-backfills every program from its
+deploy slot, and the wiped webhook outbox means every historical `init_property_assets`
+registration is re-recorded and re-delivered to the webhook endpoint.
 
 History is small (indexing starts at the deploy slot), so a full reindex is quick — see
 [../RUNBOOK.md "Devnet ledger reset"](../RUNBOOK.md#devnet-ledger-reset) for the full

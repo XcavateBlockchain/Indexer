@@ -1596,3 +1596,34 @@ helper).
   refactored onto it, new `investor_properties` resolver); 2 new
   `crates/api/.sqlx/` entries; this log section + ADR-34. No migration, no
   indexer change.
+
+
+## Indexer: `indexer reset --confirm` — in-place full reindex without dropping the volume — 2026-09-18
+
+**Why**: the only full-reindex path until now was the RUNBOOK volume drop (`docker volume
+rm indexer_pgdata`), which also destroys the inert SubQuery rollback schema (`app`, ADR-21)
+and requires taking the whole compose stack down. Operators reported trouble getting a
+clean full reindex that way; an in-place wipe of just the indexed tables is the smaller,
+safer operation.
+
+**What**: new `indexer reset --confirm` subcommand (`crates/indexer/src/main.rs`,
+`crates/indexer/src/db/reset.rs`). One multi-table `TRUNCATE` (no FKs exist between these
+tables, verified against `migrations/`) wipes: all 36 `StateTable::ALL` account-state
+tables, `program_instructions`, `whitelist_actions`, `webhook_events`,
+`marketplace_property_metadata`, `marketplace_property_image`, `program_upgrades`,
+`sync_state`, `backfill_cursor`. Left untouched: `_sqlx_migrations` (schema stays applied)
+and the `app` schema. Because `sync_state` is wiped, the next `indexer run` re-seeds it
+(`snapshot_slot = NULL`, `backfill_complete = FALSE`, floor = deploy slot), so the ordinary
+startup path re-snapshots and re-backfills every program automatically; wiping
+`webhook_events` means the backfill re-records every `init_property_assets` event and the
+delivery loop re-sends the whole backlog (the replay burst RUNBOOK.md already documents).
+The command refuses to run without `--confirm` and warns that the indexer must be stopped
+first (a live process re-seeds `sync_state` mid-truncate). Docs updated: RUNBOOK.md
+"Devnet ledger reset" (in-place alternative) and docs/deployment.md §5.
+
+**Verification**: `cargo fmt --check` clean; `cargo clippy --workspace --all-targets --
+-D warnings` clean; `cargo test --workspace --locked` 195 passed / 0 failed (30 api + 165
+indexer, incl. the new `reset_wipes_every_table_on_the_list`, which also proves the
+post-wipe `sync_state` re-seed path); `cargo sqlx prepare --check` clean for both crates
+(no new compile-checked queries — the truncate is a runtime statement over compile-time
+table-name constants, same pattern as `close_in_table`).

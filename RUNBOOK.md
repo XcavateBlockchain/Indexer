@@ -174,6 +174,27 @@ docker volume rm indexer_pgdata      # check the exact name: docker volume ls
 docker compose up -d
 ```
 
+**In-place alternative** (when the volume must survive — e.g. you want to keep the SubQuery
+rollback schema described below): stop the indexer, wipe every indexed table, start it again.
+
+```bash
+docker compose stop indexer
+docker compose run --rm --no-deps indexer indexer reset --confirm
+docker compose up -d
+```
+
+`indexer reset` truncates all account-state, history (`program_instructions`,
+`whitelist_actions`), webhook-outbox, derived (`marketplace_property_metadata`,
+`marketplace_property_image`), and bookkeeping (`sync_state`, `backfill_cursor`,
+`program_upgrades`) tables, but leaves the schema (`_sqlx_migrations`) applied. The next
+`indexer run` re-seeds `sync_state` with `snapshot_slot = NULL` / `backfill_complete =
+FALSE`, so the normal startup path does the full rebuild automatically — and because
+`webhook_events` was wiped, the backfill re-records every `init_property_assets` event and
+the delivery loop re-sends the whole webhook backlog (the replay burst described in
+"Webhook delivery" below — make sure the endpoint is ready for it). Never run `reset`
+against a live indexer: a running process re-seeds `sync_state` mid-truncate and can write
+rows back into freshly emptied tables.
+
 Know what the volume drop takes with it: `pgdata` also holds the inert SubQuery rollback
 schema (`app` — ADR-21), so wiping it abandons that rollback path. Deliberate since the
 ADR-26 redeploy (the old programs the SubQuery stack pointed at no longer exist), but worth

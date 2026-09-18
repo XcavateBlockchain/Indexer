@@ -2173,3 +2173,72 @@ async fn webhook_failure_backoff_and_delivery(pool: PgPool) -> sqlx::Result<()> 
     assert!(pending_events(&pool, 10).await?.is_empty());
     Ok(())
 }
+
+// ============================================================================================
+// Full in-place reset (`db::reset`): every table on the wipe list must end up empty, and the
+// wipe list must name real tables (a typo would error here instead of in production).
+// ============================================================================================
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn reset_wipes_every_table_on_the_list(pool: PgPool) -> sqlx::Result<()> {
+    use super::reset::{all_tables, reset_all};
+
+    // One row in each kind of table: bookkeeping, state, history, and the outbox.
+    init_sync_state(&pool, PID, 100).await?;
+    set_cursor(&pool, PID, "sig", 100).await?;
+    upsert_config(
+        &pool,
+        ConfigAccount {
+            pubkey: pk(1),
+            slot: 100,
+            lamports: 1_000,
+            authority: pk(2),
+            pending_authority: None,
+            bump: 254,
+        },
+    )
+    .await?;
+    insert_instruction(
+        &pool,
+        NewInstruction {
+            program_id: PID.to_vec(),
+            signature: vec![7; 64],
+            ix_index: 0,
+            inner_index: -1,
+            slot: 100,
+            block_time: bt(100),
+            ix_name: "add_admin".to_string(),
+            accounts: vec![pk(1)],
+            data: serde_json::json!({}),
+        },
+    )
+    .await?;
+    record_event(
+        &pool,
+        "property_asset_registered:AAA",
+        "property_asset_registered",
+        &serde_json::json!({}),
+        100,
+        "sig",
+        bt(100),
+    )
+    .await?;
+
+    let expected = StateTable::ALL.len() + 8;
+    assert_eq!(all_tables().len(), expected);
+    assert_eq!(reset_all(&pool).await?, expected);
+
+    for table in all_tables() {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(count, 0, "{table} still has rows after reset");
+    }
+
+    // The next start's re-seed path must work against the wiped tables.
+    init_sync_state(&pool, PID, 100).await?;
+    let state = get_sync_state(&pool, PID).await?.expect("re-seeded");
+    assert!(!state.backfill_complete);
+    assert_eq!(state.snapshot_slot, None);
+    Ok(())
+}
