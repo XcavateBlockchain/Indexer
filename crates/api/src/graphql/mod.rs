@@ -6,6 +6,9 @@ pub mod programs;
 pub mod query;
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 pub use context::GraphQLContext;
 pub use query::QueryRoot;
 

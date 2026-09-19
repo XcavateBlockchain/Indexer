@@ -1689,3 +1689,28 @@ requires keeping the block in sync with compose's `${...}` references; verified
 mechanically: `comm` of the two name lists is empty. docs/deployment.md §2 now lists all
 secrets and variables in two tables and states the rule: the server `.env` is
 workflow-rendered only, hand edits are unsupported.
+
+
+## API: end-to-end GraphQL tests prove `propertyImageThumbnails` serves the mirrored low-res images — 2026-09-19
+
+**Why**: with the image mirror unblocked in production (the 2026-09-18 deploy.yml fix), the
+remaining question was whether the compressed JPEGs are actually reachable through the API.
+The field existed (ADR-31: `PropertyMetadata.propertyImageThumbnails`, attached in
+`propertyAssets`, `listings`, and `investorProperties`) but had **no test coverage at all**
+— the api crate's 30 tests were config/guards/graphiql unit tests only.
+
+**What**: new `crates/api/src/graphql/tests.rs` — the api crate's first DB-backed GraphQL
+tests (real `juniper::execute` against a migrated, seeded throwaway database, same
+`#[sqlx::test]` harness as the indexer crate; `migrate` feature added to the api crate's
+sqlx features for it). Three tests: (1) thumbnails served through `propertyAssets` in
+`image_index` order, with the never-uploaded row excluded by SQL and the stale row (index
+past the document's current `propertyImages` length) dropped by `with_thumbnails`;
+(2) `null` — not error, not empty list — before the first upload; (3) the same field
+reached through `listings { propertyAsset { metadata { propertyImageThumbnails } } }` via
+the shared `listing_from_row!` attachment. No production code change was needed — the
+surface was already correct.
+
+**Verification**: `cargo test --workspace --locked` 198 passed / 0 failed (33 api + 165
+indexer); `fmt --check`, `clippy --workspace --all-targets -- -D warnings`,
+`build --workspace --locked`, api `sqlx prepare --check` all clean (tests use runtime SQL,
+no new `.sqlx` entries).
