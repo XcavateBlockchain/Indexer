@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*)\n        FROM sold_out_notifications\n        WHERE delivered_at IS NULL\n          AND (next_attempt_at IS NULL OR next_attempt_at <= now())\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9702b23c6072798760ddde23f49f2ff56896e7956e294083d4df46e1f46ccce3"
+}

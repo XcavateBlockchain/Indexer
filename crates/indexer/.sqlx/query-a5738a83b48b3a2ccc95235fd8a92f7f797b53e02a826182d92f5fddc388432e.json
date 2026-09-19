@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO sold_out_notifications (event_id, listing_id, asset_id, slot)\n        VALUES ($1, $2, $3, $4)\n        ON CONFLICT (event_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a5738a83b48b3a2ccc95235fd8a92f7f797b53e02a826182d92f5fddc388432e"
+}

@@ -72,11 +72,14 @@ edits on the server do not survive and are not a supported way to configure anyt
 | `OBJECT_STORAGE_ACCESS_KEY` | Optional, all-or-nothing with the other four |
 | `OBJECT_STORAGE_SECRET_KEY` | Optional, all-or-nothing with the other four |
 | `INIT_PROPERTY_ASSET_WEBHOOK_URL` | Optional: HTTPS endpoint for the ADR-28 property-asset registration webhooks. Unset = the delivery loop never spawns (events still accumulate durably in `webhook_events`). |
+| `NOTIFICATIONS_API_URL` | Optional, all-or-nothing with `NOTIFICATIONS_API_KEY`: base URL of the deployed notifications API (ADR-35) for sold-out claim push notifications. Unset = the delivery loop never spawns (events still accumulate durably in `sold_out_notifications`). |
+| `NOTIFICATIONS_API_KEY` | Optional, all-or-nothing with `NOTIFICATIONS_API_URL`: API key from the notifications API's Django admin (`/admin/` → API keys). |
 
 The three required stack secrets (`ALCHEMY_API_KEY`, `POSTGRES_PASSWORD`, `GRAFANA_PASSWORD`)
 fail the deploy fast when unset. The five `OBJECT_STORAGE_*` secrets fail the deploy when
 only *some* are set — set all five or none (the same all-or-nothing contract the indexer
-enforces at startup, caught at render time instead of as a crash-loop).
+enforces at startup, caught at render time instead of as a crash-loop). The
+`NOTIFICATIONS_API_*` pair behaves the same way — set both or neither.
 
 ### Repository variables
 

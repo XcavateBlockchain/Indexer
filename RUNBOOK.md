@@ -386,6 +386,84 @@ own.
 the rebuild re-records the historical set (see the backlog note above) — no other step
 is needed.
 
+## Sold-out claim notifications: setup and "not arriving"
+
+When a marketplace listing sells out (the on-chain `Listing.status` flips to `SoldOut`),
+every investor still holding a reservation on it gets a mobile push — title `Property
+<name> sold out`, body `Property <name> tokens must be claimed now` — through the Xcavate
+notifications API (ADR-35).
+
+**Enable it.** Set BOTH `NOTIFICATIONS_API_URL` (the base URL of your deployed
+[realXmarketNotificationsApi](https://github.com/XcavateBlockchain/realXmarketNotificationsApi)
+instance, e.g. `https://notifications.example.com`) and `NOTIFICATIONS_API_KEY` (created in
+that instance's Django admin, `/admin/` → API keys). The pair is ALL-OR-NOTHING: set exactly
+one and the indexer REFUSES TO START (`crates/indexer/src/config.rs`; the deploy workflow's
+server.env render fails the same way). In Docker, add both to `.env` (`docker-compose.yml`
+passes them through); in production they are the `NOTIFICATIONS_API_URL` /
+`NOTIFICATIONS_API_KEY` GitHub secrets. Optionally: `NOTIFICATIONS_INTERVAL` (seconds,
+default 5) — the delivery poll interval. **The loop only spawns when the pair is set AND
+`marketplace` is in `PROGRAMS`;** with the pair unset the durable `sold_out_notifications`
+rows are still recorded (below) and drain once it is configured. Read at startup — restart
+the indexer after changing it.
+
+**How it works.** Detection and delivery are separate (ADR-35, the ADR-28 pattern on an
+account-state transition): the batcher records one durable row in `sold_out_notifications`
+(migration 0018) when a `marketplace_listing` upsert APPLIES with `status = 'SOLD_OUT'` —
+`event_id` = `listing_sold_out:<base58 Listing PDA>`, so each listing is announced at most
+once even when backfill re-walks the range — committed atomically with the listing row
+itself. A background loop (5 s interval, ≤50 events per cycle) drains the work set and, per
+event, re-reads the CURRENT mirror state before sending: the property name
+(`marketplace_property_asset` via `asset_id`), the claim window (`claim_deadline` — already
+past = the event finishes with no sends, nobody is told to claim what they no longer can),
+and the current reservers (`marketplace_investor_position` rows live, uncancelled,
+`reserved_share_amount > 0` — an investor who claimed in between is skipped). Each reserver
+gets one POST to `{NOTIFICATIONS_API_URL}/api/fcm/send-notification/` with
+`Authorization: Api-Key ...`, targeting `{"chain":"solana","address":"<wallet>"}`; a 2xx is
+a send, a 404 is a permanent skip (the wallet never registered a device — a normal outcome,
+per the API's own docs), and anything else (401 = bad key, 5xx, timeout) retries the whole
+event with per-event backoff (30 s, doubling, 1 h cap). Delivery is AT LEAST ONCE per
+investor: a crash mid-fan-out retries the event and an already-notified investor may get
+one duplicate push.
+
+**Payload contract** (per reserver, `application/json`):
+
+    {
+      "chain": "solana",
+      "address": "<base58 investor wallet>",
+      "title": "Property <name> sold out",
+      "body": "Property <name> tokens must be claimed now",
+      "data": { "kind": "listing_sold_out", "listing_id": "12" }
+    }
+
+**Not arriving.** Check, in order:
+
+1. `docker compose logs indexer | grep sold-out` — "sold-out notification loop started"
+   (the loop spawned; if absent, the pair is unset or `marketplace` is not in `PROGRAMS`),
+   then the per-event `sold-out notification done:` / `sold-out notification failed for
+   ...` lines.
+2. `SELECT event_id, attempts, next_attempt_at, last_error, delivered_at FROM
+   sold_out_notifications ORDER BY created_at DESC LIMIT 20;` — the durable queue. Rows
+   with `delivered_at IS NULL` are pending; `last_error` carries the loop's own message
+   (HTTP status + the API's error body, connect error, timeout).
+3. Metrics: `notifications_delivered_total{result}` (success vs failure, per event) and
+   `notifications_pending` (work-set size after the last cycle; the series is absent while
+   the loop is off). The `SoldOutNotificationDeliveryFailing` alert fires when deliveries
+   have been failing over a 2 h window.
+4. One investor saying "nothing arrived" while the event is marked delivered: that is the
+   404 path — their device never registered the wallet with the notifications API (or
+   never reported an FCM token). The app's `GET /api/user/registration/` answers exactly
+   this (`notifications_enabled` is the field that matters).
+5. Force one specific stuck row to retry immediately (bypasses its backoff):
+   `UPDATE sold_out_notifications SET next_attempt_at = now() WHERE event_id =
+   'listing_sold_out:<PDA>';`
+
+**Backlog on a fresh index / reindex.** A fresh database (first deploy, volume wipe,
+`indexer reset`) records the historical sell-outs during the backfill/snapshot re-walk,
+and the loop then flushes the backlog — ≤50 events per 5 s cycle, in `event_id` order.
+Events whose claim window has long closed finish WITHOUT sending (the `claim_deadline`
+gate), so a rebuild does not spam ancient investors; live sell-outs with outstanding
+reservations do get announced.
+
 ## Property-image mirror (object storage)
 
 Mirrors each open asset's `propertyImages` URIs to object storage as 720×720
@@ -454,6 +532,7 @@ nothing pages anyone on its own; check Prometheus's `/alerts` page or Grafana's 
 | `ProgramUpgradeDetected` | `program_upgrades_detected_total` increased in 1h | A tracked program's bytecode was upgraded on-chain (`ADR-24`) — the running decoder was generated from the pre-upgrade IDL. First observations only (crawl re-walks can't re-fire it); the durable record is the `program_upgrades` table / `programUpgrades` GraphQL query. Follow "After a program upgrade" above. |
 | `WebhookDeliveryFailing` | `increase(webhooks_delivered_total{result="failure"}[2h]) > 0` | Outbound property-asset webhook deliveries (`ADR-28`) have been failing over a 2 h window — the endpoint behind `INIT_PROPERTY_ASSET_WEBHOOK_URL` is rejecting or unreachable. Events are NOT lost: durable `webhook_events` rows retry with per-event backoff (30 s doubling, 1 h cap); the 2 h counter window is derived from that 1 h cap (see the rule's comment in alerts.yml). Per-row reason in `last_error`. See "Property-asset registration webhooks" above. |
 | `PropertyImageMirrorFailing` | `increase(property_images_mirrored_total{result="failure"}[15m]) > 0` | Property-image mirror uploads (`ADR-31`) have been failing over a 15 m window — 3× the 30 s mirror cycle, so a single failed cycle cannot trip it; it means an image has failed at least three consecutive cycles (upstream 404s, non-image bodies, or a broken bucket credential/policy). Images are NOT lost: durable `marketplace_property_image` rows retry with per-image backoff (30 s doubling, 1 h cap), per-image `last_error` in the table, `property_images_pending` gauge for backlog. Check the `OBJECT_STORAGE_*` secrets first, then the failing URIs. Only active when the mirror is configured (disabled = no series, no false alarms). See "Property-image mirror" above. |
+| `SoldOutNotificationDeliveryFailing` | `increase(notifications_delivered_total{result="failure"}[2h]) > 0` | Sold-out claim push notifications (`ADR-35`) have been failing over a 2 h window — the notifications API behind `NOTIFICATIONS_API_URL` is rejecting (401 = bad `NOTIFICATIONS_API_KEY`) or unreachable. Events are NOT lost: durable `sold_out_notifications` rows retry with per-event backoff (30 s doubling, 1 h cap); the 2 h counter window is derived from that 1 h cap. Per-investor 404s (wallet never registered) are NOT failures and never trip this. Per-row reason in `last_error`. See "Sold-out claim notifications" above. |
 
 ## Secrets / rotation
 

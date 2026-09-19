@@ -19,6 +19,7 @@ pub mod close;
 pub mod instructions;
 pub mod marketplace;
 pub mod models;
+pub mod notifications;
 pub mod property;
 pub mod property_images;
 pub mod property_metadata;

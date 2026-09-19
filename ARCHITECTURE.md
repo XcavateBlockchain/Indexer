@@ -74,6 +74,13 @@ day-2 operations, see [RUNBOOK.md](RUNBOOK.md).
   webhook_events row in the same Postgres transaction; a background loop then POSTs the
   payload to INIT_PROPERTY_ASSET_WEBHOOK_URL with per-event backoff. Detection is in-pipeline; delivery
   never touches the pipeline.
+
+  A second outbound channel shares that split (notifications.rs, ADR-35): when a
+  marketplace listing upsert applies with status SOLD_OUT, the batcher durably records a
+  sold_out_notifications row in the same transaction; its background loop then POSTs one
+  push notification per outstanding reserver to the Xcavate notifications API
+  (NOTIFICATIONS_API_URL + NOTIFICATIONS_API_KEY), reading the property name, the claim
+  deadline and the reserver set fresh from the mirror at send time.
 ```
 
 Both Rust binaries (`indexer`, `api`) expose Prometheus metrics on their own `/metrics`

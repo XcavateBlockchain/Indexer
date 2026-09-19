@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT event_id, listing_id\n        FROM sold_out_notifications\n        WHERE delivered_at IS NULL\n          AND (next_attempt_at IS NULL OR next_attempt_at <= now())\n        ORDER BY event_id ASC\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "listing_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d13651aa2c9a66bc2535170917d9a0ba5a31f8679b70ff993a5a7546c5f07878"
+}

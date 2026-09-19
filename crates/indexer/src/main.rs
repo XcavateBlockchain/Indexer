@@ -34,6 +34,7 @@ use indexer::db;
 use indexer::images;
 use indexer::metadata;
 use indexer::metrics::PrometheusMetrics;
+use indexer::notifications;
 use indexer::pipeline::{self, PipeDeps};
 use indexer::programs::ProgramSpec;
 use indexer::sync_frontier::SyncFrontier;
@@ -440,6 +441,35 @@ async fn run_live() -> Result<()> {
             None
         };
 
+    // The sold-out claim notification loop (ADR-35): only when `NOTIFICATIONS_API_URL` +
+    // `NOTIFICATIONS_API_KEY` are set AND the marketplace program is configured (the only
+    // source of sold-out events). Its work set is the durable `sold_out_notifications`
+    // table, so on startup it drains any backlog (e.g. events recorded while the pair was
+    // not yet configured) and then delivers each new sell-out within one interval. With
+    // the pair unset the loop is never spawned and no external call is ever made.
+    let notifications_delivery = if cfg.notifications_api.is_some()
+        && cfg.programs.iter().any(|p| p.name == "marketplace")
+    {
+        let pool = started.pool.clone();
+        let api = cfg
+            .notifications_api
+            .clone()
+            .expect("guarded by the is_some() check above");
+        let interval = cfg.notifications_interval;
+        let shutdown = shutdown.clone();
+        Some(tokio::spawn(async move {
+            notifications::supervise(&pool, api, interval, shutdown).await
+        }))
+    } else {
+        // A first-class disabled state must still be greppable: an unset pair otherwise
+        // looks identical to a healthy-but-idle loop in the logs.
+        log::info!(
+            "sold-out notification loop disabled (NOTIFICATIONS_API_URL/NOTIFICATIONS_API_KEY \
+             unset or marketplace not configured); recorded events accumulate undelivered"
+        );
+        None
+    };
+
     // The off-chain property-image mirror (ADR-31): its own loop with its own backoff, so a
     // flaky upstream image host never delays the gRPC stream and vice versa. Its work set
     // is the durable `marketplace_property_image` table; with no `OBJECT_STORAGE_*`
@@ -551,6 +581,9 @@ async fn run_live() -> Result<()> {
         fetcher.await.ok();
     }
     if let Some(delivery) = webhook_delivery {
+        delivery.await.ok();
+    }
+    if let Some(delivery) = notifications_delivery {
         delivery.await.ok();
     }
     if let Some(mirror) = image_mirror {

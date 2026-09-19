@@ -37,8 +37,11 @@ use sqlx::{PgPool, Row};
 use std::str::FromStr;
 use tokio_util::sync::CancellationToken;
 
-use crate::batcher::{self, Batcher};
+use crate::batcher::{self, Batcher, WriteOp};
 use crate::block_time::BlockTimeResolver;
+use crate::db::marketplace::{
+    DocumentStatus, LawyerAssignmentCols, ListingRow, ListingStatus, MarketplaceAccountRow,
+};
 use crate::pipeline;
 use crate::processors::{AccountDeletionProcessor, AccountProcessor, InstructionProcessor};
 use crate::test_fixtures::{decoded, instruction_metadata, sig_from, tx_metadata};
@@ -770,4 +773,192 @@ async fn an_observed_upgrade_lands_in_program_upgrades_and_replays_are_no_ops(po
         sig_from(21).to_string(),
         "the recorded signature is the upgrade transaction's"
     );
+}
+
+// --- sold-out claim notification recording (ADR-35) --------------------------------------------
+
+/// A synthetic marketplace `Listing` row (the real devnet fixtures above are all whitelist
+/// accounts; the notification hook keys off the ROW the marketplace mapper built, so a
+/// hand-built row is the right level here -- the borsh fidelity of that mapping is covered
+/// by the marketplace fixtures in `mapping::sibling_tests`).
+fn listing_account(
+    pubkey: Pubkey,
+    slot: i64,
+    listing_id: i64,
+    status: ListingStatus,
+) -> MarketplaceAccountRow {
+    MarketplaceAccountRow::Listing(Box::new(ListingRow {
+        pubkey: pubkey.to_bytes().to_vec(),
+        slot,
+        lamports: 1_000,
+        listing_id,
+        developer: Pubkey::new_from_array([30; 32]).to_bytes().to_vec(),
+        asset_id: listing_id, // asset_id == listing_id in the current on-chain source
+        share_price: 1_000_000,
+        listed_share_amount: 100,
+        sold_share_amount: if status == ListingStatus::SoldOut {
+            100
+        } else {
+            0
+        },
+        reserved_share_amount: 0,
+        tax_paid_by_developer: false,
+        tax_bps: 0,
+        marketplace_fee_bps: 0,
+        investor_fee_bps: 0,
+        max_ownership_bps: 10_000,
+        listing_expiry: 0,
+        claiming_time: 0,
+        claim_deadline: 1_800_000_000,
+        legal_process_time: 0,
+        lawyer_voting_time: 0,
+        min_voting_quorum_bps: 0,
+        position_count: 0,
+        legal_deadline: 0,
+        deposit: 0,
+        developer_lawyer: LawyerAssignmentCols {
+            lawyer: Pubkey::new_from_array([31; 32]).to_bytes().to_vec(),
+            costs: 0,
+            doc_status: DocumentStatus::Pending,
+            documents_hash: vec![0; 32],
+        },
+        spv_lawyer: LawyerAssignmentCols {
+            lawyer: Pubkey::new_from_array([32; 32]).to_bytes().to_vec(),
+            costs: 0,
+            doc_status: DocumentStatus::Pending,
+            documents_hash: vec![0; 32],
+        },
+        second_attempt: false,
+        developer_engaged: false,
+        spv_costs_due: 0,
+        spv_costs_payee: Pubkey::new_from_array([33; 32]).to_bytes().to_vec(),
+        collected_fee_quote: 0,
+        collected: serde_json::json!([]),
+        spv_election_expiry: 0,
+        spv_election_candidate_count: 0,
+        spv_election_round: 0,
+        status,
+        bump: 255,
+    }))
+}
+
+async fn notification_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM sold_out_notifications")
+        .fetch_one(pool)
+        .await
+        .expect("count sold_out_notifications")
+}
+
+/// The batcher hook (ADR-35): a slot-guarded listing upsert that APPLIES with status
+/// SOLD_OUT records exactly one durable notification event, however often the same state is
+/// re-delivered; other statuses record nothing.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_sold_out_listing_upsert_records_the_event_once(pool: PgPool) {
+    let listing_pk = Pubkey::new_from_array([60; 32]);
+
+    with_batcher(&pool, |batcher| async move {
+        batcher
+            .push(WriteOp::UpsertMarketplaceAccount(listing_account(
+                listing_pk,
+                100,
+                20,
+                ListingStatus::SoldOut,
+            )))
+            .await
+            .expect("push sold-out listing");
+    })
+    .await;
+
+    let rows =
+        sqlx::query("SELECT event_id, listing_id, asset_id, slot FROM sold_out_notifications")
+            .fetch_all(&pool)
+            .await
+            .expect("sold_out_notifications rows");
+    assert_eq!(rows.len(), 1, "one event for the sell-out");
+    assert_eq!(
+        rows[0].get::<String, _>("event_id"),
+        format!("listing_sold_out:{listing_pk}"),
+        "the event id keys on the Listing PDA"
+    );
+    assert_eq!(rows[0].get::<i64, _>("listing_id"), 20);
+    assert_eq!(rows[0].get::<i64, _>("asset_id"), 20);
+    assert_eq!(rows[0].get::<i64, _>("slot"), 100);
+
+    // A re-walk (backfill, reconciliation, the snapshot/live overlap) re-delivers the same
+    // SOLD_OUT state at a newer slot: the upsert applies but the event must not duplicate.
+    with_batcher(&pool, |batcher| async move {
+        batcher
+            .push(WriteOp::UpsertMarketplaceAccount(listing_account(
+                listing_pk,
+                101,
+                20,
+                ListingStatus::SoldOut,
+            )))
+            .await
+            .expect("push re-walked sold-out listing");
+    })
+    .await;
+    assert_eq!(notification_count(&pool).await, 1, "still one event");
+
+    // A listing that is merely LISTED records nothing.
+    with_batcher(&pool, |batcher| async move {
+        batcher
+            .push(WriteOp::UpsertMarketplaceAccount(listing_account(
+                Pubkey::new_from_array([61; 32]),
+                100,
+                21,
+                ListingStatus::Listed,
+            )))
+            .await
+            .expect("push listed listing");
+    })
+    .await;
+    assert_eq!(notification_count(&pool).await, 1, "LISTED records nothing");
+}
+
+/// The same hook must NOT record when the slot guard rejects the upsert: a stale SOLD_OUT
+/// update (older than the stored row) is not the transition and must not synthesize one.
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_stale_sold_out_upsert_records_nothing(pool: PgPool) {
+    let listing_pk = Pubkey::new_from_array([62; 32]);
+
+    // The stored row is LISTED at slot 200.
+    with_batcher(&pool, |batcher| async move {
+        batcher
+            .push(WriteOp::UpsertMarketplaceAccount(listing_account(
+                listing_pk,
+                200,
+                22,
+                ListingStatus::Listed,
+            )))
+            .await
+            .expect("push fresh listed listing");
+    })
+    .await;
+
+    // A stale SOLD_OUT update arrives (a re-org'd or replayed older account state).
+    with_batcher(&pool, |batcher| async move {
+        batcher
+            .push(WriteOp::UpsertMarketplaceAccount(listing_account(
+                listing_pk,
+                100,
+                22,
+                ListingStatus::SoldOut,
+            )))
+            .await
+            .expect("push stale sold-out listing");
+    })
+    .await;
+
+    assert_eq!(
+        notification_count(&pool).await,
+        0,
+        "a slot-guard-rejected upsert records no event"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM marketplace_listing WHERE listing_id = 22")
+            .fetch_one(&pool)
+            .await
+            .expect("the stored listing row");
+    assert_eq!(status, "LISTED", "the slot guard kept the fresher row");
 }

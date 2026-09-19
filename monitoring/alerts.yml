@@ -199,6 +199,30 @@ groups:
             the endpoint and the per-row last_error; see RUNBOOK.md "Property-asset
             registration webhooks".
 
+      # SoldOutNotificationDeliveryFailing -- counter-based, for the same reason as
+      # WebhookDeliveryFailing: the ADR-35 per-event backoff (30 s doubling, 1 h cap) makes
+      # the `notifications_pending` gauge spiky (a failing event is only inside the work
+      # set for the <=5 s cycle that retries it), while the failure COUNTER bumps at least
+      # once inside any 2 h window for as long as the notifications API (or the API key)
+      # stays bad. Per-investor 404s ("no device holds that wallet") are NOT failures --
+      # they are a normal outcome and only log lines, never this counter.
+      - alert: SoldOutNotificationDeliveryFailing
+        expr: increase(notifications_delivered_total{result="failure"}[2h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sold-out claim push notification deliveries have been failing"
+          description: >-
+            notifications_delivered_total{result="failure"} increased in the last 2
+            hours: the indexer's sold-out notification loop (ADR-35) has been POSTing
+            per-reserver claim pushes to the Xcavate notifications API
+            (NOTIFICATIONS_API_URL) and it is failing (401 = bad NOTIFICATIONS_API_KEY,
+            5xx, connect error, or timeout). Events are NOT lost -- they are durable rows
+            in sold_out_notifications that retry with exponential backoff (30 s doubling,
+            1 h cap) until the API answers 2xx. Check the API, the key, and the per-row
+            last_error; see RUNBOOK.md "Sold-out claim notifications".
+
       # PropertyImageMirrorFailing -- counter-based, for the same reason as
       # WebhookDeliveryFailing.
       #
