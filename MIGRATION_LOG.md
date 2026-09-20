@@ -1714,3 +1714,47 @@ surface was already correct.
 indexer); `fmt --check`, `clippy --workspace --all-targets -- -D warnings`,
 `build --workspace --locked`, api `sqlx prepare --check` all clean (tests use runtime SQL,
 no new `.sqlx` entries).
+
+## Indexer: sold-out listings push claim notifications to outstanding reservers (ADR-35) — 2026-09-20
+
+**Why**: when a marketplace listing sells out, investors who RESERVED shares have a bounded
+window (`claim_deadline`) to claim them before the crank releases the reservations — but
+nothing told them the window had opened. The mobile app receives push notifications through
+the Xcavate notifications API (`realXmarketNotificationsApi`, Django + FCM); the indexer is
+the only component that knows both the sold-out moment and the reserver set. The trigger is
+an account-state transition (`Listing.status` → `SoldOut`), not an instruction, so the
+ADR-28 webhook machinery could not be reused as-is: the mappers are pure and the account
+pipe has no event mechanism, and delivery fans out per investor wallet instead of POSTing
+one stored payload to one operator URL.
+
+**What**: the ADR-28 two-tier pattern adapted to the account pipe. *Detection*: the
+batcher's `commit_batch` records one durable `sold_out_notifications` row (new migration
+0018, an event table like `webhook_events` — no slot guard, no `StateTable` entry) in the
+same transaction whenever a `marketplace_listing` upsert applies with `status = 'SOLD_OUT'`
+(`event_id = listing_sold_out:<base58 Listing PDA>`, `ON CONFLICT DO NOTHING` — at-most-once
+under backfill re-walks; slot-guard-rejected stale upserts record nothing). *Delivery*: a
+new `notifications.rs` background loop (spawned only when `NOTIFICATIONS_API_URL` +
+`NOTIFICATIONS_API_KEY` are both set — all-or-nothing like `OBJECT_STORAGE_*` — and
+`marketplace ∈ PROGRAMS`) re-reads the mirror at send time (property name via `asset_id`,
+`claim_deadline` gate, current reservers from `marketplace_investor_position` live and
+`reserved_share_amount > 0`) and POSTs one push per reserver to
+`{url}/api/fcm/send-notification/` (`Authorization: Api-Key ...`, body `Property <name>
+tokens must be claimed now`, `data.kind = listing_sold_out`); 404 = investor never
+registered (permanent skip, a normal outcome), anything else retries the event with the
+30 s → 1 h backoff. Metrics `notifications_delivered_total{result}` +
+`notifications_pending`, alert `SoldOutNotificationDeliveryFailing`, RUNBOOK section
+"Sold-out claim notifications", deployment wiring (compose passthrough + deploy.yml
+render-time all-or-nothing check + docs/deployment.md secrets rows), `indexer reset` wipes
+the table with the other outboxes.
+
+**Verification**: new tests — db layer (record idempotency, backoff/delivery lifecycle,
+context join incl. missing-asset transient, reserver-set exclusion rules) and batcher seam
+(a SOLD_OUT upsert records exactly one event, LISTED none, stale SOLD_OUT none) — plus pure
+unit tests (send-URL join with the load-bearing trailing slash, message clamping inside the
+API's 150/500 limits, payload shape with string-only `data`, config pair validation and
+Debug redaction). `cargo test --workspace --locked`, `fmt --check`,
+`clippy --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build
+--workspace --locked`, indexer `sqlx prepare --check`, `scripts/lint-migrations.sh`,
+`scripts/agent/verify-devnet.sh` all green (numbers in the PR). The loop is INERT until the
+`NOTIFICATIONS_API_URL` / `NOTIFICATIONS_API_KEY` GitHub secrets are set; events recorded
+before then drain on the first deploy that has them.

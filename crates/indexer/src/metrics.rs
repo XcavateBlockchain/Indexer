@@ -78,6 +78,17 @@ pub const WEBHOOKS_DELIVERED_TOTAL: &str = "webhooks_delivered_total";
 /// persistently non-zero value means the loop is losing to the endpoint (or the network) --
 /// the per-event reason is `last_error` in `webhook_events`.
 pub const WEBHOOKS_PENDING: &str = "webhooks_pending";
+/// Counter: sold-out claim notification deliveries by outcome (ADR-35), labelled `result` =
+/// `success` / `failure` (per EVENT, not per investor push -- the per-investor detail is in
+/// the loop's log lines and the row's `last_error`). A rising `failure` series (with
+/// `notifications_pending` climbing) is the notifications-API-or-key problem surfacing
+/// early; the durable per-event state is `last_error` in `sold_out_notifications`.
+pub const NOTIFICATIONS_DELIVERED_TOTAL: &str = "notifications_delivered_total";
+/// Gauge: the sold-out notification work-set size after the last delivery cycle (ADR-35):
+/// events recorded but not yet delivered. 0 = every recorded sell-out has been announced;
+/// a persistently non-zero value means the loop is losing to the notifications API (or the
+/// network) -- the per-event reason is `last_error` in `sold_out_notifications`.
+pub const NOTIFICATIONS_PENDING: &str = "notifications_pending";
 /// Counter: property image mirror attempts by outcome (ADR-31), labelled `result` =
 /// `success` / `failure`. A rising `failure` series is the source-host or object-storage
 /// problem surfacing early; the durable per-image state is `last_error` in
@@ -174,6 +185,14 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         "Webhook delivery work-set size after the last cycle: events recorded but not yet delivered"
     );
     metrics::describe_counter!(
+        NOTIFICATIONS_DELIVERED_TOTAL,
+        "Sold-out claim notification deliveries by outcome (ADR-35)"
+    );
+    metrics::describe_gauge!(
+        NOTIFICATIONS_PENDING,
+        "Sold-out notification work-set size after the last cycle: events recorded but not yet delivered"
+    );
+    metrics::describe_counter!(
         PROPERTY_IMAGES_MIRRORED_TOTAL,
         "Property image mirror attempts by outcome (ADR-31): one increment per work-set image per cycle, success or failure. The failure series feeds the PropertyImageMirrorFailing alert."
     );
@@ -198,6 +217,7 @@ pub fn install(addr: SocketAddr) -> Result<()> {
     for result in ["success", "failure"] {
         metrics::counter!(PROPERTY_METADATA_FETCH_TOTAL, "result" => result).increment(0);
         metrics::counter!(WEBHOOKS_DELIVERED_TOTAL, "result" => result).increment(0);
+        metrics::counter!(NOTIFICATIONS_DELIVERED_TOTAL, "result" => result).increment(0);
         metrics::counter!(PROPERTY_IMAGES_MIRRORED_TOTAL, "result" => result).increment(0);
     }
     // WEBHOOKS_PENDING is deliberately not pre-registered (same convention as the slot gauges
@@ -210,6 +230,9 @@ pub fn install(addr: SocketAddr) -> Result<()> {
     // PROPERTY_IMAGES_PENDING is deliberately not pre-registered too: an absent series reads
     // as "this process has not run a mirror cycle yet" (exactly the case when OBJECT_STORAGE_*
     // is unset and the mirror is disabled).
+    // NOTIFICATIONS_PENDING likewise: an absent series reads as "this process has not run a
+    // delivery cycle yet" (exactly the case when NOTIFICATIONS_API_URL/KEY are unset and the
+    // sold-out loop is disabled).
     for source in ["stream", "cache", "rpc", "rpc_fallback"] {
         metrics::counter!(BLOCK_TIME_LOOKUPS_TOTAL, "source" => source).increment(0);
     }
@@ -343,6 +366,18 @@ pub fn inc_webhook_delivery(result: &'static str) {
 /// The webhook delivery work-set size after one delivery cycle (ADR-28).
 pub fn set_webhooks_pending(n: i64) {
     metrics::gauge!(WEBHOOKS_PENDING).set(n as f64);
+}
+
+/// One sold-out claim notification event's outcome (ADR-35). `result` is `success` or
+/// `failure` (low-cardinality label -- never a URL, an event id, an investor address, or an
+/// error message; the per-event reason is `last_error` in `sold_out_notifications`).
+pub fn inc_notification_delivery(result: &'static str) {
+    metrics::counter!(NOTIFICATIONS_DELIVERED_TOTAL, "result" => result).increment(1);
+}
+
+/// The sold-out notification work-set size after one delivery cycle (ADR-35).
+pub fn set_notifications_pending(n: i64) {
+    metrics::gauge!(NOTIFICATIONS_PENDING).set(n as f64);
 }
 
 /// One property image mirror attempt (ADR-31). `result` is `success` or `failure`

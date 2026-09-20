@@ -1091,3 +1091,78 @@ there was previously inline code. API-only and additive: no migration, no
 indexer change, the new resolver is the only new surface;
 `cargo sqlx prepare --check` is clean with exactly the two new entries and no
 delta elsewhere.
+
+## ADR-35: A listing selling out pushes a claim notification to every outstanding reserver, through a second durable, retrying queue
+
+**Context.** When a marketplace `Listing` sells out (`ListingStatus::SoldOut`), the
+protocol gives investors who RESERVED shares a bounded window to claim them
+(`claiming_time`/`claim_deadline` on the listing; the crank releases stale reservations
+after it). The mobile app can only notify those users if the indexer tells it who they
+are, in time. The notification transport is the Xcavate notifications API
+(`realXmarketNotificationsApi`: Django + FCM; a backend POSTs
+`/api/fcm/send-notification/` with an `Api-Key`, targeting a registered Solana wallet
+address; one call per wallet). Two structural differences from ADR-28's webhook rule out
+simply reusing it: the trigger is an ACCOUNT-STATE TRANSITION (`status` flipping to
+`SOLD_OUT` inside the buying/claiming transaction), not an instruction the mapper sees —
+the IDL's `sold_out` event flags are off-limits (ADR-10), the mappers are pure (no DB),
+and the account pipe has no event mechanism, so old and new state meet only in the
+batcher's SQL write; and delivery FANS OUT over the current reserver set (one POST per
+investor wallet), where the ADR-28 loop POSTs one stored payload verbatim to one
+operator URL with no auth.
+
+**Decision.** Same two tiers as ADR-28, adapted. *Detection* (in the pipeline): the
+batcher's `commit_batch` treats a `marketplace_listing` upsert that APPLIED (slot guard
+passed, `rows_affected > 0`) with `status = SoldOut` as the sold-out transition — this
+covers every path that can produce it (`buy_property_shares`, `claim_shares`, crank
+instructions, snapshot, backfill, live) with zero mapper changes — and records one
+durable row in `sold_out_notifications` (migration 0018) in the SAME transaction, via
+`INSERT ... ON CONFLICT (event_id) DO NOTHING` with `event_id =
+listing_sold_out:<base58 Listing PDA>`: one Listing PDA is one primary sale (resales go
+through `ShareListing`), so each listing is announced at most once, ever, and re-walks
+are no-ops. The table is an event table, not an account-state mirror (no slot guard, no
+soft close, outside the `StateTable` roster — the 0014 exclusion); it is one row per
+LISTING, not per investor, because the reserver set changes between record and delivery
+(claims, un-reserves, crank releases) — the fan-out reads it fresh at send time. The row
+carries `listing_id`/`asset_id`/`slot` as provenance only. *Delivery* (out of the
+pipeline): a background supervisor (`crates/indexer/src/notifications.rs`, spawned by
+`run` next to the webhook loop; `NOTIFICATIONS_INTERVAL`, default 5 s; spawned only when
+`NOTIFICATIONS_API_URL` **and** `NOTIFICATIONS_API_KEY` are both set — a partial pair is
+a startup error, the OBJECT_STORAGE_* all-or-nothing contract — **and** `marketplace` ∈
+`PROGRAMS`) drains the work set (undelivered rows whose backoff has elapsed, ≤50 per
+cycle). Per event it re-reads the mirror: listing context (property `name` via
+`asset_id`, `claim_deadline`, `status`) and current reservers (`marketplace_investor_position`
+rows live, uncancelled, `reserved_share_amount > 0`); missing context rows are transient
+(retried), a `claim_deadline` in the past or an empty reserver set finishes the event
+with NO sends, and otherwise every reserver gets one POST —
+`{"chain":"solana","address":"<base58>","title":"Property <name> sold out","body":"Property
+<name> tokens must be claimed now","data":{"kind":"listing_sold_out","listing_id":"<n>"}}`
+(the API's trailing slash, ≤150/≤500-char limits, and string-only `data` are all
+honored; the name is clamped to fit). Per investor: 2xx = sent; 404 = permanent skip
+("no device holds that address" is a normal outcome per the API's docs — the investor
+never registered); anything else (401 = bad key, 5xx, network) aborts the fan-out and
+retries the whole event with the ADR-27/28 backoff shape (30 s, doubling, 1 h cap).
+Metrics: `notifications_delivered_total{result=success|failure}` (per EVENT, both
+labels pre-registered at zero) and the `notifications_pending` gauge (absent while the
+loop is off); the alert is `SoldOutNotificationDeliveryFailing`
+(`increase(...{result="failure"}[2h]) > 0`, counter-based for the same spiky-gauge
+reason as `WebhookDeliveryFailing`). Deployment threads the pair from GitHub secrets
+through deploy.yml's server.env render (with the same all-or-nothing render-time check)
+and docker-compose's `indexer.environment`; `indexer reset` wipes the table with the
+other outboxes, so a reindex re-announces sell-outs whose reservers still have not
+claimed.
+
+**Consequences.** The contract mirrors ADR-28's: *at-most-once recording* (the PDA-keyed
+`ON CONFLICT`; a slot-guard-rejected stale upsert records nothing) and *at-least-once
+delivery* (a crash or transient failure mid-fan-out retries the event, so an
+already-notified investor may get one duplicate push — accepted, as ADR-28 accepted it).
+Send-time revalidation makes even a spurious event harmless (a re-orged listing reads
+non-SOLD_OUT or out of window and finishes unsent), and self-correcting (reservers who
+claimed between record and delivery are never told to claim). Unregistered investors
+are invisible to the channel by construction (404-skip) — the durable `last_error` and
+the log lines are the audit trail. A fresh index with the pair configured records the
+historical sell-outs during the backfill and then flushes them at ≤50 events per cycle
+— a one-time backlog, like ADR-28's; with the pair unset the events accumulate
+undelivered and drain when it is configured. The cost is a third outbound network
+surface (same reqwest client, no SSRF guard needed — the URL is operator-config, not
+on-chain data) and one more table outside the close machinery; mainnet promotion
+(agentic-maintenance §8) inherits the design unchanged.

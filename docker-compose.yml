@@ -57,6 +57,15 @@ services:
       # `webhook_events` rows are still recorded). See RUNBOOK.md "Property-asset
       # registration webhooks".
       INIT_PROPERTY_ASSET_WEBHOOK_URL: ${INIT_PROPERTY_ASSET_WEBHOOK_URL:-}
+      # ADR-35 sold-out claim push notifications via the Xcavate notifications API,
+      # all-or-nothing (exactly one set = the indexer refuses to start --
+      # crates/indexer/src/config.rs): NOTIFICATIONS_API_URL is the base URL of a deployed
+      # realXmarketNotificationsApi instance, NOTIFICATIONS_API_KEY comes from its Django
+      # admin. Both unset = the delivery loop is not spawned and no external call is made;
+      # the durable `sold_out_notifications` rows are still recorded and drain once the
+      # pair is configured. See RUNBOOK.md "Sold-out claim notifications".
+      NOTIFICATIONS_API_URL: ${NOTIFICATIONS_API_URL:-}
+      NOTIFICATIONS_API_KEY: ${NOTIFICATIONS_API_KEY:-}
       # ADR-31 property-image mirror: five all-or-nothing variables (all unset = the mirror
       # is never spawned; exactly one or some set makes the indexer refuse to start --
       # crates/indexer/src/config.rs). OBJECT_STORAGE_PUBLIC_BASE_URL and IMAGE_MIRROR_INTERVAL
@@ -70,8 +79,9 @@ services:
       OBJECT_STORAGE_PUBLIC_BASE_URL: ${OBJECT_STORAGE_PUBLIC_BASE_URL:-}
       IMAGE_MIRROR_INTERVAL: ${IMAGE_MIRROR_INTERVAL:-}
       # ALCHEMY_GRPC_URL / ALCHEMY_RPC_URL / RPC_FALLBACK_URL / PROGRAMS / METRICS_ADDR /
-      # RECONCILE_INTERVAL / METADATA_FETCH_INTERVAL / WEBHOOK_INTERVAL all have working
-      # defaults baked into the binary (crates/indexer/src/config.rs; the default
+      # RECONCILE_INTERVAL / METADATA_FETCH_INTERVAL / WEBHOOK_INTERVAL /
+      # NOTIFICATIONS_INTERVAL all have working defaults baked into the binary
+      # (crates/indexer/src/config.rs; the default
       # PROGRAMS set is all five programs) -- only set them here (or in .env, wired
       # through above) if overriding one for a specific deployment.
     healthcheck:

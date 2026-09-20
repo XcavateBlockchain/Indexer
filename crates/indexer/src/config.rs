@@ -42,6 +42,13 @@ pub const DEFAULT_METADATA_FETCH_INTERVAL_SECS: u64 = 30;
 /// backed off, so the interval costs nothing while nothing is pending.
 pub const DEFAULT_WEBHOOK_INTERVAL_SECS: u64 = 5;
 
+/// How often the sold-out claim notification loop drains its work set (see
+/// [`crate::notifications`], ADR-35). 5 seconds: a reserver should get the claim push
+/// within seconds of the sell-out; the work-set query is one indexed Postgres read and the
+/// loop is bounded and per-event backed off, so the interval costs nothing while nothing
+/// is pending.
+pub const DEFAULT_NOTIFICATIONS_INTERVAL_SECS: u64 = 5;
+
 /// How often the property image mirror polls its work set (see [`crate::images`], ADR-31).
 /// 30 seconds: like the metadata fetcher the work-set query is one indexed Postgres read; a
 /// thumbnail showing up within a minute of the metadata fetch is plenty, and the downloads are
@@ -80,6 +87,14 @@ pub struct Config {
     pub webhook_url: Option<String>,
     /// `WEBHOOK_INTERVAL` (seconds), default [`DEFAULT_WEBHOOK_INTERVAL_SECS`].
     pub webhook_interval: Duration,
+    /// The Xcavate notifications API target for sold-out claim push notifications
+    /// (ADR-35): `NOTIFICATIONS_API_URL` + `NOTIFICATIONS_API_KEY`, all-or-nothing (a
+    /// partial pair is a hard error, see [`notifications_api_from_parts`]). `None`
+    /// disables the delivery loop -- the durable `sold_out_notifications` rows are still
+    /// recorded and drain once the pair is configured. Never logged with its key.
+    pub notifications_api: Option<NotificationsApiConfig>,
+    /// `NOTIFICATIONS_INTERVAL` (seconds), default [`DEFAULT_NOTIFICATIONS_INTERVAL_SECS`].
+    pub notifications_interval: Duration,
     /// Object storage for the property image mirror (ADR-31). `None` (no `OBJECT_STORAGE_*`
     /// variables set) disables the mirror entirely -- the supervisor is never spawned and no
     /// external call is ever made. Partially-set `OBJECT_STORAGE_*` is a hard error (see
@@ -128,6 +143,32 @@ impl fmt::Debug for ObjectStorage {
             .field("access_key", &"<set>")
             .field("secret_key", &"<set>")
             .field("public_base_url", &self.public_base_url)
+            .finish()
+    }
+}
+
+/// The Xcavate notifications API target for sold-out claim push notifications (ADR-35):
+/// the base URL of a deployed `realXmarketNotificationsApi` instance and the API key its
+/// Django admin issues for server-to-server sends (`Authorization: Api-Key <key>` on
+/// `POST <url>/api/fcm/send-notification/`).
+#[derive(Clone)]
+pub struct NotificationsApiConfig {
+    /// `NOTIFICATIONS_API_URL` -- e.g. `https://notifications.<your-domain>`; the loop
+    /// appends the (slash-terminated) send path. Shown nowhere with credentials: the key
+    /// travels in the `Authorization` header, never in this URL.
+    pub url: String,
+    /// `NOTIFICATIONS_API_KEY`. Never logged (`Debug` is hand-written below).
+    pub api_key: String,
+}
+
+/// Hand-written so the API key never reaches a log line via `{:?}` (the same treatment as
+/// [`ObjectStorage`]); the URL is shown as `<set>` like `webhook_url` -- an operator could
+/// still embed basic-auth credentials in it.
+impl fmt::Debug for NotificationsApiConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NotificationsApiConfig")
+            .field("url", &"<set>")
+            .field("api_key", &"<set>")
             .finish()
     }
 }
@@ -226,6 +267,26 @@ impl Config {
             _ => DEFAULT_WEBHOOK_INTERVAL_SECS,
         };
 
+        // Sold-out claim notifications (ADR-35): URL + key are all-or-nothing -- a
+        // half-configured loop is a misconfiguration, not a degraded mode.
+        let notifications_api = notifications_api_from_env()?;
+
+        let notifications_interval_secs = match std::env::var("NOTIFICATIONS_INTERVAL") {
+            Ok(s) if !s.trim().is_empty() => s
+                .parse::<u64>()
+                .with_context(|| format!("NOTIFICATIONS_INTERVAL is not a u64 (seconds): {s}"))
+                .and_then(|v| {
+                    if v == 0 {
+                        Err(anyhow!(
+                            "NOTIFICATIONS_INTERVAL must be greater than 0 seconds"
+                        ))
+                    } else {
+                        Ok(v)
+                    }
+                })?,
+            _ => DEFAULT_NOTIFICATIONS_INTERVAL_SECS,
+        };
+
         // Object storage (ADR-31) is all-or-nothing: any one of the five required
         // `OBJECT_STORAGE_*` variables set means all must be present -- a half-configured
         // mirror is a misconfiguration, not a degraded mode.
@@ -263,6 +324,8 @@ impl Config {
             metadata_fetch_interval: Duration::from_secs(metadata_fetch_interval_secs),
             webhook_url,
             webhook_interval: Duration::from_secs(webhook_interval_secs),
+            notifications_api,
+            notifications_interval: Duration::from_secs(notifications_interval_secs),
             object_storage,
             image_mirror_interval: Duration::from_secs(image_mirror_interval_secs),
         })
@@ -415,6 +478,9 @@ impl fmt::Debug for Config {
             // credentials, it is never logged -- only whether it is set.
             .field("webhook_url", &self.webhook_url.as_ref().map(|_| "<set>"))
             .field("webhook_interval", &self.webhook_interval)
+            // NotificationsApiConfig's Debug is hand-written to redact its key (and URL).
+            .field("notifications_api", &self.notifications_api.as_ref())
+            .field("notifications_interval", &self.notifications_interval)
             // ObjectStorage's Debug is hand-written to redact its keys.
             .field("object_storage", &self.object_storage.as_ref())
             .field("image_mirror_interval", &self.image_mirror_interval)
@@ -456,6 +522,40 @@ pub fn redact_key(s: &str) -> String {
     out
 }
 
+/// The `NOTIFICATIONS_API_URL` / `NOTIFICATIONS_API_KEY` pair (ADR-35), all-or-nothing:
+/// `None` (neither set) disables the sold-out claim notification loop entirely; exactly
+/// one set is a hard error -- a half-configured loop is a misconfiguration, not a degraded
+/// mode (the same contract as [`object_storage_from_env`]).
+fn notifications_api_from_env() -> Result<Option<NotificationsApiConfig>> {
+    let non_empty = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    notifications_api_from_parts(
+        non_empty("NOTIFICATIONS_API_URL"),
+        non_empty("NOTIFICATIONS_API_KEY"),
+    )
+}
+
+/// The pure core of [`notifications_api_from_env`], separated so the pair contract is
+/// testable without touching process-global env vars.
+fn notifications_api_from_parts(
+    url: Option<String>,
+    api_key: Option<String>,
+) -> Result<Option<NotificationsApiConfig>> {
+    match (url, api_key) {
+        (None, None) => Ok(None),
+        (Some(url), Some(api_key)) => Ok(Some(NotificationsApiConfig { url, api_key })),
+        (Some(_), None) => Err(anyhow!(
+            "NOTIFICATIONS_API_URL is set but NOTIFICATIONS_API_KEY is missing or empty: \
+             sold-out claim notifications are all-or-nothing -- set both, or neither to \
+             disable the delivery loop"
+        )),
+        (None, Some(_)) => Err(anyhow!(
+            "NOTIFICATIONS_API_KEY is set but NOTIFICATIONS_API_URL is missing or empty: \
+             sold-out claim notifications are all-or-nothing -- set both, or neither to \
+             disable the delivery loop"
+        )),
+    }
+}
+
 /// `postgres://user:secret@host/db` -> `postgres://user:***@host/db`.
 pub fn redact_url_password(url: &str) -> String {
     let Some(scheme_end) = url.find("://") else {
@@ -479,7 +579,51 @@ pub fn redact_url_password(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_key, redact_url_password};
+    use super::{notifications_api_from_parts, redact_key, redact_url_password};
+
+    // --- notifications_api_from_parts: the all-or-nothing pair (ADR-35) ------------------
+
+    #[test]
+    fn neither_notifications_variable_set_disables_the_loop() {
+        assert!(notifications_api_from_parts(None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn both_notifications_variables_set_configure_the_loop() {
+        let cfg = notifications_api_from_parts(
+            Some("https://notify.example.com".to_string()),
+            Some("secret-key".to_string()),
+        )
+        .unwrap()
+        .expect("both set means configured");
+        assert_eq!(cfg.url, "https://notify.example.com");
+        assert_eq!(cfg.api_key, "secret-key");
+    }
+
+    #[test]
+    fn exactly_one_notifications_variable_set_is_a_hard_error() {
+        let only_url = notifications_api_from_parts(Some("https://n.example".into()), None);
+        assert!(only_url.is_err());
+        assert!(format!("{:?}", only_url.unwrap_err()).contains("NOTIFICATIONS_API_KEY"));
+
+        let only_key = notifications_api_from_parts(None, Some("k".into()));
+        assert!(only_key.is_err());
+        assert!(format!("{:?}", only_key.unwrap_err()).contains("NOTIFICATIONS_API_URL"));
+    }
+
+    #[test]
+    fn the_notifications_debug_never_leaks_url_or_key() {
+        let cfg = notifications_api_from_parts(
+            Some("https://user:pw@notify.example.com".to_string()),
+            Some("super-secret-key".to_string()),
+        )
+        .unwrap()
+        .expect("both set means configured");
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("super-secret-key"));
+        assert!(!rendered.contains("notify.example.com"));
+        assert!(rendered.contains("<set>"));
+    }
 
     #[test]
     fn redacts_password_only() {

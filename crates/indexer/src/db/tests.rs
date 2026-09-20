@@ -2175,6 +2175,234 @@ async fn webhook_failure_backoff_and_delivery(pool: PgPool) -> sqlx::Result<()> 
 }
 
 // ============================================================================================
+// Sold-out claim notifications (migrations/0018, ADR-35): the record is idempotent under
+// re-walks and immediately pending; a failure backs the event off without losing it; and the
+// send-time fan-out inputs (context + reservers) read the CURRENT mirror state.
+// ============================================================================================
+
+// `count_pending` / `mark_delivered` collide with the property_metadata imports above; the
+// aliases keep the work-set domains readable side by side (same trick as the webhook section).
+use super::marketplace::{
+    upsert_investor_position, upsert_listing, DocumentStatus, InvestorPositionRow,
+    LawyerAssignmentCols, ListingRow, ListingStatus,
+};
+use super::notifications::{
+    count_pending as count_notifications_pending, event_context,
+    mark_delivered as mark_notification_delivered, pending_events as pending_notifications,
+    record_event as record_sold_out, record_failure as record_notification_failure, reservers,
+};
+
+fn listing(pubkey: Vec<u8>, slot: i64, listing_id: i64, status: ListingStatus) -> ListingRow {
+    ListingRow {
+        pubkey,
+        slot,
+        lamports: 1_000,
+        listing_id,
+        developer: pk(30),
+        asset_id: listing_id, // asset_id == listing_id in the current on-chain source
+        share_price: 1_000_000,
+        listed_share_amount: 100,
+        sold_share_amount: 60,
+        reserved_share_amount: 40,
+        tax_paid_by_developer: false,
+        tax_bps: 0,
+        marketplace_fee_bps: 0,
+        investor_fee_bps: 0,
+        max_ownership_bps: 10_000,
+        listing_expiry: 0,
+        claiming_time: 0,
+        claim_deadline: 1_800_000_000,
+        legal_process_time: 0,
+        lawyer_voting_time: 0,
+        min_voting_quorum_bps: 0,
+        position_count: 1,
+        legal_deadline: 0,
+        deposit: 0,
+        developer_lawyer: LawyerAssignmentCols {
+            lawyer: pk(31),
+            costs: 0,
+            doc_status: DocumentStatus::Pending,
+            documents_hash: vec![0; 32],
+        },
+        spv_lawyer: LawyerAssignmentCols {
+            lawyer: pk(32),
+            costs: 0,
+            doc_status: DocumentStatus::Pending,
+            documents_hash: vec![0; 32],
+        },
+        second_attempt: false,
+        developer_engaged: false,
+        spv_costs_due: 0,
+        spv_costs_payee: pk(33),
+        collected_fee_quote: 0,
+        collected: serde_json::json!([]),
+        spv_election_expiry: 0,
+        spv_election_candidate_count: 0,
+        spv_election_round: 0,
+        status,
+        bump: 255,
+    }
+}
+
+fn position(
+    pubkey: Vec<u8>,
+    slot: i64,
+    listing_id: i64,
+    investor: Vec<u8>,
+    reserved_share_amount: i64,
+    cancelled: bool,
+) -> InvestorPositionRow {
+    InvestorPositionRow {
+        pubkey,
+        slot,
+        lamports: 1_000,
+        listing_id,
+        investor,
+        payment_mint: pk(34),
+        payment_account: pk(35),
+        share_amount: 0,
+        reserved_share_amount,
+        paid_funds: 0,
+        paid_tax: 0,
+        paid_fee: 0,
+        reserved_funds: 1_000,
+        reserved_tax: 0,
+        reserved_fee: 0,
+        cancelled,
+        bump: 255,
+    }
+}
+
+/// `record_event` is idempotent under re-walks (a backfill replays the same SOLD_OUT listing
+/// upsert), and a fresh event is immediately in the delivery work set.
+#[sqlx::test(migrations = "../../migrations")]
+async fn sold_out_record_is_idempotent_and_immediately_pending(pool: PgPool) -> sqlx::Result<()> {
+    record_sold_out(&pool, "listing_sold_out:AAA", 7, 7, 100).await?;
+
+    // The same transition seen again (a backfill re-walk) must not re-record.
+    let again = record_sold_out(&pool, "listing_sold_out:AAA", 7, 7, 100).await?;
+    assert_eq!(again.rows_affected(), 0);
+
+    let pending = pending_notifications(&pool, 10).await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].event_id, "listing_sold_out:AAA");
+    assert_eq!(pending[0].listing_id, 7);
+    assert_eq!(count_notifications_pending(&pool).await?, 1);
+    Ok(())
+}
+
+/// A failure backs the event off (30 s, doubling per consecutive failure) and hides it from
+/// the work set until the deadline; delivery is terminal with the retry state cleared; and a
+/// re-recorded event is never re-announced (at-most-once).
+#[sqlx::test(migrations = "../../migrations")]
+async fn sold_out_failure_backoff_and_delivery(pool: PgPool) -> sqlx::Result<()> {
+    record_sold_out(&pool, "listing_sold_out:BBB", 8, 8, 100).await?;
+
+    // First failure: attempts 0 -> 1, 30 s backoff -- out of the work set for now.
+    record_notification_failure(&pool, "listing_sold_out:BBB", "connection refused").await?;
+    assert!(
+        pending_notifications(&pool, 10).await?.is_empty(),
+        "in backoff after a failure"
+    );
+    assert_eq!(count_notifications_pending(&pool).await?, 0);
+    let row = sqlx::query(
+        r#"SELECT attempts, last_error,
+               (next_attempt_at > now() + interval '20 seconds'
+                AND next_attempt_at < now() + interval '40 seconds') AS backoff_30s
+           FROM sold_out_notifications WHERE event_id = $1"#,
+    )
+    .bind("listing_sold_out:BBB")
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(row.get::<i32, _>("attempts"), 1);
+    assert_eq!(row.get::<String, _>("last_error"), "connection refused");
+    assert!(row.get::<bool, _>("backoff_30s"));
+
+    // Second failure: the backoff doubles (60 s) -- distinguishable from 30 s past 45 s.
+    record_notification_failure(&pool, "listing_sold_out:BBB", "connection refused").await?;
+    let row = sqlx::query(
+        r#"SELECT attempts,
+               (next_attempt_at > now() + interval '45 seconds') AS backoff_60s
+           FROM sold_out_notifications WHERE event_id = $1"#,
+    )
+    .bind("listing_sold_out:BBB")
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(row.get::<i32, _>("attempts"), 2);
+    assert!(row.get::<bool, _>("backoff_60s"));
+
+    // Delivery: terminal state with the retry columns cleared.
+    mark_notification_delivered(&pool, "listing_sold_out:BBB").await?;
+    let row = sqlx::query(
+        r#"SELECT delivered_at IS NOT NULL AS delivered, attempts,
+               next_attempt_at IS NULL AS no_backoff, last_error IS NULL AS no_error
+           FROM sold_out_notifications WHERE event_id = $1"#,
+    )
+    .bind("listing_sold_out:BBB")
+    .fetch_one(&pool)
+    .await?;
+    assert!(row.get::<bool, _>("delivered"));
+    assert_eq!(row.get::<i32, _>("attempts"), 0);
+    assert!(row.get::<bool, _>("no_backoff"));
+    assert!(row.get::<bool, _>("no_error"));
+
+    // A re-record after delivery stays a no-op: an announced sell-out is never re-announced.
+    let again = record_sold_out(&pool, "listing_sold_out:BBB", 8, 8, 100).await?;
+    assert_eq!(again.rows_affected(), 0);
+    assert!(pending_notifications(&pool, 10).await?.is_empty());
+    Ok(())
+}
+
+/// The send-time context is read from the CURRENT mirror rows: the property name joins
+/// through `asset_id`, and a listing (or asset) that is not indexed yet reads as "not
+/// visible" -- the transient case the loop retries, never a degraded message.
+#[sqlx::test(migrations = "../../migrations")]
+async fn sold_out_context_reads_the_current_listing_and_asset(pool: PgPool) -> sqlx::Result<()> {
+    upsert_listing(&pool, &listing(pk(50), 100, 9, ListingStatus::SoldOut)).await?;
+    upsert_property_asset(&pool, &property_asset(pk(51), 100, 9, "ipfs://asset-9")).await?;
+
+    let context = event_context(&pool, 9)
+        .await?
+        .expect("the live listing is its own context");
+    assert_eq!(context.property_name.as_deref(), Some("A property"));
+    assert_eq!(context.status, "SOLD_OUT");
+    assert_eq!(context.claim_deadline, 1_800_000_000);
+
+    // A listing whose asset row has not landed yet: the context exists but the name is
+    // unresolved.
+    upsert_listing(&pool, &listing(pk(52), 100, 10, ListingStatus::SoldOut)).await?;
+    let context = event_context(&pool, 10).await?.expect("the listing exists");
+    assert_eq!(context.property_name, None);
+
+    // No listing row at all -> no context.
+    assert!(event_context(&pool, 11).await?.is_none());
+    Ok(())
+}
+
+/// The fan-out set is exactly the live, uncancelled positions with shares still reserved:
+/// claimed-to-zero, cancelled, closed and other listings' positions are all excluded.
+#[sqlx::test(migrations = "../../migrations")]
+async fn sold_out_reservers_are_the_live_outstanding_reservations(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    // Live + still reserved -> the one reserver.
+    upsert_investor_position(&pool, &position(pk(60), 100, 12, pk(40), 10, false)).await?;
+    // Fully claimed (0 left in reservation) -> excluded.
+    upsert_investor_position(&pool, &position(pk(61), 100, 12, pk(41), 0, false)).await?;
+    // Reserved but cancelled -> excluded.
+    upsert_investor_position(&pool, &position(pk(62), 100, 12, pk(42), 10, true)).await?;
+    // Reserved, but on ANOTHER listing -> excluded.
+    upsert_investor_position(&pool, &position(pk(63), 100, 13, pk(43), 10, false)).await?;
+    // Reserved, then closed (a crank release) -> excluded.
+    upsert_investor_position(&pool, &position(pk(64), 100, 12, pk(44), 10, false)).await?;
+    close_in_table(&pool, StateTable::MarketplaceInvestorPosition, &pk(64), 150).await?;
+
+    let set = reservers(&pool, 12).await?;
+    assert_eq!(set, vec![pk(40)]);
+    Ok(())
+}
+
+// ============================================================================================
 // Full in-place reset (`db::reset`): every table on the wipe list must end up empty, and the
 // wipe list must name real tables (a typo would error here instead of in production).
 // ============================================================================================
@@ -2224,7 +2452,7 @@ async fn reset_wipes_every_table_on_the_list(pool: PgPool) -> sqlx::Result<()> {
     )
     .await?;
 
-    let expected = StateTable::ALL.len() + 8;
+    let expected = StateTable::ALL.len() + 9;
     assert_eq!(all_tables().len(), expected);
     assert_eq!(reset_all(&pool).await?, expected);
 

@@ -11,6 +11,10 @@
 //! * the webhook outbox (`webhook_events`) -- wiping it is what makes the reindex RE-DELIVER
 //!   every `init_property_assets` registration (the batcher re-records them during the
 //!   backfill, the delivery loop flushes the backlog; RUNBOOK.md expects that burst);
+//! * the sold-out notification outbox (`sold_out_notifications`) -- same re-delivery
+//!   argument as the webhook outbox: the reindex re-derives every SOLD_OUT listing upsert,
+//!   the batcher re-records the events, and the loop re-announces any reserver who still
+//!   has not claimed (the send-time reserver query skips those who have);
 //! * the derived tables (`marketplace_property_metadata`, `marketplace_property_image`) --
 //!   the metadata fetcher and image mirror refill them on their own schedules;
 //! * the bookkeeping tables (`sync_state`, `backfill_cursor`, `program_upgrades`) --
@@ -35,6 +39,7 @@ const EXTRA_TABLES: &[&str] = &[
     "program_instructions",
     "whitelist_actions",
     "webhook_events",
+    "sold_out_notifications",
     "marketplace_property_metadata",
     "marketplace_property_image",
     "program_upgrades",

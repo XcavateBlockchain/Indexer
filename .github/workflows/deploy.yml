@@ -157,6 +157,11 @@ jobs:
           OBJECT_STORAGE_PUBLIC_BASE_URL: ${{ vars.OBJECT_STORAGE_PUBLIC_BASE_URL }}
           IMAGE_MIRROR_INTERVAL: ${{ vars.IMAGE_MIRROR_INTERVAL }}
           INIT_PROPERTY_ASSET_WEBHOOK_URL: ${{ secrets.INIT_PROPERTY_ASSET_WEBHOOK_URL }}
+          # ADR-35 sold-out claim notifications: OPTIONAL but all-or-nothing, mirroring
+          # config.rs exactly -- a partial pair fails HERE, at render time, instead of
+          # crash-looping the indexer on the server.
+          NOTIFICATIONS_API_URL: ${{ secrets.NOTIFICATIONS_API_URL }}
+          NOTIFICATIONS_API_KEY: ${{ secrets.NOTIFICATIONS_API_KEY }}
           # Also optional, not sensitive: logging verbosity and the API's browser CORS
           # allow-list (compose supplies its own defaults when the lines are absent).
           RUST_LOG: ${{ vars.RUST_LOG }}
@@ -220,6 +225,16 @@ jobs:
             echo "::error::OBJECT_STORAGE_* is all-or-nothing: $object_storage_set of 5 set — set all five secrets or none" >&2
             exit 1
           fi
+          # The sold-out notification pair is all-or-nothing too (same contract as
+          # notifications_api_from_parts in crates/indexer/src/config.rs).
+          notifications_set=0
+          for v in "$NOTIFICATIONS_API_URL" "$NOTIFICATIONS_API_KEY"; do
+            [ -n "$v" ] && notifications_set=$((notifications_set + 1))
+          done
+          if [ "$notifications_set" -eq 1 ]; then
+            echo "::error::NOTIFICATIONS_API_URL/NOTIFICATIONS_API_KEY are all-or-nothing: exactly one is set — set both secrets or neither" >&2
+            exit 1
+          fi
           # COMPLETENESS CONTRACT: this block must render EVERY line compose can read
           # from .env (see the `${...}` references in docker-compose.yml). The server
           # file is replaced wholesale on every deploy, so a value that is not rendered
@@ -245,6 +260,10 @@ jobs:
               dotenv_optional IMAGE_MIRROR_INTERVAL "$IMAGE_MIRROR_INTERVAL"
             fi
             dotenv_optional INIT_PROPERTY_ASSET_WEBHOOK_URL "$INIT_PROPERTY_ASSET_WEBHOOK_URL"
+            if [ "$notifications_set" -eq 2 ]; then
+              dotenv_secret NOTIFICATIONS_API_URL "$NOTIFICATIONS_API_URL"
+              dotenv_secret NOTIFICATIONS_API_KEY "$NOTIFICATIONS_API_KEY"
+            fi
             dotenv_optional RUST_LOG "$RUST_LOG"
             dotenv_optional CORS_ALLOWED_ORIGINS "$CORS_ALLOWED_ORIGINS"
           } > server.env

@@ -461,7 +461,34 @@ async fn commit_batch(pool: &PgPool, ops: &[WriteOp]) -> Result<Vec<NewUpgrade>,
                 db::regions::upsert(&mut *tx, row).await?;
             }
             WriteOp::UpsertMarketplaceAccount(row) => {
-                db::marketplace::upsert(&mut *tx, row).await?;
+                let result = db::marketplace::upsert(&mut *tx, row).await?;
+                // ADR-35: a listing upsert that APPLIED with status SOLD_OUT *is* the
+                // sold-out transition, and this is its only detector -- the mapper is
+                // pure (no DB) and the account pipe has no event mechanism, so old and
+                // new state meet only here. Recording in the same transaction makes the
+                // event atomic with the state that justifies it; the
+                // `ON CONFLICT (event_id) DO NOTHING` makes re-walks (backfill,
+                // reconciliation, the snapshot/live overlap) no-ops, so the record is
+                // at most once, and a slot-guard-rejected (stale) upsert records
+                // nothing at all. Delivery is the `crate::notifications` loop's job,
+                // never this write path's.
+                if let db::marketplace::MarketplaceAccountRow::Listing(listing) = row {
+                    if listing.status == db::marketplace::ListingStatus::SoldOut
+                        && result.rows_affected() > 0
+                    {
+                        db::notifications::record_event(
+                            &mut *tx,
+                            &format!(
+                                "listing_sold_out:{}",
+                                bs58::encode(&listing.pubkey).into_string()
+                            ),
+                            listing.listing_id,
+                            listing.asset_id,
+                            listing.slot,
+                        )
+                        .await?;
+                    }
+                }
             }
             WriteOp::UpsertPropertyAccount(row) => {
                 db::property::upsert(&mut *tx, row).await?;

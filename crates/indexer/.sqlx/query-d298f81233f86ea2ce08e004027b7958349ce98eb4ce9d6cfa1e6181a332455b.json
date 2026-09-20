@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sold_out_notifications\n        SET delivered_at = now(),\n            attempts = 0,\n            next_attempt_at = NULL,\n            last_error = NULL\n        WHERE event_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d298f81233f86ea2ce08e004027b7958349ce98eb4ce9d6cfa1e6181a332455b"
+}
