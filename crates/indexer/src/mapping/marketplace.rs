@@ -35,6 +35,11 @@
 //! condition on account state the pure mapper cannot evaluate, so those two emit the
 //! conditional ops decided by the batcher's SQL (`db::marketplace`). `make_offer` /
 //! `relist_shares` / `send_property_shares` close nothing.
+//!
+//! This is also the program that produces most webhook events (ADR-28/ADR-36):
+//! `init_property_assets`, `claim_shares`, `finalize_spv_election`, `execute_deal`, and the
+//! three secondary-market transfers each record one durable `webhook_events` row -- see the
+//! table above the `webhook_events` match below.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
@@ -50,8 +55,8 @@ use solana_account::Account;
 use solana_pubkey::Pubkey;
 
 use super::{
-    account_bytes_at, close_at, instruction_row, ix_context, MappedInstruction, MappingError,
-    PendingClose, ProgramMapper, WebhookEvent,
+    account_at, account_bytes_at, close_at, event_type, instruction_row, ix_context,
+    MappedInstruction, MappingError, PendingClose, ProgramMapper, WebhookEvent,
 };
 use crate::batcher::WriteOp;
 use crate::db::close::StateTable;
@@ -288,27 +293,197 @@ pub fn map_instruction(
         _ => vec![],
     };
 
-    // ADR-28: `init_property_assets` is the registration of a property asset -- the moment the
-    // `PropertyAsset` PDA (account index 3, seeded `["property", listing_id]`) gets its name +
-    // metadata_uri + share mint (index 4). Record a durable, idempotent webhook event
-    // (deduped by the asset PDA) that the background loop delivers to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
+    // ADR-28/ADR-36: the webhook producers. Each records a durable, idempotent event that the
+    // background loop routes by `event_type` to its configured endpoint:
+    //
+    // | instruction | event_type | dedup subject |
+    // |---|---|---|
+    // | `init_property_assets` | `property_asset_registered` | the PropertyAsset PDA (once per asset) |
+    // | `claim_shares` | `property_claim_started` | the Listing PDA (only the FIRST claim records) |
+    // | `finalize_spv_election` | `spv_lawyer_elected` | the transaction + instruction path |
+    // | `execute_deal` | `deal_executed` | the transaction + instruction path |
+    // | `buy_relisted_shares` / `accept_offer` / `send_property_shares` | `property_shares_transferred` | the transaction + instruction path |
+    //
+    // Elections, deals, and transfers may legitimately repeat for one subject (a second
+    // election round after a failed legal process, another resale), so their event_ids are
+    // transaction-scoped (`<type>:<signature>:<instruction path>`) -- unique per real-world
+    // occurrence, still an `ON CONFLICT` no-op when a crawl re-walks the same transaction.
+    let tx_signature = ctx.tx_signature.clone();
     let webhook_events = match &decoded.data {
+        // ADR-28: `init_property_assets` is the registration of a property asset -- the moment
+        // the `PropertyAsset` PDA (account index 3, seeded `["property", listing_id]`) gets its
+        // name + metadata_uri + share mint (index 4).
         MarketplaceInstruction::InitPropertyAssets(args) => {
-            let property_pubkey = account_bytes_at(accounts, 3, name)?;
-            let share_mint = account_bytes_at(accounts, 4, name)?;
-            let property_b58 = bs58::encode(&property_pubkey).into_string();
-            let share_mint_b58 = bs58::encode(&share_mint).into_string();
-            let tx_signature = ctx.tx_signature.clone();
+            let property_b58 = account_at(accounts, 3, name)?;
+            let share_mint_b58 = account_at(accounts, 4, name)?;
             vec![WebhookEvent {
                 event_id: format!("property_asset_registered:{property_b58}"),
-                event_type: "property_asset_registered",
+                event_type: event_type::PROPERTY_ASSET_REGISTERED,
                 payload: serde_json::json!({
-                    "event": "property_asset_registered",
+                    "event": event_type::PROPERTY_ASSET_REGISTERED,
                     "pubkey": &property_b58,
                     "listing_id": args.listing_id,
                     "name": &args.name,
                     "metadata_uri": &args.uri,
                     "share_mint": &share_mint_b58,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // The claim phase opens when a sold-out listing's tokens become claimable; the FIRST
+        // successful `claim_shares` is the observable start (accounts: investor 0, listing 4,
+        // property 5). Deduped by the listing PDA -- every later claim re-records nothing.
+        MarketplaceInstruction::ClaimShares(args) => {
+            let listing_b58 = account_at(accounts, 4, name)?;
+            vec![WebhookEvent {
+                event_id: format!("property_claim_started:{listing_b58}"),
+                event_type: event_type::PROPERTY_CLAIM_STARTED,
+                payload: serde_json::json!({
+                    "event": event_type::PROPERTY_CLAIM_STARTED,
+                    "listing": &listing_b58,
+                    "property": account_at(accounts, 5, name)?,
+                    "listing_id": args.listing_id,
+                    "investor": account_at(accounts, 0, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // The SPV lawyer election finalizes with a winner (accounts: listing 1, property 2,
+        // winner's Lawyer registry 3 -- trailing and OPTIONAL, so absent when... on-chain
+        // never omits it on the success path, but a missing index 3 must not fail the
+        // mapping: the endpoint can resolve the winner from the listing row regardless).
+        MarketplaceInstruction::FinalizeSpvElection(args) => {
+            vec![WebhookEvent {
+                event_id: format!("spv_lawyer_elected:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::SPV_LAWYER_ELECTED,
+                payload: serde_json::json!({
+                    "event": event_type::SPV_LAWYER_ELECTED,
+                    "listing_id": args.listing_id,
+                    "listing": account_at(accounts, 1, name)?,
+                    "property": account_at(accounts, 2, name)?,
+                    "winner_registry": accounts.get(3).map(|a| a.pubkey.to_string()),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // The deal settles (accounts: listing 2, property 3, developer-lawyer registry 5,
+        // spv-lawyer registry 6). The two registry PDAs name the lawyers whose bucket access
+        // the endpoint revokes.
+        MarketplaceInstruction::ExecuteDeal(args) => {
+            vec![WebhookEvent {
+                event_id: format!("deal_executed:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::DEAL_EXECUTED,
+                payload: serde_json::json!({
+                    "event": event_type::DEAL_EXECUTED,
+                    "listing_id": args.listing_id,
+                    "listing": account_at(accounts, 2, name)?,
+                    "property": account_at(accounts, 3, name)?,
+                    "developer_lawyer_registry": account_at(accounts, 5, name)?,
+                    "spv_lawyer_registry": account_at(accounts, 6, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // Secondary-market transfers -- one event label, three kinds, unified payload:
+        // `from`/`to` are the wallets whose bucket read-access the endpoint swaps. The sold
+        // amount is an instruction arg for `buy_relisted_shares`/`send_property_shares` but
+        // lives in the Offer ACCOUNT for `accept_offer` (the pure mapper cannot read it --
+        // null there, and `offer` carries the PDA for anyone who needs to resolve it).
+        MarketplaceInstruction::BuyRelistedShares(args) => {
+            vec![WebhookEvent {
+                event_id: format!(
+                    "property_shares_transferred:{tx_signature}:{}",
+                    ctx.index_str
+                ),
+                event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
+                payload: serde_json::json!({
+                    "event": event_type::PROPERTY_SHARES_TRANSFERRED,
+                    "kind": "relisted_purchase",
+                    "property": account_at(accounts, 5, name)?,
+                    "listing": account_at(accounts, 4, name)?,
+                    "from": account_at(accounts, 7, name)?,  // seller
+                    "to": account_at(accounts, 0, name)?,    // buyer
+                    "amount": args.amount,
+                    "asset_id": args.asset_id,
+                    "offer": serde_json::Value::Null,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        MarketplaceInstruction::AcceptOffer(_) => {
+            vec![WebhookEvent {
+                event_id: format!(
+                    "property_shares_transferred:{tx_signature}:{}",
+                    ctx.index_str
+                ),
+                event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
+                payload: serde_json::json!({
+                    "event": event_type::PROPERTY_SHARES_TRANSFERRED,
+                    "kind": "offer_accepted",
+                    "property": account_at(accounts, 5, name)?,
+                    "listing": account_at(accounts, 4, name)?,
+                    "from": account_at(accounts, 0, name)?,  // seller
+                    "to": account_at(accounts, 8, name)?,    // offeror (buyer)
+                    "amount": serde_json::Value::Null,
+                    "asset_id": serde_json::Value::Null,
+                    "offer": account_at(accounts, 10, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        MarketplaceInstruction::SendPropertyShares(args) => {
+            vec![WebhookEvent {
+                event_id: format!(
+                    "property_shares_transferred:{tx_signature}:{}",
+                    ctx.index_str
+                ),
+                event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
+                payload: serde_json::json!({
+                    "event": event_type::PROPERTY_SHARES_TRANSFERRED,
+                    "kind": "direct_send",
+                    "property": account_at(accounts, 6, name)?,
+                    "listing": account_at(accounts, 5, name)?,
+                    "from": account_at(accounts, 0, name)?,  // sender
+                    "to": account_at(accounts, 3, name)?,    // receiver
+                    "amount": args.amount,
+                    "asset_id": args.asset_id,
+                    "offer": serde_json::Value::Null,
                     "slot": slot,
                     "tx_signature": &tx_signature,
                     "block_time": block_time.to_rfc3339(),

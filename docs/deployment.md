@@ -71,7 +71,8 @@ edits on the server do not survive and are not a supported way to configure anyt
 | `OBJECT_STORAGE_REGION` | Optional, all-or-nothing with the other four |
 | `OBJECT_STORAGE_ACCESS_KEY` | Optional, all-or-nothing with the other four |
 | `OBJECT_STORAGE_SECRET_KEY` | Optional, all-or-nothing with the other four |
-| `INIT_PROPERTY_ASSET_WEBHOOK_URL` | Optional: HTTPS endpoint for the ADR-28 property-asset registration webhooks. Unset = the delivery loop never spawns (events still accumulate durably in `webhook_events`). |
+| `INIT_PROPERTY_ASSET_WEBHOOK_URL` | Optional: HTTPS endpoint for the ADR-28 property-asset registration webhooks. Unset = this event type is not delivered (events still accumulate durably in `webhook_events`). |
+| `PROPERTY_CLAIM_STARTED_WEBHOOK_URL` / `SPV_LAWYER_ELECTED_WEBHOOK_URL` / `DEAL_EXECUTED_WEBHOOK_URL` / `LETTING_AGENT_APPOINTED_WEBHOOK_URL` / `SHARES_TRANSFERRED_WEBHOOK_URL` | Optional, each independently: the ADR-36 property-lifecycle webhook routes (claim started / lawyer elected / deal executed / agent appointed / shares transferred). Unset = that event type accumulates undelivered and drains when set. |
 | `NOTIFICATIONS_API_URL` | Optional, all-or-nothing with `NOTIFICATIONS_API_KEY`: base URL of the deployed notifications API (ADR-35) for sold-out claim push notifications. Unset = the delivery loop never spawns (events still accumulate durably in `sold_out_notifications`). |
 | `NOTIFICATIONS_API_KEY` | Optional, all-or-nothing with `NOTIFICATIONS_API_URL`: API key from the notifications API's Django admin (`/admin/` → API keys). |
 

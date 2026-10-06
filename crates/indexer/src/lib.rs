@@ -18,7 +18,7 @@
 //! | [`reconcile`] | The periodic supervisor: the only writer of `last_contiguous_slot`. |
 //! | [`metadata`] | The off-chain property-metadata fetcher (ADR-27): the `metadata_uri` -> decomposed `marketplace_property_metadata` loop. |
 //! | [`sync_frontier`] | The contiguity contract governing `sync_state.last_contiguous_slot`. |
-//! | [`webhooks`] | The outbound webhook delivery loop (ADR-28): `webhook_events` -> `POST INIT_PROPERTY_ASSET_WEBHOOK_URL`. |
+//! | [`webhooks`] | The outbound webhook delivery loop (ADR-28/ADR-36): `webhook_events` -> routed `POST` to each event type's `*_WEBHOOK_URL`. |
 //! | [`notifications`] | The sold-out claim notification loop (ADR-35): `sold_out_notifications` -> per-reserver push via the Xcavate notifications API. |
 //! | [`images`] | The property image mirror (ADR-31): `marketplace_property_image` -> bounded download -> 720x720 JPEG -> object-storage `PUT`. |
 //! | [`metrics`] | `carbon_core::metrics::Metrics` on Prometheus + the `/metrics` listener. |

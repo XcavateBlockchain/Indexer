@@ -2085,11 +2085,62 @@ async fn webhook_record_is_idempotent_and_immediately_pending(pool: PgPool) -> s
     .await?;
     assert_eq!(again.rows_affected(), 0);
 
-    let pending = pending_events(&pool, 10).await?;
+    let pending = pending_events(&pool, 10, &["property_asset_registered"]).await?;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].event_id, "property_asset_registered:AAA");
+    assert_eq!(pending[0].event_type, "property_asset_registered");
     assert_eq!(pending[0].payload["event"], "property_asset_registered");
-    assert_eq!(count_webhook_pending(&pool).await?, 1);
+    assert_eq!(
+        count_webhook_pending(&pool, &["property_asset_registered"]).await?,
+        1
+    );
+    Ok(())
+}
+
+/// ADR-36: the work set is filtered to the CONFIGURED event types -- an event of an
+/// unconfigured type stays pending but invisible to both the cycle and the gauge, and drains
+/// if its `*_WEBHOOK_URL` is ever set.
+#[sqlx::test(migrations = "../../migrations")]
+async fn webhook_work_set_is_filtered_to_the_configured_types(pool: PgPool) -> sqlx::Result<()> {
+    let payload = &serde_json::json!({ "event": "property_claim_started" });
+    record_event(
+        &pool,
+        "property_claim_started:CCC",
+        "property_claim_started",
+        payload,
+        100,
+        "sig",
+        bt(100),
+    )
+    .await?;
+
+    // No route for `property_claim_started` configured: the event is neither in the work
+    // set nor in the pending gauge.
+    assert!(pending_events(&pool, 10, &["property_asset_registered"])
+        .await?
+        .is_empty());
+    assert_eq!(
+        count_webhook_pending(&pool, &["property_asset_registered"]).await?,
+        0
+    );
+
+    // Once its type is configured the very same row is immediately deliverable.
+    let pending = pending_events(
+        &pool,
+        10,
+        &["property_asset_registered", "property_claim_started"],
+    )
+    .await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].event_id, "property_claim_started:CCC");
+    assert_eq!(
+        count_webhook_pending(
+            &pool,
+            &["property_asset_registered", "property_claim_started"]
+        )
+        .await?,
+        1
+    );
     Ok(())
 }
 
@@ -2113,10 +2164,15 @@ async fn webhook_failure_backoff_and_delivery(pool: PgPool) -> sqlx::Result<()> 
     // First failure: attempts 0 -> 1, 30 s backoff -- out of the work set for now.
     record_webhook_failure(&pool, "property_asset_registered:BBB", "connection refused").await?;
     assert!(
-        pending_events(&pool, 10).await?.is_empty(),
+        pending_events(&pool, 10, &["property_asset_registered"])
+            .await?
+            .is_empty(),
         "in backoff after a failure"
     );
-    assert_eq!(count_webhook_pending(&pool).await?, 0);
+    assert_eq!(
+        count_webhook_pending(&pool, &["property_asset_registered"]).await?,
+        0
+    );
     let row = sqlx::query(
         r#"SELECT attempts, last_error,
                (next_attempt_at > now() + interval '20 seconds'
@@ -2170,7 +2226,9 @@ async fn webhook_failure_backoff_and_delivery(pool: PgPool) -> sqlx::Result<()> 
     )
     .await?;
     assert_eq!(again.rows_affected(), 0);
-    assert!(pending_events(&pool, 10).await?.is_empty());
+    assert!(pending_events(&pool, 10, &["property_asset_registered"])
+        .await?
+        .is_empty());
     Ok(())
 }
 

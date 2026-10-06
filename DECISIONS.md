@@ -1166,3 +1166,68 @@ undelivered and drain when it is configured. The cost is a third outbound networ
 surface (same reqwest client, no SSRF guard needed — the URL is operator-config, not
 on-chain data) and one more table outside the close machinery; mainnet promotion
 (agentic-maintenance §8) inherits the design unchanged.
+
+## ADR-36: The webhook outbox routes many event types, one optional endpoint URL per type
+
+**Context.** ADR-28 built the durable webhook outbox for exactly one event
+(`property_asset_registered` → `INIT_PROPERTY_ASSET_WEBHOOK_URL`, the XcavateProfileApi
+namespace creator). The "Property namespace & buckets" lifecycle needs five more
+state-change notifications attached to the same API: the token-claim phase opening
+(create the property's legal-process bucket), the SPV lawyer election finalizing (the
+lawyer gets bucket write access), the deal executing (lawyers lose it), a letting agent
+being appointed, and any secondary-market share transfer (swap holder read access).
+ADR-28's single URL cannot carry them — the API exposes one endpoint per event type —
+and ADR-35's separate-table design would multiply outboxes for no structural reason:
+these five are all INSTRUCTION-detected events with a verbatim POST payload, exactly
+ADR-28's shape. The interesting design points are the triggers and the dedup keys. The
+claim phase has no "claims open" instruction: a sold-out listing's tokens become
+claimable and investors then call `claim_shares`, so the FIRST successful claim is the
+observable start — keyed by the listing PDA, so later claims are `ON CONFLICT`
+no-ops. Elections, deals, and transfers can legitimately REPEAT for one subject (a
+second election round after a failed legal process; every resale), so their event ids
+are transaction-scoped (`<type>:<signature>:<instruction path>`), not subject-scoped.
+`accept_offer`'s sold amount lives in the Offer ACCOUNT, which the pure mapper cannot
+read — the payload carries `amount: null` and the offer PDA instead. Two flowchart
+steps produce no event at all: "lawyers claim property & share agreement" and "LLP
+lawyer & RED lawyer share & review docs" are bucket ACTIVITY (off-chain), not
+namespace/bucket state changes.
+
+**Decision.** Generalize, don't multiply: keep the single `webhook_events` outbox and
+delivery loop; make the loop a ROUTER. `Config::webhook_routes` (one optional
+`*_WEBHOOK_URL` env var per `mapping::event_type` constant:
+`INIT_PROPERTY_ASSET_WEBHOOK_URL` — unchanged — plus
+`PROPERTY_CLAIM_STARTED_WEBHOOK_URL`, `SPV_LAWYER_ELECTED_WEBHOOK_URL`,
+`DEAL_EXECUTED_WEBHOOK_URL`, `LETTING_AGENT_APPOINTED_WEBHOOK_URL`,
+`SHARES_TRANSFERRED_WEBHOOK_URL`) is the route table; the work-set queries
+(`pending_events`, `count_pending`) filter `event_type = ANY(configured)`, so an
+unrouted type's rows accumulate undelivered and drain when its URL is later set —
+per-type the stance ADR-28 took for the whole loop, and the `webhooks_pending` gauge
+counts only what can actually drain. The producers are pure mapper emissions: all five
+marketplace ones (`claim_shares` → `property_claim_started`; `finalize_spv_election` →
+`spv_lawyer_elected`; `execute_deal` → `deal_executed`; `buy_relisted_shares` /
+`accept_offer` / `send_property_shares` → `property_shares_transferred` with a `kind`
+discriminator) plus the first property-program one (`finalize_agent_election` →
+`letting_agent_appointed`, which is also why the loop's spawn gate widens from
+"marketplace configured" to "marketplace OR property configured"). Payloads carry only
+on-chain evidence (subject PDAs, wallets where the instruction has them, ids, slot /
+signature / block time); endpoints resolve anything else from the mirror. What the
+payloads deliberately do NOT carry: lawyer/agent WALLETS for the election events (the
+instructions name registry PDAs, not wallets — resolution is the endpoint's job, via
+the GraphQL listing/letting rows) and token-holder identities for read access (the
+bucket viewer role is keyed by X25519 keys, which the chain never carries). Both are
+placeholder items on the API side, documented in the API repo's
+`docs/property-webhooks-uncertainties.md`.
+
+**Consequences.** One loop, one table, one metrics/alert surface
+(`webhooks_delivered_total`, `webhooks_pending`, `WebhookDeliveryFailing` — all
+unchanged, now covering six types); each new event type is a mapper arm plus one env
+var, no new machinery. Operators can attach the endpoints independently (set only the
+URLs they consume); a renamed or unconfigured type can never be misrouted (the
+SQL-filtered work set makes a route miss impossible by construction, and a defensive
+skip logs and leaves the row pending). The `event_type = ANY(...)` filter keeps
+unrouted backlogs out of the 50-per-cycle budget, so a chatty disabled type cannot
+starve enabled ones. Transaction-scoped event ids mean a hypothetical multi-transfer
+transaction records each instruction separately — and a re-walked transaction is still
+an `ON CONFLICT` no-op. The API-side placeholders (wallet resolution, viewer keys) are
+a conscious boundary: the indexer's contract ends at faithfully reporting on-chain
+state changes; turning registry PDAs into people is the consuming API's domain.

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*)\n        FROM webhook_events\n        WHERE delivered_at IS NULL\n          AND (next_attempt_at IS NULL OR next_attempt_at <= now())\n          AND event_type = ANY($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "367c13ccf83e0051efff170ac08d353b886984f9fa44c5c6a0ec8e80bcf0c6e2"
+}

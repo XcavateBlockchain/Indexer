@@ -157,6 +157,13 @@ jobs:
           OBJECT_STORAGE_PUBLIC_BASE_URL: ${{ vars.OBJECT_STORAGE_PUBLIC_BASE_URL }}
           IMAGE_MIRROR_INTERVAL: ${{ vars.IMAGE_MIRROR_INTERVAL }}
           INIT_PROPERTY_ASSET_WEBHOOK_URL: ${{ secrets.INIT_PROPERTY_ASSET_WEBHOOK_URL }}
+          # ADR-36: the other five property-lifecycle webhook routes, each independently
+          # optional (unset = that event type accumulates undelivered in webhook_events).
+          PROPERTY_CLAIM_STARTED_WEBHOOK_URL: ${{ secrets.PROPERTY_CLAIM_STARTED_WEBHOOK_URL }}
+          SPV_LAWYER_ELECTED_WEBHOOK_URL: ${{ secrets.SPV_LAWYER_ELECTED_WEBHOOK_URL }}
+          DEAL_EXECUTED_WEBHOOK_URL: ${{ secrets.DEAL_EXECUTED_WEBHOOK_URL }}
+          LETTING_AGENT_APPOINTED_WEBHOOK_URL: ${{ secrets.LETTING_AGENT_APPOINTED_WEBHOOK_URL }}
+          SHARES_TRANSFERRED_WEBHOOK_URL: ${{ secrets.SHARES_TRANSFERRED_WEBHOOK_URL }}
           # ADR-35 sold-out claim notifications: OPTIONAL but all-or-nothing, mirroring
           # config.rs exactly -- a partial pair fails HERE, at render time, instead of
           # crash-looping the indexer on the server.
@@ -260,6 +267,11 @@ jobs:
               dotenv_optional IMAGE_MIRROR_INTERVAL "$IMAGE_MIRROR_INTERVAL"
             fi
             dotenv_optional INIT_PROPERTY_ASSET_WEBHOOK_URL "$INIT_PROPERTY_ASSET_WEBHOOK_URL"
+            dotenv_optional PROPERTY_CLAIM_STARTED_WEBHOOK_URL "$PROPERTY_CLAIM_STARTED_WEBHOOK_URL"
+            dotenv_optional SPV_LAWYER_ELECTED_WEBHOOK_URL "$SPV_LAWYER_ELECTED_WEBHOOK_URL"
+            dotenv_optional DEAL_EXECUTED_WEBHOOK_URL "$DEAL_EXECUTED_WEBHOOK_URL"
+            dotenv_optional LETTING_AGENT_APPOINTED_WEBHOOK_URL "$LETTING_AGENT_APPOINTED_WEBHOOK_URL"
+            dotenv_optional SHARES_TRANSFERRED_WEBHOOK_URL "$SHARES_TRANSFERRED_WEBHOOK_URL"
             if [ "$notifications_set" -eq 2 ]; then
               dotenv_secret NOTIFICATIONS_API_URL "$NOTIFICATIONS_API_URL"
               dotenv_secret NOTIFICATIONS_API_KEY "$NOTIFICATIONS_API_KEY"

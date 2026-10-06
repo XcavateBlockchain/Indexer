@@ -414,32 +414,34 @@ async fn run_live() -> Result<()> {
         None
     };
 
-    // The outbound webhook delivery loop (ADR-28): only when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set AND the
-    // marketplace program is configured (the only source of webhook events today). Its work
-    // set is the durable `webhook_events` table, so on startup it drains any backlog (e.g. a
-    // fresh index's backfill) and then delivers each new registration within one interval.
-    // With no `INIT_PROPERTY_ASSET_WEBHOOK_URL` the loop is never spawned and no external call is ever made.
-    let webhook_delivery =
-        if cfg.webhook_url.is_some() && cfg.programs.iter().any(|p| p.name == "marketplace") {
-            let pool = started.pool.clone();
-            let url = cfg
-                .webhook_url
-                .clone()
-                .expect("guarded by the is_some() check above");
-            let interval = cfg.webhook_interval;
-            let shutdown = shutdown.clone();
-            Some(tokio::spawn(async move {
-                webhooks::supervise(&pool, url, interval, shutdown).await
-            }))
-        } else {
-            // A first-class disabled state must still be greppable: an unset webhook URL
-            // otherwise looks identical to a healthy-but-idle loop in the logs.
-            log::info!(
-                "webhook delivery loop disabled (INIT_PROPERTY_ASSET_WEBHOOK_URL unset or \
-                 marketplace not configured); recorded events accumulate undelivered"
-            );
-            None
-        };
+    // The outbound webhook delivery loop (ADR-28/ADR-36): only when at least one
+    // `*_WEBHOOK_URL` route is set AND a program that produces webhook events (marketplace
+    // or property) is configured. Its work set is the durable `webhook_events` table, so on
+    // startup it drains any backlog (e.g. a fresh index's backfill) and then delivers each
+    // new event within one interval. With no routes the loop is never spawned and no
+    // external call is ever made.
+    let webhook_delivery = if !cfg.webhook_routes.is_empty()
+        && cfg
+            .programs
+            .iter()
+            .any(|p| p.name == "marketplace" || p.name == "property")
+    {
+        let pool = started.pool.clone();
+        let routes = cfg.webhook_routes.clone();
+        let interval = cfg.webhook_interval;
+        let shutdown = shutdown.clone();
+        Some(tokio::spawn(async move {
+            webhooks::supervise(&pool, routes, interval, shutdown).await
+        }))
+    } else {
+        // A first-class disabled state must still be greppable: an unset webhook URL
+        // otherwise looks identical to a healthy-but-idle loop in the logs.
+        log::info!(
+            "webhook delivery loop disabled (no *_WEBHOOK_URL set, or neither marketplace nor \
+             property configured); recorded events accumulate undelivered"
+        );
+        None
+    };
 
     // The sold-out claim notification loop (ADR-35): only when `NOTIFICATIONS_API_URL` +
     // `NOTIFICATIONS_API_KEY` are set AND the marketplace program is configured (the only

@@ -312,38 +312,49 @@ A rising `property_metadata_fetched_total{result="failure"}` with a non-zero
 everything else; the live fetcher (or `indexer fetch-metadata`) refills it from the live
 URIs — no other step is needed.
 
-## Property-asset registration webhooks: setup and "not firing"
+## Property webhooks: setup and "not firing"
 
-When a new property asset is registered on-chain (the marketplace `init_property_assets`
-instruction creates the `PropertyAsset` PDA — the moment the asset's `name`,
-`metadata_uri`, and share mint all exist), the indexer POSTs one JSON document to
-`INIT_PROPERTY_ASSET_WEBHOOK_URL` (ADR-28).
+When property-lifecycle state changes happen on-chain, the indexer POSTs one JSON
+document per event to the endpoint configured for its type (ADR-28/ADR-36). The route
+table — one optional env var per event type, each independently switchable:
 
-**Enable it.** Set `INIT_PROPERTY_ASSET_WEBHOOK_URL` to an http(s) endpoint the indexer can reach from the
-compose network (the operator's own endpoint — the ADR-27 SSRF guard applies:
-http/https only, non-global IP literals rejected). In Docker, add `INIT_PROPERTY_ASSET_WEBHOOK_URL=...` to
-`.env` (`docker-compose.yml` passes it through; empty/unset = disabled). Bare cargo:
-export it before starting `indexer run`. Optionally: `WEBHOOK_INTERVAL` (seconds,
-default 5) — the delivery poll interval; the loop costs nothing while nothing is
-pending. **The loop only spawns when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set AND `marketplace` is in
-`PROGRAMS`;** with no URL the durable `webhook_events` rows are still recorded (below)
-but no external call is ever made. `INIT_PROPERTY_ASSET_WEBHOOK_URL` is read at startup — restart the
-indexer after changing it.
+| Event type | Env var | Fires on | Dedup subject |
+| --- | --- | --- | --- |
+| `property_asset_registered` | `INIT_PROPERTY_ASSET_WEBHOOK_URL` | marketplace `init_property_assets` (the `PropertyAsset` PDA gets name + metadata_uri + share mint) | the asset PDA (once per asset) |
+| `property_claim_started` | `PROPERTY_CLAIM_STARTED_WEBHOOK_URL` | the FIRST marketplace `claim_shares` on a listing | the listing PDA (once per listing) |
+| `spv_lawyer_elected` | `SPV_LAWYER_ELECTED_WEBHOOK_URL` | marketplace `finalize_spv_election` | the transaction + instruction path |
+| `deal_executed` | `DEAL_EXECUTED_WEBHOOK_URL` | marketplace `execute_deal` | the transaction + instruction path |
+| `letting_agent_appointed` | `LETTING_AGENT_APPOINTED_WEBHOOK_URL` | property `finalize_agent_election` | the transaction + instruction path |
+| `property_shares_transferred` | `SHARES_TRANSFERRED_WEBHOOK_URL` | marketplace `buy_relisted_shares` / `accept_offer` / `send_property_shares` | the transaction + instruction path |
+
+**Enable it.** Set any of the `*_WEBHOOK_URL` variables to an http(s) endpoint the
+indexer can reach from the compose network (the operator's own endpoint — the ADR-27
+SSRF guard applies: http/https only, non-global IP literals rejected). In Docker, add
+them to `.env` (`docker-compose.yml` passes them through; empty/unset = that type
+disabled). Bare cargo: export them before starting `indexer run`. Optionally:
+`WEBHOOK_INTERVAL` (seconds, default 5) — the delivery poll interval; the loop costs
+nothing while nothing is pending. **The loop only spawns when at least one route is
+set AND `marketplace` or `property` (the event sources) is in `PROGRAMS`;** an
+unconfigured type's durable `webhook_events` rows are still recorded and drain when
+its URL is later set. The URLs are read at startup — restart the indexer after
+changing them.
 
 **How it works.** Detection and delivery are separate (ADR-28): the mapper records one
-durable row in `webhook_events` (migration 0014) per `init_property_assets` —
-`event_id` = `property_asset_registered:<base58 asset PDA>`, so each asset is recorded
-at most once even when backfill re-walks the range — committed atomically with the rest
-of the transaction's rows. A background loop (5 s interval, ≤50 events per cycle)
-drains the work set (undelivered rows whose backoff has elapsed) and POSTs each
-`payload` to `INIT_PROPERTY_ASSET_WEBHOOK_URL`. A 2xx marks the row delivered; a failure records
-`last_error` and backs off per event (30 s, doubling, 1 h cap) and retries. A dead
-endpoint degrades to lagging, retried-and-logged rows — never to a stalled ingest,
-never to a lost notification. Delivery is AT LEAST ONCE: a POST that reached the
-endpoint but whose success response was lost is re-POSTed — dedupe on `pubkey` (one
-asset registers exactly once).
+durable row in `webhook_events` (migration 0014) per producing instruction —
+`event_id` = `<event_type>:<subject>` (the subject column of the table above), so a
+backfill re-walk is an `ON CONFLICT` no-op — committed atomically with the rest of
+the transaction's rows. A background loop (5 s interval, ≤50 events per cycle) drains
+the work set (undelivered rows OF THE CONFIGURED TYPES whose backoff has elapsed) and
+POSTs each `payload` to its type's URL. A 2xx marks the row delivered; a failure
+records `last_error` and backs off per event (30 s, doubling, 1 h cap) and retries. A
+dead endpoint degrades to lagging, retried-and-logged rows — never to a stalled
+ingest, never to a lost notification. Delivery is AT LEAST ONCE: a POST that reached
+the endpoint but whose success response was lost is re-POSTed — dedupe on the
+payload's subject keys (`pubkey`/`listing`/`property`, plus `tx_signature` for the
+repeatable events).
 
-**Payload contract** (POSTed verbatim as `application/json`):
+**Payload contract** (POSTed verbatim as `application/json`; every payload also carries
+`slot`, `tx_signature`, `block_time` (ISO-8601), and `program`):
 
     {
       "event": "property_asset_registered",
@@ -358,11 +369,38 @@ asset registers exactly once).
       "program": "marketplace"
     }
 
+    { "event": "property_claim_started",
+      "listing": "<base58 Listing PDA>", "property": "<base58 PropertyAsset PDA>",
+      "listing_id": 12, "investor": "<base58 wallet of the first claimer>", ... }
+
+    { "event": "spv_lawyer_elected",
+      "listing_id": 12, "listing": "...", "property": "...",
+      "winner_registry": "<base58 Lawyer REGISTRY PDA — not the lawyer's wallet> | null", ... }
+
+    { "event": "deal_executed",
+      "listing_id": 12, "listing": "...", "property": "...",
+      "developer_lawyer_registry": "...", "spv_lawyer_registry": "...", ... }
+
+    { "event": "letting_agent_appointed",
+      "asset_id": 12, "letting": "<base58 PropertyLetting PDA>", "property": "...",
+      "winner_entry": "<base58 LettingAgent ENTRY PDA — not the agent's wallet> | null",
+      "program": "property", ... }
+
+    { "event": "property_shares_transferred",
+      "kind": "relisted_purchase | offer_accepted | direct_send",
+      "property": "...", "listing": "...",
+      "from": "<base58 seller/sender wallet>", "to": "<base58 buyer/receiver wallet>",
+      "amount": 3, "asset_id": 12,
+      "offer": "<base58 Offer PDA, offer_accepted only> | null", ... }
+      // note: "amount" and "asset_id" are null for offer_accepted (the amount lives in
+      // the on-chain Offer account, which the instruction mapper cannot read).
+
 **Not firing / not delivered.** Check, in order:
 
 1. `docker compose logs indexer | grep webhook` — "webhook delivery loop started"
-   (the loop spawned; if absent, `INIT_PROPERTY_ASSET_WEBHOOK_URL` is unset or `marketplace` is not in
-   `PROGRAMS`), then the per-event `webhook delivered:` / `webhook delivery failed for
+   (the loop spawned, with its `routes: <type> -> <host>` list; if absent, no
+   `*_WEBHOOK_URL` is set or neither `marketplace` nor `property` is in `PROGRAMS`),
+   then the per-event `webhook delivered:` / `webhook delivery failed for
    ...` lines.
 2. `SELECT event_id, attempts, next_attempt_at, last_error, delivered_at FROM
    webhook_events ORDER BY created_at DESC LIMIT 20;` — the durable queue. Rows with

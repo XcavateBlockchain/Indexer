@@ -5,7 +5,7 @@
 //!
 //! * the batcher ([`super::super::batcher`]) records each event with
 //!   [`record_event`] (`INSERT ... ON CONFLICT (event_id) DO NOTHING` -- idempotent under
-//!   backfill re-walks, so an asset is announced at most once);
+//!   backfill re-walks, so an event is enqueued at most once);
 //! * the delivery loop (`crate::webhooks`) is the only writer of the delivery-state columns
 //!   ([`mark_delivered`] / [`record_failure`]), and the only reader of the work set
 //!   ([`pending_events`]).
@@ -14,11 +14,14 @@ use chrono::{DateTime, Utc};
 use sqlx::postgres::PgQueryResult;
 use sqlx::PgExecutor;
 
-/// One undelivered webhook event, ready to POST to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
+/// One undelivered webhook event, ready to POST to its event type's configured endpoint.
 #[derive(Debug, Clone)]
 pub struct PendingEvent {
-    /// The `webhook_events` primary key (`<event_type>:<base58 subject>`).
+    /// The `webhook_events` primary key (`<event_type>:<subject>`).
     pub event_id: String,
+    /// The event label the delivery loop routes on (one of
+    /// [`crate::mapping::event_type`]'s constants).
+    pub event_type: String,
     /// The JSON document to POST, verbatim.
     pub payload: serde_json::Value,
 }
@@ -61,25 +64,31 @@ where
     .await
 }
 
-/// The delivery work set: undelivered events whose backoff has elapsed (or has no backoff yet).
-/// Ordered by `event_id` so a cycle's batch is deterministic; bounded by `limit`.
+/// The delivery work set: undelivered events of the CONFIGURED types (`types` is the route
+/// table's labels, ADR-36) whose backoff has elapsed (or has no backoff yet). Ordered by
+/// `event_id` so a cycle's batch is deterministic; bounded by `limit`. Events of
+/// unconfigured types stay pending and invisible to the work set -- they drain if their
+/// `*_WEBHOOK_URL` is ever set (same stance as a fully unset URL in ADR-28).
 pub async fn pending_events<'e, E>(
     executor: E,
     limit: i64,
+    types: &[&str],
 ) -> Result<Vec<PendingEvent>, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
     let rows = sqlx::query!(
         r#"
-        SELECT event_id, payload
+        SELECT event_id, event_type, payload
         FROM webhook_events
         WHERE delivered_at IS NULL
           AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+          AND event_type = ANY($2)
         ORDER BY event_id ASC
         LIMIT $1
         "#,
         limit,
+        &types as _
     )
     .fetch_all(executor)
     .await?;
@@ -88,6 +97,7 @@ where
         .into_iter()
         .map(|r| PendingEvent {
             event_id: r.event_id,
+            event_type: r.event_type,
             payload: r.payload,
         })
         .collect())
@@ -146,8 +156,11 @@ where
     .await
 }
 
-/// How many events are awaiting delivery right now (the `webhooks_pending` gauge, ADR-28).
-pub async fn count_pending<'e, E>(executor: E) -> Result<i64, sqlx::Error>
+/// How many events of the configured types are awaiting delivery right now (the
+/// `webhooks_pending` gauge, ADR-28/ADR-36). Unconfigured types are deliberately excluded:
+/// the gauge feeds "is the loop keeping up" alerting, and a type with no route can never
+/// drain -- counting it would alert on a configuration fact, not a delivery problem.
+pub async fn count_pending<'e, E>(executor: E, types: &[&str]) -> Result<i64, sqlx::Error>
 where
     E: PgExecutor<'e>,
 {
@@ -157,7 +170,9 @@ where
         FROM webhook_events
         WHERE delivered_at IS NULL
           AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-        "#
+          AND event_type = ANY($1)
+        "#,
+        &types as _
     )
     .fetch_one(executor)
     .await?;
