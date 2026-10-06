@@ -3088,6 +3088,39 @@
           }
         },
         {
+          "name": "terms_vote",
+          "docs": [
+            "The terms-ratification vote, when one was ever opened for the",
+            "listing. Once it exists the sale may only settle with the terms",
+            "ratified on the document set both lawyers confirmed; listings that",
+            "predate the vote settle exactly as before."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  114,
+                  109,
+                  115,
+                  45,
+                  118,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              }
+            ]
+          }
+        },
+        {
           "name": "listing_vault",
           "pda": {
             "seeds": [
@@ -3243,6 +3276,105 @@
           ],
           "writable": true,
           "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "listing_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "finalize_terms_vote",
+      "discriminator": [
+        254,
+        120,
+        115,
+        149,
+        165,
+        53,
+        43,
+        150
+      ],
+      "accounts": [
+        {
+          "name": "cranker",
+          "signer": true
+        },
+        {
+          "name": "listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "property",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  112,
+                  101,
+                  114,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "terms_vote",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  114,
+                  109,
+                  115,
+                  45,
+                  118,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -4216,6 +4348,132 @@
         {
           "name": "share_price",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "open_terms_vote",
+      "discriminator": [
+        223,
+        9,
+        147,
+        159,
+        52,
+        27,
+        63,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "lawyer",
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Whoever fronts the vote account's rent: the sponsor on the default",
+            "path, or any willing wallet. The account lives as long as the vote",
+            "can gate settlement, so it is never closed."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "lawyer_role",
+          "docs": [
+            "The caller's Lawyer role, owned by the roles program."
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "terms_vote",
+          "docs": [
+            "The vote, one per listing; the first open creates it, later rounds",
+            "reuse it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  114,
+                  109,
+                  115,
+                  45,
+                  118,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "listing_id",
+          "type": "u64"
+        },
+        {
+          "name": "documents_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
         }
       ]
     },
@@ -5779,6 +6037,159 @@
       ]
     },
     {
+      "name": "unlock_terms_vote_shares",
+      "discriminator": [
+        61,
+        211,
+        10,
+        228,
+        145,
+        64,
+        113,
+        49
+      ],
+      "accounts": [
+        {
+          "name": "voter",
+          "signer": true
+        },
+        {
+          "name": "rent_payer",
+          "docs": [
+            "record closes."
+          ],
+          "writable": true
+        },
+        {
+          "name": "listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "terms_vote",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  114,
+                  109,
+                  115,
+                  45,
+                  118,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  97,
+                  114,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              },
+              {
+                "kind": "account",
+                "path": "voter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vote_record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  114,
+                  109,
+                  115,
+                  45,
+                  118,
+                  111,
+                  116,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "arg",
+                "path": "round"
+              },
+              {
+                "kind": "account",
+                "path": "voter"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "listing_id",
+          "type": "u64"
+        },
+        {
+          "name": "round",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "unlock_voting_shares",
       "discriminator": [
         240,
@@ -6421,6 +6832,185 @@
         {
           "name": "listing_id",
           "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "vote_on_terms",
+      "discriminator": [
+        81,
+        42,
+        1,
+        130,
+        204,
+        220,
+        78,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "voter",
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Whoever fronts the vote record's rent: the sponsor on the default",
+            "path, or any willing wallet, so one protocol key can never decide the",
+            "vote by withholding its signature. The record remembers who to",
+            "refund."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "voter_role",
+          "docs": [
+            "The caller's RealEstateInvestor role, owned by the roles program."
+          ]
+        },
+        {
+          "name": "listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "terms_vote",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  114,
+                  109,
+                  115,
+                  45,
+                  118,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holding",
+          "docs": [
+            "The voter's share ledger; the vote locks part of it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  97,
+                  114,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "listing_id"
+              },
+              {
+                "kind": "account",
+                "path": "voter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vote_record",
+          "docs": [
+            "This round's vote record; revoting reuses it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  114,
+                  109,
+                  115,
+                  45,
+                  118,
+                  111,
+                  116,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "account",
+                "path": "terms_vote.round",
+                "account": "TermsVote"
+              },
+              {
+                "kind": "account",
+                "path": "voter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "listing_id",
+          "type": "u64"
+        },
+        {
+          "name": "approve",
+          "type": "bool"
         },
         {
           "name": "amount",
@@ -7632,6 +8222,32 @@
         254,
         143
       ]
+    },
+    {
+      "name": "TermsVote",
+      "discriminator": [
+        214,
+        122,
+        227,
+        110,
+        207,
+        13,
+        125,
+        175
+      ]
+    },
+    {
+      "name": "TermsVoteRecord",
+      "discriminator": [
+        118,
+        38,
+        241,
+        214,
+        124,
+        115,
+        83,
+        253
+      ]
     }
   ],
   "events": [
@@ -8182,6 +8798,58 @@
       ]
     },
     {
+      "name": "TermsVoteCast",
+      "discriminator": [
+        76,
+        249,
+        88,
+        67,
+        234,
+        130,
+        58,
+        110
+      ]
+    },
+    {
+      "name": "TermsVoteFinalized",
+      "discriminator": [
+        99,
+        219,
+        247,
+        24,
+        203,
+        147,
+        149,
+        94
+      ]
+    },
+    {
+      "name": "TermsVoteOpened",
+      "discriminator": [
+        233,
+        78,
+        199,
+        216,
+        124,
+        239,
+        51,
+        16
+      ]
+    },
+    {
+      "name": "TermsVoteSharesUnlocked",
+      "discriminator": [
+        37,
+        205,
+        89,
+        175,
+        203,
+        186,
+        188,
+        197
+      ]
+    },
+    {
       "name": "VotingSharesUnlocked",
       "discriminator": [
         100,
@@ -8605,6 +9273,26 @@
       "code": 6081,
       "name": "InvalidAssetMetadata",
       "msg": "Invalid asset name or URI"
+    },
+    {
+      "code": 6082,
+      "name": "TermsVoteStillOpen",
+      "msg": "A terms vote round is already open"
+    },
+    {
+      "code": 6083,
+      "name": "TermsVoteNotOpen",
+      "msg": "No terms vote round is open"
+    },
+    {
+      "code": 6084,
+      "name": "TermsAlreadyRatified",
+      "msg": "Terms already ratified"
+    },
+    {
+      "code": 6085,
+      "name": "TermsNotRatified",
+      "msg": "Terms not ratified"
     }
   ],
   "types": [
@@ -8950,6 +9638,23 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "terms_voting_time",
+            "docs": [
+              "Seconds the terms-ratification vote stays open once the SPV lawyer",
+              "opens it. Appended after `bump` so the layout only ever grows at the",
+              "tail; the devnet config is re-initialized for the wider account."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "terms_quorum_bps",
+            "docs": [
+              "Share of a property's supply that must vote for the terms to be",
+              "ratified, in basis points. Snapshotted onto each `TermsVote` round."
+            ],
+            "type": "u16"
           }
         ]
       }
@@ -9038,6 +9743,22 @@
           },
           {
             "name": "min_voting_quorum_bps",
+            "type": "u16"
+          },
+          {
+            "name": "terms_voting_time",
+            "docs": [
+              "Seconds the terms-ratification vote stays open once the SPV lawyer",
+              "opens it."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "terms_quorum_bps",
+            "docs": [
+              "Share of a property's supply that must vote for the terms to be",
+              "ratified, in basis points. 10_000 demands full turnout."
+            ],
             "type": "u16"
           }
         ]
@@ -11045,6 +11766,273 @@
       }
     },
     {
+      "name": "TermsVote",
+      "docs": [
+        "The investors' ratification vote on the sale terms the SPV lawyer",
+        "submitted. One per listing; a rejected round reopens as the next round",
+        "with fresh tallies, so at most one round is ever open. Strictly",
+        "pre-settlement: once the sale leaves `Legal` the vote is moot."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing_id",
+            "type": "u64"
+          },
+          {
+            "name": "documents_hash",
+            "docs": [
+              "Hash of the document set investors are ratifying; settlement compares",
+              "it against the hash both lawyers confirmed."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "expiry",
+            "docs": [
+              "When the round closes; never outlives the legal deadline."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "yes_power",
+            "docs": [
+              "Share-weighted approve votes."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "no_power",
+            "docs": [
+              "Share-weighted reject votes."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "quorum_bps",
+            "docs": [
+              "Turnout quorum, snapshotted from config when the round opened."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "round",
+            "docs": [
+              "Round number, 1-based and monotonic per listing. Vote records are",
+              "keyed by it, so nothing stale can count toward a later round."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "TermsVoteStatus"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TermsVoteCast",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing_id",
+            "type": "u64"
+          },
+          {
+            "name": "round",
+            "type": "u16"
+          },
+          {
+            "name": "voter",
+            "type": "pubkey"
+          },
+          {
+            "name": "approve",
+            "type": "bool"
+          },
+          {
+            "name": "power",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TermsVoteFinalized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing_id",
+            "type": "u64"
+          },
+          {
+            "name": "round",
+            "type": "u16"
+          },
+          {
+            "name": "yes_power",
+            "type": "u64"
+          },
+          {
+            "name": "no_power",
+            "type": "u64"
+          },
+          {
+            "name": "ratified",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TermsVoteOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing_id",
+            "type": "u64"
+          },
+          {
+            "name": "round",
+            "type": "u16"
+          },
+          {
+            "name": "documents_hash",
+            "docs": [
+              "The document set put to the investors."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "expiry",
+            "type": "i64"
+          },
+          {
+            "name": "quorum_bps",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TermsVoteRecord",
+      "docs": [
+        "One investor's vote in one terms-ratification round. Locks the voting",
+        "shares until the record is closed again by `unlock_terms_vote_shares`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing_id",
+            "type": "u64"
+          },
+          {
+            "name": "round",
+            "docs": [
+              "The terms-vote round the vote belongs to."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "voter",
+            "type": "pubkey"
+          },
+          {
+            "name": "approve",
+            "docs": [
+              "True for approve, false for reject."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "power",
+            "docs": [
+              "The shares this vote locked and counts for."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "rent_payer",
+            "docs": [
+              "The wallet that fronted the record's rent; refunded at close."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TermsVoteSharesUnlocked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing_id",
+            "type": "u64"
+          },
+          {
+            "name": "round",
+            "type": "u16"
+          },
+          {
+            "name": "voter",
+            "type": "pubkey"
+          },
+          {
+            "name": "power",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TermsVoteStatus",
+      "docs": [
+        "Where a terms-ratification round stands."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Ratified"
+          },
+          {
+            "name": "Rejected"
+          }
+        ]
+      }
+    },
+    {
       "name": "VotingSharesUnlocked",
       "type": {
         "kind": "struct",
@@ -11154,6 +12142,16 @@
       "name": "SHARE_SEED",
       "type": "bytes",
       "value": "[115, 104, 97, 114, 101]"
+    },
+    {
+      "name": "TERMS_VOTE_RECORD_SEED",
+      "type": "bytes",
+      "value": "[116, 101, 114, 109, 115, 45, 118, 111, 116, 101, 45, 114, 101, 99, 111, 114, 100]"
+    },
+    {
+      "name": "TERMS_VOTE_SEED",
+      "type": "bytes",
+      "value": "[116, 101, 114, 109, 115, 45, 118, 111, 116, 101]"
     },
     {
       "name": "VAULT_SEED",
