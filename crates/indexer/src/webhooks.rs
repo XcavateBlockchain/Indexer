@@ -1,5 +1,6 @@
-//! The outbound webhook delivery loop (ADR-28): the background task that turns each durable
-//! `webhook_events` row into a delivered `POST` to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
+//! The outbound webhook delivery loop (ADR-28/ADR-36): the background task that turns each
+//! durable `webhook_events` row into a delivered `POST` to the endpoint URL configured for
+//! the row's `event_type`.
 //!
 //! ## Why a separate loop and not the write path
 //!
@@ -12,23 +13,33 @@
 //! the delivery is a background loop with its own per-event backoff, reading the undelivered
 //! rows and never touching the batcher.
 //!
+//! ## Routing (ADR-36)
+//!
+//! Each event type has its own optional endpoint (`Config::webhook_routes`, one
+//! `*_WEBHOOK_URL` env var per type). The work-set query selects only the configured types,
+//! so an unrouted type's rows accumulate undelivered and drain if their URL is ever set --
+//! per-type the same stance ADR-28 took for the whole loop.
+//!
 //! ## One cycle
 //!
-//! 1. `db::webhooks::pending_events` selects the work set: undelivered events whose backoff
-//!    has elapsed (or has no backoff yet), bounded by [`CYCLE_LIMIT`].
-//! 2. Each item (sequential): `POST INIT_PROPERTY_ASSET_WEBHOOK_URL` with the event's `payload`. A 2xx marks the
+//! 1. `db::webhooks::pending_events` selects the work set: undelivered events of the
+//!    configured types whose backoff has elapsed (or has no backoff yet), bounded by
+//!    [`CYCLE_LIMIT`].
+//! 2. Each item (sequential): POST its type's URL with the event's `payload`. A 2xx marks the
 //!    row delivered; a failure records its error + exponential backoff (30 s, doubling, 1 h
 //!    cap) and moves on; one event's fault never fails the loop.
 //! 3. The `webhooks_pending` gauge is set to the remaining work-set size.
 //!
 //! Delivery is AT LEAST ONCE: a commit that succeeded on the server but errored on the wire is
-//! retried and the endpoint receives the same event twice. The payload carries the stable
-//! `pubkey` (the dedup key `event_id` is built from) and the `event` label, so a well-behaved
-//! endpoint can dedupe. The at-most-once part is the RECORD (the
-//! `ON CONFLICT (event_id) DO NOTHING` insert), so an asset is enqueued once.
+//! retried and the endpoint receives the same event twice. Every payload carries the stable
+//! `event` label plus the event's subject keys (asset/listing PDA, transaction signature),
+//! so a well-behaved endpoint can dedupe; the mapper-facing doc on
+//! [`crate::mapping::WebhookEvent`] explains the `event_id` shapes. The at-most-once part is
+//! the RECORD (the `ON CONFLICT (event_id) DO NOTHING` insert).
 //!
-//! Active only when `INIT_PROPERTY_ASSET_WEBHOOK_URL` is set (and `marketplace` is in `PROGRAMS`); with no URL the
-//! supervisor is never spawned and no external calls are ever made.
+//! Active only when at least one `*_WEBHOOK_URL` is set (and `marketplace` or `property` --
+//! the event sources -- is in `PROGRAMS`); with no routes the supervisor is never spawned and
+//! no external calls are ever made.
 
 use std::time::Duration;
 
@@ -36,6 +47,7 @@ use anyhow::{anyhow, Context, Result};
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::WebhookRoute;
 use crate::db::webhooks::{self, PendingEvent};
 
 /// How many pending events one cycle delivers. The rest wait for the next cycle: a cycle must
@@ -89,17 +101,18 @@ pub async fn deliver_one(client: &reqwest::Client, url: &str, event: &PendingEve
 }
 
 /// One delivery cycle (also the whole job of a hypothetical one-shot `indexer deliver-webhooks`
-/// if one were ever added): select the work set, deliver each item, mark successes, record
-/// failures with backoff, and set the pending gauge. `shutdown` only gates BETWEEN items -- a
-/// cancel stops the cycle, never an in-flight request (which has its own timeout from
-/// `metadata::build_client`).
+/// if one were ever added): select the work set (configured types only), deliver each item to
+/// its type's URL, mark successes, record failures with backoff, and set the pending gauge.
+/// `shutdown` only gates BETWEEN items -- a cancel stops the cycle, never an in-flight request
+/// (which has its own timeout from `metadata::build_client`).
 pub async fn cycle(
     pool: &PgPool,
-    url: &str,
+    routes: &[WebhookRoute],
     client: &reqwest::Client,
     shutdown: &CancellationToken,
 ) -> Result<CycleSummary> {
-    let pending = webhooks::pending_events(pool, CYCLE_LIMIT)
+    let types: Vec<&str> = routes.iter().map(|r| r.event_type).collect();
+    let pending = webhooks::pending_events(pool, CYCLE_LIMIT, &types)
         .await
         .context("selecting the webhook delivery work set")?;
 
@@ -108,8 +121,23 @@ pub async fn cycle(
         if shutdown.is_cancelled() {
             break;
         }
+        // The work set is SQL-filtered to the configured types, so a missing route is
+        // impossible by construction; if it ever happens (a row recorded under a renamed
+        // type), skip the event WITHOUT recording a failure -- misrouting it or retrying it
+        // forever would both be wrong.
+        let Some(route) = routes
+            .iter()
+            .find(|r| r.event_type == event.event_type.as_str())
+        else {
+            log::warn!(
+                "webhook {} has unconfigured type {:?}; leaving it pending",
+                event.event_id,
+                event.event_type
+            );
+            continue;
+        };
         summary.attempted += 1;
-        match deliver_one(client, url, event).await {
+        match deliver_one(client, &route.url, event).await {
             Ok(()) => {
                 webhooks::mark_delivered(pool, &event.event_id)
                     .await
@@ -119,7 +147,7 @@ pub async fn cycle(
                 log::info!(
                     "webhook delivered: {} (POST {})",
                     event.event_id,
-                    host_of(url)
+                    host_of(&route.url)
                 );
             }
             Err(e) => {
@@ -138,13 +166,13 @@ pub async fn cycle(
                 log::warn!(
                     "webhook delivery failed for {} (POST {}): {error}; retrying with backoff",
                     event.event_id,
-                    host_of(url)
+                    host_of(&route.url)
                 );
             }
         }
     }
 
-    let remaining = webhooks::count_pending(pool)
+    let remaining = webhooks::count_pending(pool, &types)
         .await
         .context("counting the remaining webhook work set")?;
     crate::metrics::set_webhooks_pending(remaining);
@@ -162,24 +190,30 @@ pub async fn cycle(
 }
 
 /// Run delivery cycles until `shutdown` fires (spawned by `run` next to the metadata fetcher
-/// and the reconciliation supervisor; ADR-28).
+/// and the reconciliation supervisor; ADR-28/ADR-36). `routes` is non-empty (the caller's
+/// spawn condition); the start log lists each route's type and host -- never the full URL,
+/// which may carry a bearer token in the query string.
 pub async fn supervise(
     pool: &PgPool,
-    url: String,
+    routes: Vec<WebhookRoute>,
     interval: Duration,
     shutdown: CancellationToken,
 ) {
+    let route_list = routes
+        .iter()
+        .map(|r| format!("{} -> {}", r.event_type, host_of(&r.url)))
+        .collect::<Vec<_>>()
+        .join(", ");
     log::info!(
         "webhook delivery loop started (every {interval:?}, up to {CYCLE_LIMIT} event(s) per \
-         cycle, target {})",
-        host_of(&url)
+         cycle, routes: {route_list})"
     );
     let client = crate::metadata::build_client();
     loop {
         if shutdown.is_cancelled() {
             break;
         }
-        match cycle(pool, &url, &client, &shutdown).await {
+        match cycle(pool, &routes, &client, &shutdown).await {
             // `cycle` logs its own per-event and summary lines.
             Ok(_) => {}
             Err(e) => {

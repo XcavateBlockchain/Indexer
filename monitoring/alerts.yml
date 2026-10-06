@@ -188,16 +188,16 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Outbound property-asset webhook deliveries have been failing"
+          summary: "Outbound property webhook deliveries have been failing"
           description: >-
             webhooks_delivered_total{result="failure"} increased in the last 2
-            hours: the indexer's webhook delivery loop (ADR-28) has been POSTing
-            property-asset-registration payloads to INIT_PROPERTY_ASSET_WEBHOOK_URL and the endpoint
+            hours: the indexer's webhook delivery loop (ADR-28/ADR-36) has been POSTing
+            property-lifecycle payloads to their configured *_WEBHOOK_URL endpoints and one
             is failing (non-2xx, connect error, or timeout). Events are NOT lost --
             they are durable rows in webhook_events that retry with exponential
             backoff (30 s doubling, 1 h cap) until the endpoint answers 2xx. Check
-            the endpoint and the per-row last_error; see RUNBOOK.md "Property-asset
-            registration webhooks".
+            the endpoint and the per-row last_error; see RUNBOOK.md "Property
+            webhooks".
 
       # SoldOutNotificationDeliveryFailing -- counter-based, for the same reason as
       # WebhookDeliveryFailing: the ADR-35 per-event backoff (30 s doubling, 1 h cap) makes

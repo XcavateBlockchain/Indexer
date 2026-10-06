@@ -1758,3 +1758,42 @@ Debug redaction). `cargo test --workspace --locked`, `fmt --check`,
 `scripts/agent/verify-devnet.sh` all green (numbers in the PR). The loop is INERT until the
 `NOTIFICATIONS_API_URL` / `NOTIFICATIONS_API_KEY` GitHub secrets are set; events recorded
 before then drain on the first deploy that has them.
+
+## Indexer: the webhook outbox routes six property-lifecycle event types (ADR-36) — 2026-10-06
+
+**Why**: the XcavateProfileApi "Property namespace & buckets" flow needs more state-change
+notifications than ADR-28's single event: the token-claim phase opening (create the property's
+legal bucket), the SPV lawyer election finalizing (lawyer write access), the deal executing
+(lawyers removed), a letting agent being appointed (agent write access), and secondary-market
+share transfers (holder read-access swap). ADR-28's one-URL loop could not carry them — the API
+exposes one endpoint per event type.
+
+**What**: one outbox, one loop, now a ROUTER. `Config::webhook_routes` replaces
+`Config::webhook_url`: one optional `*_WEBHOOK_URL` env var per `mapping::event_type` constant
+(`INIT_PROPERTY_ASSET_WEBHOOK_URL` unchanged; new: `PROPERTY_CLAIM_STARTED_WEBHOOK_URL`,
+`SPV_LAWYER_ELECTED_WEBHOOK_URL`, `DEAL_EXECUTED_WEBHOOK_URL`,
+`LETTING_AGENT_APPOINTED_WEBHOOK_URL`, `SHARES_TRANSFERRED_WEBHOOK_URL`). The work-set queries
+(`db::webhooks::pending_events` / `count_pending`) filter `event_type = ANY(configured)`, so an
+unrouted type's rows accumulate and drain when its URL is set; the `webhooks_pending` gauge
+counts only what can drain. New pure-mapper producers: marketplace `claim_shares` →
+`property_claim_started` (deduped by LISTING PDA — only the first claim records),
+`finalize_spv_election` → `spv_lawyer_elected`, `execute_deal` → `deal_executed`,
+`buy_relisted_shares` / `accept_offer` / `send_property_shares` → `property_shares_transferred`
+(`kind` discriminator; `accept_offer`'s amount is null — it lives in the Offer account), and
+the property program's first: `finalize_agent_election` → `letting_agent_appointed`. Repeatable
+events are keyed `<type>:<tx_signature>:<instruction_path>`; one-shot events stay
+subject-keyed. The loop's spawn gate widened from "marketplace configured" to "marketplace OR
+property configured". No migration — `webhook_events` was already generic. Docs: RUNBOOK
+"Property webhooks" (route table + payload contracts), README/.env.example/docker-compose/
+deploy.yml/docs-deployment wiring, ARCHITECTURE pipeline note. The consuming endpoints (with
+documented placeholders for lawyer/agent wallet resolution and holder viewer keys) live in the
+XcavateProfileApi repo — see its `docs/property-webhooks-uncertainties.md`.
+
+**Verification**: new mapper unit tests per producer (payload shapes, optional trailing
+accounts tolerated, tx-scoped ids), a db test that unconfigured types stay out of the work set
+and gauge, updated backoff/delivery tests. `cargo fmt --check`,
+`clippy --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build --workspace
+--locked`, `cargo test --workspace --locked` (incl. indexer `sqlx prepare` regen for the two
+filtered queries), `scripts/lint-migrations.sh` all green. The loop is INERT for the new types
+until their GitHub secrets are set; events recorded before then drain on the first deploy that
+has them.

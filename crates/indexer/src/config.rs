@@ -80,11 +80,14 @@ pub struct Config {
     /// `METADATA_FETCH_INTERVAL` (seconds), default
     /// [`DEFAULT_METADATA_FETCH_INTERVAL_SECS`].
     pub metadata_fetch_interval: Duration,
-    /// `INIT_PROPERTY_ASSET_WEBHOOK_URL`: the endpoint the property-asset-registration webhook POSTs to (ADR-28).
-    /// `None` = the webhook is disabled -- the durable `webhook_events` rows are still
-    /// recorded (the record), but the delivery loop is never spawned and no external call is
-    /// ever made. Never logged (an operator may encode a bearer token in the query string).
-    pub webhook_url: Option<String>,
+    /// `INIT_PROPERTY_ASSET_WEBHOOK_URL` and the five sibling `*_WEBHOOK_URL` variables
+    /// (ADR-28/ADR-36): one optional route per webhook event type, each the full endpoint
+    /// that type's payloads POST to. An unset/empty variable disables just that type -- its
+    /// durable `webhook_events` rows are still recorded and drain when the variable is later
+    /// set; with NO routes at all the delivery loop is never spawned and no external call is
+    /// ever made. URLs are never logged (an operator may encode a bearer token in the query
+    /// string).
+    pub webhook_routes: Vec<WebhookRoute>,
     /// `WEBHOOK_INTERVAL` (seconds), default [`DEFAULT_WEBHOOK_INTERVAL_SECS`].
     pub webhook_interval: Duration,
     /// The Xcavate notifications API target for sold-out claim push notifications
@@ -147,6 +150,20 @@ impl fmt::Debug for ObjectStorage {
     }
 }
 
+/// One configured outbound webhook route (ADR-36): which `webhook_events.event_type` POSTs
+/// to which endpoint URL. Built from the `*_WEBHOOK_URL` environment variables -- one per
+/// event type, so each kind of state-change notification is switched on (or pointed at a
+/// different environment's endpoint) independently.
+#[derive(Clone)]
+pub struct WebhookRoute {
+    /// The event type this route delivers (one of [`crate::mapping::event_type`]'s
+    /// constants); the delivery loop's work-set query filters on these labels.
+    pub event_type: &'static str,
+    /// The full endpoint URL (scheme + host + path, possibly a bearer token in the query).
+    /// Never logged.
+    pub url: String,
+}
+
 /// The Xcavate notifications API target for sold-out claim push notifications (ADR-35):
 /// the base URL of a deployed `realXmarketNotificationsApi` instance and the API key its
 /// Django admin issues for server-to-server sends (`Authorization: Api-Key <key>` on
@@ -162,7 +179,7 @@ pub struct NotificationsApiConfig {
 }
 
 /// Hand-written so the API key never reaches a log line via `{:?}` (the same treatment as
-/// [`ObjectStorage`]); the URL is shown as `<set>` like `webhook_url` -- an operator could
+/// [`ObjectStorage`]); the URL is shown as `<set>` like the webhook route URLs -- an operator could
 /// still embed basic-auth credentials in it.
 impl fmt::Debug for NotificationsApiConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -247,11 +264,11 @@ impl Config {
             _ => DEFAULT_METADATA_FETCH_INTERVAL_SECS,
         };
 
-        // `INIT_PROPERTY_ASSET_WEBHOOK_URL` is optional: `None` (or empty) disables the webhook -- the durable
-        // `webhook_events` rows are still recorded, but the delivery loop is never spawned.
-        let webhook_url = std::env::var("INIT_PROPERTY_ASSET_WEBHOOK_URL")
-            .ok()
-            .filter(|u| !u.is_empty());
+        // The webhook routes (ADR-28/ADR-36): one optional `*_WEBHOOK_URL` variable per event
+        // type, each independently switchable. An unset/empty variable disables just that
+        // type -- its durable `webhook_events` rows are still recorded and drain when the
+        // variable is later set; with no routes at all the delivery loop is never spawned.
+        let webhook_routes = webhook_routes_from_env();
 
         let webhook_interval_secs = match std::env::var("WEBHOOK_INTERVAL") {
             Ok(s) if !s.trim().is_empty() => s
@@ -322,7 +339,7 @@ impl Config {
             metrics_addr,
             reconcile_interval: Duration::from_secs(reconcile_interval_secs),
             metadata_fetch_interval: Duration::from_secs(metadata_fetch_interval_secs),
-            webhook_url,
+            webhook_routes,
             webhook_interval: Duration::from_secs(webhook_interval_secs),
             notifications_api,
             notifications_interval: Duration::from_secs(notifications_interval_secs),
@@ -369,6 +386,45 @@ impl Config {
             None => self.rpc_fallback_url.clone(),
         }
     }
+}
+
+/// The webhook routes (ADR-28/ADR-36): one env var per event type, each holding the full
+/// endpoint URL that type's payloads POST to. Every route is independently optional -- an
+/// unset/empty variable means that type's events accumulate undelivered in `webhook_events`
+/// (they drain when the variable is later set and the loop is restarted).
+fn webhook_routes_from_env() -> Vec<WebhookRoute> {
+    use crate::mapping::event_type;
+    [
+        (
+            "INIT_PROPERTY_ASSET_WEBHOOK_URL",
+            event_type::PROPERTY_ASSET_REGISTERED,
+        ),
+        (
+            "PROPERTY_CLAIM_STARTED_WEBHOOK_URL",
+            event_type::PROPERTY_CLAIM_STARTED,
+        ),
+        (
+            "SPV_LAWYER_ELECTED_WEBHOOK_URL",
+            event_type::SPV_LAWYER_ELECTED,
+        ),
+        ("DEAL_EXECUTED_WEBHOOK_URL", event_type::DEAL_EXECUTED),
+        (
+            "LETTING_AGENT_APPOINTED_WEBHOOK_URL",
+            event_type::LETTING_AGENT_APPOINTED,
+        ),
+        (
+            "SHARES_TRANSFERRED_WEBHOOK_URL",
+            event_type::PROPERTY_SHARES_TRANSFERRED,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(var, event_type)| {
+        std::env::var(var)
+            .ok()
+            .filter(|u| !u.is_empty())
+            .map(|url| WebhookRoute { event_type, url })
+    })
+    .collect()
 }
 
 /// The `OBJECT_STORAGE_*` variables (ADR-31), all-or-nothing: `None` (none set) disables the
@@ -474,9 +530,16 @@ impl fmt::Debug for Config {
             .field("metrics_addr", &self.metrics_addr)
             .field("reconcile_interval", &self.reconcile_interval)
             .field("metadata_fetch_interval", &self.metadata_fetch_interval)
-            // The webhook URL may carry a bearer token in the query string: like the other
-            // credentials, it is never logged -- only whether it is set.
-            .field("webhook_url", &self.webhook_url.as_ref().map(|_| "<set>"))
+            // The webhook URLs may carry a bearer token in the query string: like the other
+            // credentials, they are never logged -- only which event types are routed.
+            .field(
+                "webhook_routes",
+                &self
+                    .webhook_routes
+                    .iter()
+                    .map(|r| r.event_type)
+                    .collect::<Vec<_>>(),
+            )
             .field("webhook_interval", &self.webhook_interval)
             // NotificationsApiConfig's Debug is hand-written to redact its key (and URL).
             .field("notifications_api", &self.notifications_api.as_ref())

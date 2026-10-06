@@ -52,11 +52,16 @@ services:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/postgres
       ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:?ALCHEMY_API_KEY must be set in .env}
       RUST_LOG: ${RUST_LOG:-info,hyper=warn,h2=warn,tonic=warn,rustls=warn}
-      # ADR-28 outbound webhook target for property-asset registration (empty/unset =
-      # the delivery loop is not spawned and no external call is made; the durable
-      # `webhook_events` rows are still recorded). See RUNBOOK.md "Property-asset
-      # registration webhooks".
+      # ADR-28/ADR-36 outbound webhook routes, one per event type (empty/unset = that type
+      # is not delivered; its durable `webhook_events` rows are still recorded and drain
+      # when the URL is later set; ALL unset = the delivery loop is not spawned). See
+      # RUNBOOK.md "Property webhooks".
       INIT_PROPERTY_ASSET_WEBHOOK_URL: ${INIT_PROPERTY_ASSET_WEBHOOK_URL:-}
+      PROPERTY_CLAIM_STARTED_WEBHOOK_URL: ${PROPERTY_CLAIM_STARTED_WEBHOOK_URL:-}
+      SPV_LAWYER_ELECTED_WEBHOOK_URL: ${SPV_LAWYER_ELECTED_WEBHOOK_URL:-}
+      DEAL_EXECUTED_WEBHOOK_URL: ${DEAL_EXECUTED_WEBHOOK_URL:-}
+      LETTING_AGENT_APPOINTED_WEBHOOK_URL: ${LETTING_AGENT_APPOINTED_WEBHOOK_URL:-}
+      SHARES_TRANSFERRED_WEBHOOK_URL: ${SHARES_TRANSFERRED_WEBHOOK_URL:-}
       # ADR-35 sold-out claim push notifications via the Xcavate notifications API,
       # all-or-nothing (exactly one set = the indexer refuses to start --
       # crates/indexer/src/config.rs): NOTIFICATIONS_API_URL is the base URL of a deployed

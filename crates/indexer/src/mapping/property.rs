@@ -28,6 +28,10 @@
 //! post-transaction state is already closed and never matches the owner-scoped account
 //! filter -- no row is ever written for it, so there is nothing to close (unlike the
 //! two-transaction same-slot tie `db::close` documents).
+//!
+//! The one webhook producer (ADR-36): `finalize_agent_election` records a durable
+//! `letting_agent_appointed` event -- the on-chain appointment of a letting agent, which the
+//! endpoint turns into write access on the property's legal bucket.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
@@ -40,8 +44,8 @@ use solana_account::Account;
 use solana_pubkey::Pubkey;
 
 use super::{
-    account_bytes_at, close_at, instruction_row, ix_context, MappedInstruction, MappingError,
-    PendingClose, ProgramMapper,
+    account_at, account_bytes_at, close_at, event_type, instruction_row, ix_context,
+    MappedInstruction, MappingError, PendingClose, ProgramMapper, WebhookEvent,
 };
 use crate::batcher::WriteOp;
 use crate::db::close::StateTable;
@@ -211,11 +215,43 @@ pub fn map_instruction(
         _ => vec![],
     };
 
+    // ADR-36: `finalize_agent_election` appoints a letting agent to the property -- the
+    // moment the endpoint adds the agent (write) to the property's legal bucket. Accounts:
+    // letting 1, property 2 (the marketplace PropertyAsset PDA, a cross-program reference),
+    // winner's LettingAgent entry 3 (trailing and OPTIONAL -- a missing index 3 must not
+    // fail the mapping; the endpoint can resolve the winner from the letting row). Tx-scoped
+    // event id: agents come and go (challenges, resignations), so appointments repeat per
+    // property and each occurrence is its own event.
+    let tx_signature = ctx.tx_signature.clone();
+    let webhook_events = match &decoded.data {
+        PropertyInstruction::FinalizeAgentElection(args) => {
+            vec![WebhookEvent {
+                event_id: format!("letting_agent_appointed:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::LETTING_AGENT_APPOINTED,
+                payload: serde_json::json!({
+                    "event": event_type::LETTING_AGENT_APPOINTED,
+                    "asset_id": args.asset_id,
+                    "letting": account_at(accounts, 1, name)?,
+                    "property": account_at(accounts, 2, name)?,
+                    "winner_entry": accounts.get(3).map(|a| a.pubkey.to_string()),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "property",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        _ => vec![],
+    };
+
     Ok(Some(MappedInstruction {
         instruction,
         action: None,
         closes,
-        webhook_events: vec![],
+        webhook_events,
     }))
 }
 

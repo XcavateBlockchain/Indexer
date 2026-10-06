@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT event_id, event_type, payload\n        FROM webhook_events\n        WHERE delivered_at IS NULL\n          AND (next_attempt_at IS NULL OR next_attempt_at <= now())\n          AND event_type = ANY($2)\n        ORDER BY event_id ASC\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2c6ffacbe071aa31bf5ac899c63fb744a4f3024facc94490055e3ba0c33d3e17"
+}

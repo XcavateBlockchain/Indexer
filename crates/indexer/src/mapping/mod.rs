@@ -44,27 +44,56 @@ pub struct MappedInstruction {
     /// Slot-guarded soft closes implied by this instruction (ruling R11). Usually empty or
     /// one entry; marketplace has instructions that close two PDAs at once.
     pub closes: Vec<PendingClose>,
-    /// Outbound webhook events this instruction records (ADR-28). Usually empty; only
-    /// marketplace's `init_property_assets` emits one (a new property asset registered).
-    /// The batcher commits each as a durable `webhook_events` row
-    /// (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
+    /// Outbound webhook events this instruction records (ADR-28/ADR-36). Usually empty; the
+    /// producers are marketplace's `init_property_assets` (a new property asset registered),
+    /// `claim_shares` (the first claim on a sold-out listing), `finalize_spv_election`,
+    /// `execute_deal`, and the three secondary-market transfer instructions, plus property's
+    /// `finalize_agent_election` -- see [`event_type`]. The batcher commits each as a durable
+    /// `webhook_events` row (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
     pub webhook_events: Vec<WebhookEvent>,
 }
 
-/// One durable, idempotent webhook notification the mapper wants recorded (ADR-28).
+/// The low-cardinality `webhook_events.event_type` labels (ADR-28/ADR-36). The mappers below
+/// are the only producers; the delivery loop ([`crate::webhooks`]) routes each label to its
+/// configured endpoint URL (`Config::webhook_routes`), and the label prefixes every
+/// `event_id`, so the labels are the join key between emission, routing, and the endpoint's
+/// own dispatch. Keep them stable: a delivered row's label is how the endpoint recognized it.
+pub mod event_type {
+    /// marketplace `init_property_assets` -- a property asset (and its namespace) is born.
+    pub const PROPERTY_ASSET_REGISTERED: &str = "property_asset_registered";
+    /// The FIRST marketplace `claim_shares` on a listing -- the token-claim phase starts
+    /// (deduped by the listing PDA, so later claims re-record nothing).
+    pub const PROPERTY_CLAIM_STARTED: &str = "property_claim_started";
+    /// marketplace `finalize_spv_election` -- the SPV lawyer election has a winner.
+    pub const SPV_LAWYER_ELECTED: &str = "spv_lawyer_elected";
+    /// marketplace `execute_deal` -- the sale is agreed and settled on-chain.
+    pub const DEAL_EXECUTED: &str = "deal_executed";
+    /// property `finalize_agent_election` -- a letting agent is appointed to the property.
+    pub const LETTING_AGENT_APPOINTED: &str = "letting_agent_appointed";
+    /// One property-token transfer on the secondary market (`buy_relisted_shares`,
+    /// `accept_offer`, or `send_property_shares`); the payload's `kind` says which.
+    pub const PROPERTY_SHARES_TRANSFERRED: &str = "property_shares_transferred";
+}
+
+/// One durable, idempotent webhook notification the mapper wants recorded (ADR-28/ADR-36).
 ///
 /// Carries only the on-chain evidence: the delivery loop (which owns the clock and the
-/// network) POSTs [`WebhookEvent::payload`] to `INIT_PROPERTY_ASSET_WEBHOOK_URL` and stamps the delivery
+/// network) POSTs [`WebhookEvent::payload`] to the endpoint URL configured for
+/// [`WebhookEvent::event_type`] (`Config::webhook_routes`) and stamps the delivery
 /// timestamps in `webhook_events`. `event_id` is the `ON CONFLICT` key, so a backfill
-/// re-walk re-delivering the same instruction is a no-op and the notification fires at most
-/// once.
+/// re-walk re-delivering the same instruction is a no-op. Its shape is
+/// `<event_type>:<subject>` where the subject is the base58 key of the at-most-once unit
+/// (the asset PDA for a registration, the listing PDA for claim-start) or the transaction
+/// signature for events that may legitimately repeat per subject (elections, deals, agent
+/// appointments, transfers).
 #[derive(Debug, Clone)]
 pub struct WebhookEvent {
     /// `<event_type>:<base58 subject key>` -- the dedup key (`webhook_events` primary key).
     pub event_id: String,
-    /// Low-cardinality event label (`property_asset_registered`).
+    /// Low-cardinality event label (one of [`event_type`]'s constants); the delivery loop
+    /// routes on it.
     pub event_type: &'static str,
-    /// The JSON document the delivery loop POSTs to `INIT_PROPERTY_ASSET_WEBHOOK_URL`.
+    /// The JSON document the delivery loop POSTs to this event type's configured endpoint.
     pub payload: serde_json::Value,
     /// Slot of the transaction that produced this event (provenance).
     pub slot: i64,

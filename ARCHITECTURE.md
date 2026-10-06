@@ -69,11 +69,13 @@ day-2 operations, see [RUNBOOK.md](RUNBOOK.md).
   recording every version boundary of the five programs into program_upgrades. Detection
   only: reacting to an upgrade is the maintenance loop's job (docs/agentic-maintenance.md).
 
-  One outbound notification rides the batcher (webhooks.rs, ADR-28): when a new property
-  asset is registered (marketplace init_property_assets), the batcher durably records a
-  webhook_events row in the same Postgres transaction; a background loop then POSTs the
-  payload to INIT_PROPERTY_ASSET_WEBHOOK_URL with per-event backoff. Detection is in-pipeline; delivery
-  never touches the pipeline.
+  One outbound notification rides the batcher (webhooks.rs, ADR-28/ADR-36): when a
+  property-lifecycle instruction lands (asset registration, first claim on a sold-out
+  listing, SPV lawyer election finalized, deal executed, letting agent appointed, a
+  secondary-market share transfer), the mapper durably records a webhook_events row in
+  the same Postgres transaction; a background loop then POSTs each payload to the
+  endpoint configured for its event_type (one *_WEBHOOK_URL route per type) with
+  per-event backoff. Detection is in-pipeline; delivery never touches the pipeline.
 
   A second outbound channel shares that split (notifications.rs, ADR-35): when a
   marketplace listing upsert applies with status SOLD_OUT, the batcher durably records a
