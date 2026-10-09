@@ -93,6 +93,12 @@ pub mod event_type {
     /// property `finalize_challenge` -- a challenge vote closed and the PDA was closed;
     /// the endpoint resolves the outcome from the frozen challenge row.
     pub const CHALLENGE_FINALIZED: &str = "challenge_finalized";
+    /// A wallet entered or left a listing's holder set on the PRIMARY market
+    /// (`reserve_shares` / `buy_property_shares` add; `unreserve_shares`,
+    /// `release_reservation`, `close_cancelled_position`, and the three `withdraw_*`
+    /// exit paths remove); the payload's `action` says which, `reason` names the
+    /// instruction (ADR-38).
+    pub const PROPERTY_HOLDER_CHANGED: &str = "property_holder_changed";
 }
 
 /// One durable, idempotent webhook notification the mapper wants recorded (ADR-28/ADR-36).

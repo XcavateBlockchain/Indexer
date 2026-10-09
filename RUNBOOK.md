@@ -332,6 +332,7 @@ table — one optional env var per event type, each independently switchable:
 | `proposal_finalized` | `PROPOSAL_FINALIZED_WEBHOOK_URL` | property `finalize_proposal` (outcome/tallies resolved from the frozen proposal row) | the transaction + instruction path |
 | `challenge_created` | `CHALLENGE_CREATED_WEBHOOK_URL` | property `challenge_agent` | the transaction + instruction path |
 | `challenge_finalized` | `CHALLENGE_FINALIZED_WEBHOOK_URL` | property `finalize_challenge` (outcome/tallies resolved from the frozen challenge row) | the transaction + instruction path |
+| `property_holder_changed` | `HOLDER_CHANGED_WEBHOOK_URL` | marketplace `reserve_shares` / `buy_property_shares` (added) and `unreserve_shares` / `release_reservation` / `close_cancelled_position` / `withdraw_expired` / `withdraw_cancelled` / `withdraw_legal_process_expired` (removed) | the transaction + instruction path |
 
 **Enable it.** Set any of the `*_WEBHOOK_URL` variables to an http(s) endpoint the
 indexer can reach from the compose network (the operator's own endpoint — the ADR-27
@@ -400,6 +401,19 @@ repeatable events).
       "offer": "<base58 Offer PDA, offer_accepted only> | null", ... }
       // note: "amount" and "asset_id" are null for offer_accepted (the amount lives in
       // the on-chain Offer account, which the instruction mapper cannot read).
+
+    { "event": "property_holder_changed",
+      "action": "added | removed",
+      "reason": "reserve_shares | buy_property_shares | unreserve_shares |
+                 release_reservation | close_cancelled_position | withdraw_expired |
+                 withdraw_cancelled | withdraw_legal_process_expired",
+      "investor": "<base58 wallet whose membership changed>",
+      "listing": "...", "property": "... | null",
+      "listing_id": 12, "amount": 5, ... }
+      // note: "amount" is set only on the two add paths; "property" is null on
+      // unreserve_shares / release_reservation / close_cancelled_position (no such
+      // account in the instruction). The crank closes that never name the investor
+      // (close_reservation, close_share_holding) produce NO event.
 
 **Not firing / not delivered.** Check, in order:
 

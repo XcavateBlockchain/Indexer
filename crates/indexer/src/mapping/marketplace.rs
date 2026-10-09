@@ -55,7 +55,7 @@ use solana_account::Account;
 use solana_pubkey::Pubkey;
 
 use super::{
-    account_at, account_bytes_at, close_at, event_type, instruction_row, ix_context,
+    account_at, account_bytes_at, close_at, event_type, instruction_row, ix_context, IxContext,
     MappedInstruction, MappingError, PendingClose, ProgramMapper, WebhookEvent,
 };
 use crate::batcher::WriteOp;
@@ -304,6 +304,7 @@ pub fn map_instruction(
     // | `execute_deal` | `deal_executed` | the transaction + instruction path |
     // | `buy_relisted_shares` / `accept_offer` / `send_property_shares` | `property_shares_transferred` | the transaction + instruction path |
     // | `claim_spv_case` | `spv_case_claimed` | the transaction + instruction path |
+    // | `reserve_shares` / `buy_property_shares` / `unreserve_shares` / `release_reservation` / `close_cancelled_position` / `withdraw_*` | `property_holder_changed` | the transaction + instruction path |
     //
     // Elections, deals, and transfers may legitimately repeat for one subject (a second
     // election round after a failed legal process, another resale), so their event_ids are
@@ -524,6 +525,104 @@ pub fn map_instruction(
                 block_time,
             }]
         }
+        // ADR-38: primary-market holder changes -- a wallet enters (`reserve_shares`,
+        // `buy_property_shares`) or leaves (`unreserve_shares`, the crank's
+        // `release_reservation` / `close_cancelled_position`, and the three `withdraw_*`
+        // exit paths of a dead listing) the listing's holder set, which the endpoint
+        // mirrors as bucket read access. The two crank closes that do NOT name the
+        // investor (`close_reservation`, `close_share_holding` -- the wallet lives in the
+        // account data the pure mapper cannot read) produce no event; see the helper.
+        MarketplaceInstruction::ReserveShares(args) => vec![holder_membership_event(
+            "added",
+            name,
+            account_at(accounts, 0, name)?,
+            Some(account_at(accounts, 4, name)?),
+            Some(account_at(accounts, 5, name)?),
+            args.listing_id,
+            Some(args.amount),
+            &ctx,
+            block_time,
+        )?],
+        MarketplaceInstruction::BuyPropertyShares(args) => vec![holder_membership_event(
+            "added",
+            name,
+            account_at(accounts, 0, name)?,
+            Some(account_at(accounts, 4, name)?),
+            Some(account_at(accounts, 5, name)?),
+            args.listing_id,
+            Some(args.amount),
+            &ctx,
+            block_time,
+        )?],
+        MarketplaceInstruction::UnreserveShares(args) => vec![holder_membership_event(
+            "removed",
+            name,
+            account_at(accounts, 0, name)?,
+            Some(account_at(accounts, 1, name)?),
+            None,
+            args.listing_id,
+            None,
+            &ctx,
+            block_time,
+        )?],
+        // The crank paths name the investor in the ARGS, not the account list.
+        MarketplaceInstruction::ReleaseReservation(args) => vec![holder_membership_event(
+            "removed",
+            name,
+            args.investor.to_string(),
+            Some(account_at(accounts, 3, name)?),
+            None,
+            args.listing_id,
+            None,
+            &ctx,
+            block_time,
+        )?],
+        MarketplaceInstruction::CloseCancelledPosition(args) => vec![holder_membership_event(
+            "removed",
+            name,
+            args.investor.to_string(),
+            Some(account_at(accounts, 3, name)?),
+            None,
+            args.listing_id,
+            None,
+            &ctx,
+            block_time,
+        )?],
+        MarketplaceInstruction::WithdrawExpired(args) => vec![holder_membership_event(
+            "removed",
+            name,
+            account_at(accounts, 0, name)?,
+            Some(account_at(accounts, 3, name)?),
+            Some(account_at(accounts, 4, name)?),
+            args.listing_id,
+            None,
+            &ctx,
+            block_time,
+        )?],
+        MarketplaceInstruction::WithdrawCancelled(args) => vec![holder_membership_event(
+            "removed",
+            name,
+            account_at(accounts, 0, name)?,
+            Some(account_at(accounts, 3, name)?),
+            Some(account_at(accounts, 4, name)?),
+            args.listing_id,
+            None,
+            &ctx,
+            block_time,
+        )?],
+        MarketplaceInstruction::WithdrawLegalProcessExpired(args) => {
+            vec![holder_membership_event(
+                "removed",
+                name,
+                account_at(accounts, 0, name)?,
+                Some(account_at(accounts, 3, name)?),
+                Some(account_at(accounts, 4, name)?),
+                args.listing_id,
+                None,
+                &ctx,
+                block_time,
+            )?]
+        }
         _ => vec![],
     };
 
@@ -533,6 +632,51 @@ pub fn map_instruction(
         closes,
         webhook_events,
     }))
+}
+
+/// Builds one `property_holder_changed` event (ADR-38): the primary-market counterpart to
+/// the secondary market's `property_shares_transferred` swap. `action` is `added` or
+/// `removed`; `reason` is the instruction name (the endpoint logs it, and an operator
+/// reading `webhook_events` can tell a reserve from a crank release). The two crank closes
+/// that reference the investor only through account DATA (`close_reservation`,
+/// `close_share_holding`) are deliberately NOT produced here: the pure mapper cannot read
+/// that wallet, and a `removed` event addressed to the wrong subject would kick an
+/// innocent holder out of the bucket -- the mirror's own close handling knows the wallet,
+/// so a future batcher-side hook could cover them (see the API repo's uncertainties doc).
+#[allow(clippy::too_many_arguments)]
+fn holder_membership_event(
+    action: &'static str,
+    reason: &'static str,
+    investor: String,
+    listing: Option<String>,
+    property: Option<String>,
+    listing_id: u64,
+    amount: Option<u32>,
+    ctx: &IxContext,
+    block_time: DateTime<Utc>,
+) -> Result<WebhookEvent, MappingError> {
+    let tx_signature = ctx.tx_signature.clone();
+    Ok(WebhookEvent {
+        event_id: format!("property_holder_changed:{tx_signature}:{}", ctx.index_str),
+        event_type: event_type::PROPERTY_HOLDER_CHANGED,
+        payload: serde_json::json!({
+            "event": event_type::PROPERTY_HOLDER_CHANGED,
+            "action": action,
+            "reason": reason,
+            "investor": &investor,
+            "listing": listing,
+            "property": property,
+            "listing_id": listing_id,
+            "amount": amount,
+            "slot": ctx.slot,
+            "tx_signature": &tx_signature,
+            "block_time": block_time.to_rfc3339(),
+            "program": "marketplace",
+        }),
+        slot: ctx.slot,
+        tx_signature,
+        block_time,
+    })
 }
 
 fn listing_status_from_chain(status: &ChainListingStatus) -> ListingStatus {

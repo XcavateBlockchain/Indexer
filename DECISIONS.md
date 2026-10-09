@@ -1281,3 +1281,54 @@ are set, and backlogs drain on first configure; the `webhooks_pending` gauge and
 50-per-cycle budget keep per-type isolation. The endpoint-side resolution burden
 grows (the API needs a GraphQL read for rich messages) but stays idiomatic — already
 the case for the ADR-36 election events.
+
+## ADR-38: Primary-market holder changes join the webhook outbox
+
+**Context.** The profile API's "Property namespace & buckets" flow needs the property's
+legal bucket to mirror its CURRENT stakeholder set: a wallet that reserves or buys
+tokens must gain read access, and one that sells or cancels must lose it. The
+secondary market was covered by ADR-36's `property_shares_transferred` swap, but the
+PRIMARY market — where every holder first arrives — had no event at all: nothing fired
+on `reserve_shares` or `buy_property_shares`, and nothing on the cancel/exit paths.
+That is the reported bug. The shape decisions: one event type with an `action`
+discriminator (`added`/`removed`) plus a `reason` (the instruction name) rather than
+eight near-identical types — the endpoint's action is uniform (viewer in, viewer out)
+and the route table stays greppable; the investor wallet comes from the instruction
+accounts for investor-signed paths (`reserve_shares`, `buy_property_shares`,
+`unreserve_shares`, the three `withdraw_*`) but from the ARGS for the crank paths
+(`release_reservation`, `close_cancelled_position` name the investor as an argument,
+not an account); and two crank closes are deliberately NOT produced —
+`close_reservation` and `close_share_holding` reference the investor only through
+account DATA, which the pure mapper cannot read, and a `removed` event addressed to
+the wrong subject would evict an innocent holder (the mirror's own close handling
+knows the wallet, so a batcher-side hook could cover them later — noted in the API
+repo's uncertainties doc).
+
+**Decision.** One new `event_type` + mapper arms + env var
+(`HOLDER_CHANGED_WEBHOOK_URL`), tx-scoped event ids (a wallet reserves, cancels,
+re-reserves — every occurrence is its own event). Producers: `reserve_shares` and
+`buy_property_shares` → `added`; `unreserve_shares`, `release_reservation`,
+`close_cancelled_position`, `withdraw_expired`, `withdraw_cancelled`,
+`withdraw_legal_process_expired` → `removed`. The payload carries `action`, `reason`,
+`investor`, the listing/property PDAs where the instruction has them (`property` is
+absent on `unreserve_shares` and the crank paths — the endpoint falls back to the
+namespace's PropertyId), `listing_id`, and `amount` on the add paths only. The
+ordering problem is the API's, not the outbox's: reserves and buys happen in the sale
+phase, weeks before the legal bucket exists (it is created at claim start), so the
+endpoint answers those deliveries "deferred" (2xx, not 404 — no months-long retry
+storm, no `WebhookDeliveryFailing` noise) and the claim-started handler reconciles the
+whole CURRENT holder set from the indexer's GraphQL mirror
+(`investorPositions` + `shareHoldings`) at bucket-creation time, atomically with the
+bucket itself. Delivery is thus eventually-exact without any new durable state on
+either side.
+
+**Consequences.** Holder membership is event-driven and self-healing: pre-bucket
+holders land via the creation-time reconciliation, post-bucket changes apply within
+one webhook interval, and a missed or mis-ordered event is corrected by the next
+qualifying event for the same wallet (at-least-once delivery plus idempotent viewer
+adds/removes). The outbox gains one type, one route, one payload; the endpoint gains
+one read-side enumeration query — reusing the ADR-37 GraphQL client — and no pending
+table. `claim_shares` itself emits no holder event (a claim converts a reservation
+the `reserve_shares` event already covered). The two wallet-less crank closes remain
+a documented gap: their victims keep read access until a withdraw/sell event or a
+manual cleanup removes them.

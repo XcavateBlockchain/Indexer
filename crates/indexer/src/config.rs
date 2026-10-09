@@ -434,6 +434,10 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             "CHALLENGE_FINALIZED_WEBHOOK_URL",
             event_type::CHALLENGE_FINALIZED,
         ),
+        (
+            "HOLDER_CHANGED_WEBHOOK_URL",
+            event_type::PROPERTY_HOLDER_CHANGED,
+        ),
     ]
     .into_iter()
     .filter_map(|(var, event_type)| {
