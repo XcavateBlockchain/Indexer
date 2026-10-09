@@ -29,9 +29,19 @@
 //! filter -- no row is ever written for it, so there is nothing to close (unlike the
 //! two-transaction same-slot tie `db::close` documents).
 //!
-//! The one webhook producer (ADR-36): `finalize_agent_election` records a durable
-//! `letting_agent_appointed` event -- the on-chain appointment of a letting agent, which the
-//! endpoint turns into write access on the property's legal bucket.
+//! The webhook producers (ADR-36), all tx-scoped event ids: `finalize_agent_election`
+//! records `letting_agent_appointed` -- the on-chain appointment of a letting agent, which
+//! the endpoint turns into write access on the property's legal bucket. The governance
+//! lifecycle adds five more: `claim_property` (`agent_election_opened`, fires per
+//! CANDIDACY -- the pure mapper cannot tell a round-opening claim from a round-joining
+//! one, so the endpoint collapses them per round), `propose` (`proposal_created`, also on
+//! the auto-approval path where no Proposal row survives -- the endpoint resolves via
+//! GraphQL and treats a missing row as auto-approved), `finalize_proposal`
+//! (`proposal_finalized`), `challenge_agent` (`challenge_created`), and
+//! `finalize_challenge` (`challenge_finalized`). The finalize payloads carry the closing
+//! PDA only; outcomes and tallies live in the frozen proposal/challenge rows and the
+//! letting row (strikes, seat), which the endpoint reads -- the same ADR-36 accepted gap
+//! as the appointment event.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
@@ -234,6 +244,125 @@ pub fn map_instruction(
                     "letting": account_at(accounts, 1, name)?,
                     "property": account_at(accounts, 2, name)?,
                     "winner_entry": accounts.get(3).map(|a| a.pubkey.to_string()),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "property",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // A letting agent stood for a seat election (accounts: agent 0, property 5,
+        // letting 6, candidacy 7; the round is the `round` arg). Fires per candidacy --
+        // the endpoint decides what merits a message.
+        PropertyInstruction::ClaimProperty(args) => {
+            vec![WebhookEvent {
+                event_id: format!("agent_election_opened:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::AGENT_ELECTION_OPENED,
+                payload: serde_json::json!({
+                    "event": event_type::AGENT_ELECTION_OPENED,
+                    "property_id": args.asset_id,
+                    "round": args.round,
+                    "agent": account_at(accounts, 0, name)?,
+                    "property": account_at(accounts, 5, name)?,
+                    "letting": account_at(accounts, 6, name)?,
+                    "candidacy": account_at(accounts, 7, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "property",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // The seated agent submitted a spending request (accounts: letting 4, proposal
+        // 5). On the auto-approval path the Proposal PDA never survives the transaction,
+        // so the webhook fires without a durable row behind it -- see the module doc.
+        PropertyInstruction::Propose(args) => {
+            vec![WebhookEvent {
+                event_id: format!("proposal_created:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::PROPOSAL_CREATED,
+                payload: serde_json::json!({
+                    "event": event_type::PROPOSAL_CREATED,
+                    "property_id": args.asset_id,
+                    "proposal_id": args.id,
+                    "amount": args.amount,
+                    "details_hash": bs58::encode(args.details_hash).into_string(),
+                    "letting": account_at(accounts, 4, name)?,
+                    "proposal": account_at(accounts, 5, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "property",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // A proposal vote closed; the PDA at index 4 is the one being closed (outcome +
+        // tallies stay readable in the row's frozen state until then).
+        PropertyInstruction::FinalizeProposal(args) => {
+            vec![WebhookEvent {
+                event_id: format!("proposal_finalized:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::PROPOSAL_FINALIZED,
+                payload: serde_json::json!({
+                    "event": event_type::PROPOSAL_FINALIZED,
+                    "property_id": args.asset_id,
+                    "letting": account_at(accounts, 2, name)?,
+                    "property": account_at(accounts, 3, name)?,
+                    "proposal": account_at(accounts, 4, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "property",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // An investor challenged the seated agent (accounts: challenger 0, letting 5,
+        // challenge 6).
+        PropertyInstruction::ChallengeAgent(args) => {
+            vec![WebhookEvent {
+                event_id: format!("challenge_created:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::CHALLENGE_CREATED,
+                payload: serde_json::json!({
+                    "event": event_type::CHALLENGE_CREATED,
+                    "property_id": args.asset_id,
+                    "challenge_id": args.id,
+                    "challenger": account_at(accounts, 0, name)?,
+                    "letting": account_at(accounts, 5, name)?,
+                    "challenge": account_at(accounts, 6, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "property",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // A challenge vote closed; the PDA at index 5 is the one being closed, and the
+        // optional agent entry at 6 tells the endpoint the seat's registry row (strike /
+        // removal resolution happens row-side, like the appointment event).
+        PropertyInstruction::FinalizeChallenge(args) => {
+            vec![WebhookEvent {
+                event_id: format!("challenge_finalized:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::CHALLENGE_FINALIZED,
+                payload: serde_json::json!({
+                    "event": event_type::CHALLENGE_FINALIZED,
+                    "property_id": args.asset_id,
+                    "letting": account_at(accounts, 3, name)?,
+                    "property": account_at(accounts, 4, name)?,
+                    "challenge": account_at(accounts, 5, name)?,
+                    "agent_entry": accounts.get(6).map(|a| a.pubkey.to_string()),
                     "slot": slot,
                     "tx_signature": &tx_signature,
                     "block_time": block_time.to_rfc3339(),

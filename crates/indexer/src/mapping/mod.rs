@@ -46,10 +46,12 @@ pub struct MappedInstruction {
     pub closes: Vec<PendingClose>,
     /// Outbound webhook events this instruction records (ADR-28/ADR-36). Usually empty; the
     /// producers are marketplace's `init_property_assets` (a new property asset registered),
-    /// `claim_shares` (the first claim on a sold-out listing), `finalize_spv_election`,
-    /// `execute_deal`, and the three secondary-market transfer instructions, plus property's
-    /// `finalize_agent_election` -- see [`event_type`]. The batcher commits each as a durable
-    /// `webhook_events` row (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
+    /// `claim_shares` (the first claim on a sold-out listing), `claim_spv_case` (an SPV
+    /// candidacy), `finalize_spv_election`, `execute_deal`, and the three secondary-market
+    /// transfer instructions, plus property's `finalize_agent_election`, `claim_property`,
+    /// `propose`/`finalize_proposal`, and `challenge_agent`/`finalize_challenge` -- see
+    /// [`event_type`]. The batcher commits each as a durable `webhook_events` row
+    /// (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
     pub webhook_events: Vec<WebhookEvent>,
 }
 
@@ -73,6 +75,24 @@ pub mod event_type {
     /// One property-token transfer on the secondary market (`buy_relisted_shares`,
     /// `accept_offer`, or `send_property_shares`); the payload's `kind` says which.
     pub const PROPERTY_SHARES_TRANSFERRED: &str = "property_shares_transferred";
+    /// marketplace `claim_spv_case` -- a lawyer stood for the listing's SPV case (the
+    /// candidacy investors then vote on). Fires per CANDIDACY -- the pure mapper cannot
+    /// tell the first claim of a round from later joins; the endpoint collapses per round.
+    pub const SPV_CASE_CLAIMED: &str = "spv_case_claimed";
+    /// property `claim_property` -- a letting agent stood for the property's election
+    /// round named in the payload (fires per candidacy, not just on round open).
+    pub const AGENT_ELECTION_OPENED: &str = "agent_election_opened";
+    /// property `propose` -- the letting agent submitted a spending request. Also fires
+    /// on the auto-approval path (no Proposal PDA survives it; see the mapping comment).
+    pub const PROPOSAL_CREATED: &str = "proposal_created";
+    /// property `finalize_proposal` -- a proposal vote closed and the PDA was closed;
+    /// the endpoint resolves the outcome from the frozen proposal row.
+    pub const PROPOSAL_FINALIZED: &str = "proposal_finalized";
+    /// property `challenge_agent` -- an investor challenged the seated letting agent.
+    pub const CHALLENGE_CREATED: &str = "challenge_created";
+    /// property `finalize_challenge` -- a challenge vote closed and the PDA was closed;
+    /// the endpoint resolves the outcome from the frozen challenge row.
+    pub const CHALLENGE_FINALIZED: &str = "challenge_finalized";
 }
 
 /// One durable, idempotent webhook notification the mapper wants recorded (ADR-28/ADR-36).

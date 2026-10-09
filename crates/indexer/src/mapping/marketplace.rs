@@ -37,9 +37,9 @@
 //! `relist_shares` / `send_property_shares` close nothing.
 //!
 //! This is also the program that produces most webhook events (ADR-28/ADR-36):
-//! `init_property_assets`, `claim_shares`, `finalize_spv_election`, `execute_deal`, and the
-//! three secondary-market transfers each record one durable `webhook_events` row -- see the
-//! table above the `webhook_events` match below.
+//! `init_property_assets`, `claim_shares`, `claim_spv_case`, `finalize_spv_election`,
+//! `execute_deal`, and the three secondary-market transfers each record one durable
+//! `webhook_events` row -- see the table above the `webhook_events` match below.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
@@ -303,6 +303,7 @@ pub fn map_instruction(
     // | `finalize_spv_election` | `spv_lawyer_elected` | the transaction + instruction path |
     // | `execute_deal` | `deal_executed` | the transaction + instruction path |
     // | `buy_relisted_shares` / `accept_offer` / `send_property_shares` | `property_shares_transferred` | the transaction + instruction path |
+    // | `claim_spv_case` | `spv_case_claimed` | the transaction + instruction path |
     //
     // Elections, deals, and transfers may legitimately repeat for one subject (a second
     // election round after a failed legal process, another resale), so their event_ids are
@@ -484,6 +485,35 @@ pub fn map_instruction(
                     "amount": args.amount,
                     "asset_id": args.asset_id,
                     "offer": serde_json::Value::Null,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // A lawyer stood for the listing's SPV case (accounts: lawyer 0, listing 4,
+        // property 5, candidacy 6). Investors then vote on the candidacy -- this is the
+        // pre-settlement investor vote the property pages surface as the "terms" flow.
+        // Fires per candidacy (the pure mapper cannot tell the round-opening claim from
+        // later joins), so the endpoint collapses per round; the event id is
+        // transaction-scoped.
+        MarketplaceInstruction::ClaimSpvCase(args) => {
+            vec![WebhookEvent {
+                event_id: format!("spv_case_claimed:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::SPV_CASE_CLAIMED,
+                payload: serde_json::json!({
+                    "event": event_type::SPV_CASE_CLAIMED,
+                    "property_id": args.listing_id,
+                    "round": args.round,
+                    "costs": args.costs,
+                    "lawyer": account_at(accounts, 0, name)?,
+                    "listing": account_at(accounts, 4, name)?,
+                    "property": account_at(accounts, 5, name)?,
+                    "candidacy": account_at(accounts, 6, name)?,
                     "slot": slot,
                     "tx_signature": &tx_signature,
                     "block_time": block_time.to_rfc3339(),

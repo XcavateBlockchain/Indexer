@@ -1231,3 +1231,53 @@ transaction records each instruction separately — and a re-walked transaction 
 an `ON CONFLICT` no-op. The API-side placeholders (wallet resolution, viewer keys) are
 a conscious boundary: the indexer's contract ends at faithfully reporting on-chain
 state changes; turning registry PDAs into people is the consuming API's domain.
+
+## ADR-37: Governance lifecycle events join the webhook outbox
+
+**Context.** The messenger (the XcavateProfileApi buckets) could only learn about
+governance activity by polling GraphQL. The off-chain voting feature needs lifecycle
+NOTIFICATIONS instead: the pre-settlement investor vote (the SPV lawyer election — the
+flow the property pages surface as "terms") and the letting seat's post-settlement
+votes (agent elections, spending proposals, challenges) all change state a bucket
+message would report. Everything hangs off instructions the DEPLOYED programs already
+have — no on-chain change is required or wanted. ADR-36's verdict ("each new event
+type is a mapper arm plus one env var, no new machinery") was written for exactly
+this. Six event types wanted a home: `claim_spv_case` (an SPV candidacy; investors
+then vote on it), `claim_property` (a letting-agent candidacy), `propose` /
+`finalize_proposal`, `challenge_agent` / `finalize_challenge`. The interesting calls
+are payload-shape. Both candidacy instructions fire PER CANDIDACY, not per round-open
+— the pure mapper cannot distinguish the first claim of a round from later joins, so
+the endpoint collapses them per round (its deterministic message body makes
+redeliveries and same-round repeats identical). `propose` also fires on the
+auto-approval path, where no Proposal PDA survives the transaction (the module doc
+already rules no row is ever written), so the endpoint treats a missing proposal row
+as "auto-approved" and announces nothing. And `finalize_*` args carry nothing but the
+asset id — outcomes and tallies live in the frozen proposal/challenge rows and the
+letting row (strikes, seat), the same accepted gap ADR-36 took for election events;
+the ADR-10 per-upgrade event audit stays clean because nothing in these payloads is
+not derivable from instruction args plus mirrored accounts. Cross-program payloads
+uniformly name the property `property_id` (asset_id, which equals the marketplace
+listing id upstream), the join key the profile API's namespaces already use.
+
+**Decision.** Follow the established seams, multiply nothing. Six new `event_type`
+constants + mapper arms + env vars (`SPV_CASE_CLAIMED_WEBHOOK_URL`,
+`AGENT_ELECTION_OPENED_WEBHOOK_URL`, `PROPOSAL_CREATED_WEBHOOK_URL`,
+`PROPOSAL_FINALIZED_WEBHOOK_URL`, `CHALLENGE_CREATED_WEBHOOK_URL`,
+`CHALLENGE_FINALIZED_WEBHOOK_URL`), all tx-scoped event ids since every one
+legitimately repeats per property. Payloads carry instruction-derivable evidence only
+— ids, the relevant PDAs, arg amounts, base58-encoded 32-byte hashes — and the
+endpoint resolves display facts (expiry, tallies, status, round) from the mirror,
+extending ADR-36's "resolution is the endpoint's job" to every finalized-outcome
+event. No schema migration at all: the instructions were already decoded and stored
+(`program_instructions` JSONB + the existing state tables), so the whole change is
+mapper/config/docs.
+
+**Consequences.** The messenger's voting-feature plumbing is unblocked end-to-end:
+vote state is one GraphQL call, and every governance state change a bucket message
+would report now has a durable, retrying webhook type behind it — for the votes the
+programs actually have, with no chain upgrade in the loop. Unconfigured types
+accumulate undelivered exactly like ADR-36's — the loop stays inert until the secrets
+are set, and backlogs drain on first configure; the `webhooks_pending` gauge and
+50-per-cycle budget keep per-type isolation. The endpoint-side resolution burden
+grows (the API needs a GraphQL read for rich messages) but stays idiomatic — already
+the case for the ADR-36 election events.
