@@ -137,10 +137,10 @@ mod property {
     use super::*;
     use crate::mapping::property::map_instruction;
     use carbon_property_decoder::instructions::{
-        ChallengeAgent, CloseAgentCandidacy, CloseIncomeCheckpoint, FinalizeAgentElection,
-        FinalizeChallenge, FinalizeProposal, FinalizeResignation, PropertyInstruction, Propose,
-        RemoveLettingAgent, UnlockAgentVotes, UnlockChallengeVotes, UnlockProposalVotes,
-        VoteOnAgent,
+        ChallengeAgent, ClaimProperty, CloseAgentCandidacy, CloseIncomeCheckpoint,
+        FinalizeAgentElection, FinalizeChallenge, FinalizeProposal, FinalizeResignation,
+        PropertyInstruction, Propose, RemoveLettingAgent, UnlockAgentVotes, UnlockChallengeVotes,
+        UnlockProposalVotes, VoteOnAgent,
     };
     use carbon_property_decoder::PROGRAM_ID;
 
@@ -354,6 +354,138 @@ mod property {
         assert!(m.closes.is_empty());
         assert_eq!(m.instruction.ix_name, "challenge_agent");
     }
+
+    #[test]
+    fn claim_property_emits_the_agent_election_opened_event() {
+        // Accounts 0/5/6/7 are the claiming agent, the (marketplace) PropertyAsset, the
+        // PropertyLetting, and the new candidacy. Fires per candidacy, tx-scoped id.
+        let m = map(
+            PropertyInstruction::ClaimProperty(ClaimProperty {
+                asset_id: 9,
+                round: 2,
+            }),
+            9,
+        );
+        assert_eq!(m.instruction.ix_name, "claim_property");
+        assert!(m.closes.is_empty());
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "agent_election_opened");
+        assert_eq!(ev.event_id, format!("agent_election_opened:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["event"], "agent_election_opened");
+        assert_eq!(p["property_id"], serde_json::json!(9));
+        assert_eq!(p["round"], serde_json::json!(2));
+        assert_eq!(p["agent"], pk(1).to_string()); // account index 0
+        assert_eq!(p["property"], pk(6).to_string()); // account index 5
+        assert_eq!(p["letting"], pk(7).to_string()); // account index 6
+        assert_eq!(p["candidacy"], pk(8).to_string()); // account index 7
+        assert_eq!(p["program"], "property");
+    }
+
+    #[test]
+    fn propose_emits_the_proposal_created_event() {
+        // Accounts 4/5 are letting and the new Proposal PDA; the 32-byte details hash
+        // rides the payload in base58.
+        let m = map(
+            PropertyInstruction::Propose(Propose {
+                asset_id: 9,
+                id: 3,
+                amount: 10,
+                details_hash: [1; 32],
+            }),
+            7,
+        );
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "proposal_created");
+        assert_eq!(ev.event_id, format!("proposal_created:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["event"], "proposal_created");
+        assert_eq!(p["property_id"], serde_json::json!(9));
+        assert_eq!(p["proposal_id"], serde_json::json!(3));
+        assert_eq!(p["amount"], serde_json::json!(10));
+        assert_eq!(
+            p["details_hash"],
+            bs58::encode([1u8; 32]).into_string().as_str()
+        );
+        assert_eq!(p["letting"], pk(5).to_string()); // account index 4
+        assert_eq!(p["proposal"], pk(6).to_string()); // account index 5
+    }
+
+    #[test]
+    fn finalize_proposal_emits_the_proposal_finalized_event() {
+        // Accounts 2/3/4 are letting, the (marketplace) PropertyAsset, and the closing
+        // proposal; the endpoint resolves the outcome from the frozen row.
+        let m = map(
+            PropertyInstruction::FinalizeProposal(FinalizeProposal { asset_id: 9 }),
+            5,
+        );
+        assert_eq!(m.instruction.ix_name, "finalize_proposal");
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "proposal_finalized");
+        assert_eq!(ev.event_id, format!("proposal_finalized:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["property_id"], serde_json::json!(9));
+        assert_eq!(p["letting"], pk(3).to_string()); // account index 2
+        assert_eq!(p["property"], pk(4).to_string()); // account index 3
+        assert_eq!(p["proposal"], pk(5).to_string()); // account index 4
+    }
+
+    #[test]
+    fn challenge_agent_emits_the_challenge_created_event() {
+        // Accounts 0/5/6 are the challenger, letting, and the new Challenge PDA.
+        let m = map(
+            PropertyInstruction::ChallengeAgent(ChallengeAgent {
+                asset_id: 9,
+                id: 4,
+                max_deposit: 100,
+            }),
+            12,
+        );
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "challenge_created");
+        assert_eq!(ev.event_id, format!("challenge_created:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["event"], "challenge_created");
+        assert_eq!(p["property_id"], serde_json::json!(9));
+        assert_eq!(p["challenge_id"], serde_json::json!(4));
+        assert_eq!(p["challenger"], pk(1).to_string()); // account index 0
+        assert_eq!(p["letting"], pk(6).to_string()); // account index 5
+        assert_eq!(p["challenge"], pk(7).to_string()); // account index 6
+    }
+
+    #[test]
+    fn finalize_challenge_emits_the_challenge_finalized_event() {
+        // Accounts 3/4/5 are letting, the (marketplace) PropertyAsset, and the closing
+        // challenge; account 6 is the OPTIONAL agent entry (absent tolerated as null).
+        let m = map(
+            PropertyInstruction::FinalizeChallenge(FinalizeChallenge { asset_id: 9 }),
+            16,
+        );
+        assert_eq!(m.instruction.ix_name, "finalize_challenge");
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "challenge_finalized");
+        assert_eq!(ev.event_id, format!("challenge_finalized:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["property_id"], serde_json::json!(9));
+        assert_eq!(p["letting"], pk(4).to_string()); // account index 3
+        assert_eq!(p["property"], pk(5).to_string()); // account index 4
+        assert_eq!(p["challenge"], pk(6).to_string()); // account index 5
+        assert_eq!(p["agent_entry"], pk(7).to_string()); // account index 6
+
+        let m = map(
+            PropertyInstruction::FinalizeChallenge(FinalizeChallenge { asset_id: 9 }),
+            6,
+        );
+        assert_eq!(
+            m.webhook_events[0].payload["agent_entry"],
+            serde_json::Value::Null
+        );
+    }
 }
 
 // --- marketplace ----------------------------------------------------------------------------
@@ -362,7 +494,7 @@ mod marketplace {
     use super::*;
     use crate::mapping::marketplace::map_instruction;
     use carbon_marketplace_decoder::instructions::{
-        AcceptOffer, BuyPropertyShares, BuyRelistedShares, CancelOffer, ClaimShares,
+        AcceptOffer, BuyPropertyShares, BuyRelistedShares, CancelOffer, ClaimShares, ClaimSpvCase,
         CloseCancelledPosition, CloseCase, CloseDeadListing, CloseShareHolding, DelistShares,
         ExecuteDeal, FinalizeSpvElection, InitPropertyAssets, MakeOffer, MarketplaceInstruction,
         RejectOffer, ReleaseReservation, RelistShares, SendPropertyShares, UnregisterLawyer,
@@ -602,6 +734,37 @@ mod marketplace {
             5,
         );
         expect_close(&m, StateTable::MarketplaceShareHolding, 4);
+    }
+
+    #[test]
+    fn claim_spv_case_emits_the_spv_case_claimed_event() {
+        // Accounts 0/4/5/6 are the claiming lawyer's wallet, the listing, the
+        // (marketplace) PropertyAsset, and the new candidacy. Fires per candidacy --
+        // the endpoint collapses them per round -- so the id is transaction-scoped.
+        let m = map(
+            MarketplaceInstruction::ClaimSpvCase(ClaimSpvCase {
+                listing_id: 9,
+                round: 1,
+                costs: 500,
+            }),
+            8,
+        );
+        assert_eq!(m.instruction.ix_name, "claim_spv_case");
+        assert!(m.closes.is_empty());
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "spv_case_claimed");
+        assert_eq!(ev.event_id, format!("spv_case_claimed:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["event"], "spv_case_claimed");
+        assert_eq!(p["property_id"], serde_json::json!(9));
+        assert_eq!(p["round"], serde_json::json!(1));
+        assert_eq!(p["costs"], serde_json::json!(500));
+        assert_eq!(p["lawyer"], pk(1).to_string()); // account index 0
+        assert_eq!(p["listing"], pk(5).to_string()); // account index 4
+        assert_eq!(p["property"], pk(6).to_string()); // account index 5
+        assert_eq!(p["candidacy"], pk(7).to_string()); // account index 6
+        assert_eq!(p["program"], "marketplace");
     }
 
     #[test]

@@ -326,6 +326,12 @@ table — one optional env var per event type, each independently switchable:
 | `deal_executed` | `DEAL_EXECUTED_WEBHOOK_URL` | marketplace `execute_deal` | the transaction + instruction path |
 | `letting_agent_appointed` | `LETTING_AGENT_APPOINTED_WEBHOOK_URL` | property `finalize_agent_election` | the transaction + instruction path |
 | `property_shares_transferred` | `SHARES_TRANSFERRED_WEBHOOK_URL` | marketplace `buy_relisted_shares` / `accept_offer` / `send_property_shares` | the transaction + instruction path |
+| `spv_case_claimed` | `SPV_CASE_CLAIMED_WEBHOOK_URL` | marketplace `claim_spv_case` (fires per CANDIDACY; the endpoint collapses per round) | the transaction + instruction path |
+| `agent_election_opened` | `AGENT_ELECTION_OPENED_WEBHOOK_URL` | property `claim_property` (fires per CANDIDACY; the endpoint collapses per round) | the transaction + instruction path |
+| `proposal_created` | `PROPOSAL_CREATED_WEBHOOK_URL` | property `propose` (also fires on the auto-approval path — no proposal row then) | the transaction + instruction path |
+| `proposal_finalized` | `PROPOSAL_FINALIZED_WEBHOOK_URL` | property `finalize_proposal` (outcome/tallies resolved from the frozen proposal row) | the transaction + instruction path |
+| `challenge_created` | `CHALLENGE_CREATED_WEBHOOK_URL` | property `challenge_agent` | the transaction + instruction path |
+| `challenge_finalized` | `CHALLENGE_FINALIZED_WEBHOOK_URL` | property `finalize_challenge` (outcome/tallies resolved from the frozen challenge row) | the transaction + instruction path |
 
 **Enable it.** Set any of the `*_WEBHOOK_URL` variables to an http(s) endpoint the
 indexer can reach from the compose network (the operator's own endpoint — the ADR-27

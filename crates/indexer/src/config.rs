@@ -416,6 +416,24 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             "SHARES_TRANSFERRED_WEBHOOK_URL",
             event_type::PROPERTY_SHARES_TRANSFERRED,
         ),
+        ("SPV_CASE_CLAIMED_WEBHOOK_URL", event_type::SPV_CASE_CLAIMED),
+        (
+            "AGENT_ELECTION_OPENED_WEBHOOK_URL",
+            event_type::AGENT_ELECTION_OPENED,
+        ),
+        ("PROPOSAL_CREATED_WEBHOOK_URL", event_type::PROPOSAL_CREATED),
+        (
+            "PROPOSAL_FINALIZED_WEBHOOK_URL",
+            event_type::PROPOSAL_FINALIZED,
+        ),
+        (
+            "CHALLENGE_CREATED_WEBHOOK_URL",
+            event_type::CHALLENGE_CREATED,
+        ),
+        (
+            "CHALLENGE_FINALIZED_WEBHOOK_URL",
+            event_type::CHALLENGE_FINALIZED,
+        ),
     ]
     .into_iter()
     .filter_map(|(var, event_type)| {

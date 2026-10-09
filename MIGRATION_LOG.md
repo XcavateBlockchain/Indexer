@@ -1797,3 +1797,36 @@ and gauge, updated backoff/delivery tests. `cargo fmt --check`,
 filtered queries), `scripts/lint-migrations.sh` all green. The loop is INERT for the new types
 until their GitHub secrets are set; events recorded before then drain on the first deploy that
 has them.
+
+## Indexer: six governance webhook types (ADR-37) — 2026-10-06
+
+**Why**: the messenger's voting feature needs governance lifecycle notifications — today a
+bucket can only learn about votes by polling GraphQL. All of it hangs off instructions the
+deployed programs already have; an earlier draft of this change also carried a
+terms-ratification vote upstream, which was descoped (no on-chain change required).
+
+**What**: six new webhook event types on the ADR-36 outbox, no schema migration (the
+instructions were already decoded into `program_instructions` JSONB and the existing state
+tables). Marketplace `claim_spv_case` → `spv_case_claimed` (the SPV candidacy investors
+then vote on — the "terms" flow on the property pages); property `claim_property` →
+`agent_election_opened`, `propose` → `proposal_created`, `finalize_proposal` →
+`proposal_finalized`, `challenge_agent` → `challenge_created`, `finalize_challenge` →
+`challenge_finalized`. Both candidacy events fire PER CANDIDACY (the endpoint collapses per
+round); `propose` also fires on the auto-approval path (a missing proposal row = skip);
+`finalize_*` payloads name the closing PDA and outcomes resolve endpoint-side from the
+frozen rows. Payloads carry instruction evidence only (PDAs, ids, arg amounts, base58
+32-byte hashes) and name the property `property_id` (== `asset_id` == marketplace
+`listing_id`). New env routes: `SPV_CASE_CLAIMED_WEBHOOK_URL`,
+`AGENT_ELECTION_OPENED_WEBHOOK_URL`, `PROPOSAL_CREATED_WEBHOOK_URL`,
+`PROPOSAL_FINALIZED_WEBHOOK_URL`, `CHALLENGE_CREATED_WEBHOOK_URL`,
+`CHALLENGE_FINALIZED_WEBHOOK_URL` (config.rs + docker-compose + .env.example). Docs: ADR-37
+(also the ADR-10 event audit: every payload derivable from args + mirrored accounts),
+RUNBOOK route table, docs/deployment.md env row.
+
+**Verification**: mapper tests per new producer (payload shapes, optional `agent_entry`
+tolerated, tx-scoped ids); `cargo fmt --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`SQLX_OFFLINE=true cargo build --workspace --locked`, `cargo test --workspace --locked`
+(200+ green), `scripts/agent/verify-decoder-purity.sh` pristine for all five programs,
+`scripts/agent/verify-devnet.sh` OK — all green. The loop is INERT for the six types until
+their secrets are set; recorded rows drain on first configure.
