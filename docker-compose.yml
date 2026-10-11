@@ -68,6 +68,7 @@ services:
       PROPOSAL_FINALIZED_WEBHOOK_URL: ${PROPOSAL_FINALIZED_WEBHOOK_URL:-}
       CHALLENGE_CREATED_WEBHOOK_URL: ${CHALLENGE_CREATED_WEBHOOK_URL:-}
       CHALLENGE_FINALIZED_WEBHOOK_URL: ${CHALLENGE_FINALIZED_WEBHOOK_URL:-}
+      HOLDER_CHANGED_WEBHOOK_URL: ${HOLDER_CHANGED_WEBHOOK_URL:-}
       # ADR-35 sold-out claim push notifications via the Xcavate notifications API,
       # all-or-nothing (exactly one set = the indexer refuses to start --
       # crates/indexer/src/config.rs): NOTIFICATIONS_API_URL is the base URL of a deployed

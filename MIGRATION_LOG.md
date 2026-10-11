@@ -1830,3 +1830,34 @@ tolerated, tx-scoped ids); `cargo fmt --check`,
 (200+ green), `scripts/agent/verify-decoder-purity.sh` pristine for all five programs,
 `scripts/agent/verify-devnet.sh` OK — all green. The loop is INERT for the six types until
 their secrets are set; recorded rows drain on first configure.
+
+## Indexer: primary-market holder changes join the webhook outbox (ADR-38) — 2026-10-09
+
+**Why**: reported bug — the profile API's legal bucket never learned about PRIMARY-market
+holders: nothing fired when a wallet reserved or bought tokens, and nothing on
+cancels/exits (the ADR-36 transfer swap covers only the secondary market). Holder
+membership must mirror the current stakeholder set: reserve/buy → add read access,
+sell/cancel → remove.
+
+**What**: one new event type `property_holder_changed` (`action: added|removed`,
+`reason: <instruction name>`, `investor`, listing/property PDAs where present,
+`listing_id`, `amount` on the add paths), tx-scoped event ids. Producers in the
+marketplace mapper: `reserve_shares` / `buy_property_shares` → added;
+`unreserve_shares`, `release_reservation`, `close_cancelled_position`,
+`withdraw_expired`, `withdraw_cancelled`, `withdraw_legal_process_expired` → removed
+(crank paths take the investor from the ARGS). `close_reservation` and
+`close_share_holding` deliberately produce nothing — the investor wallet lives in
+account data the pure mapper cannot read (documented in the API repo's uncertainties
+doc). One env route (`HOLDER_CHANGED_WEBHOOK_URL`) + wiring (.env.example,
+docker-compose, deploy.yml — which was also missing the six ADR-37 governance routes;
+added those too), README/RUNBOOK/docs-deployment rows, ADR-38. No migration, no sqlx
+change. The API side (XcavateProfileApi) answers pre-bucket holder events "deferred"
+and reconciles the current holder set from the indexer's GraphQL mirror at
+bucket-creation time, so no retry storm and no lost holder.
+
+**Verification**: new mapper tests per producer (added/removed payload shapes,
+arg-carried investor on the crank paths, null `property` where the instruction lacks
+it); `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`SQLX_OFFLINE=true cargo build --workspace --locked`, `cargo test -p indexer --lib`
+(203 green) — all clean. The endpoint side was verified live against the devnet
+indexer GraphQL (reconcile enumerated the real holder set of a sold-out listing).

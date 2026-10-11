@@ -164,6 +164,14 @@ jobs:
           DEAL_EXECUTED_WEBHOOK_URL: ${{ secrets.DEAL_EXECUTED_WEBHOOK_URL }}
           LETTING_AGENT_APPOINTED_WEBHOOK_URL: ${{ secrets.LETTING_AGENT_APPOINTED_WEBHOOK_URL }}
           SHARES_TRANSFERRED_WEBHOOK_URL: ${{ secrets.SHARES_TRANSFERRED_WEBHOOK_URL }}
+          # ADR-37 governance-voting routes and the ADR-38 holder-membership route.
+          SPV_CASE_CLAIMED_WEBHOOK_URL: ${{ secrets.SPV_CASE_CLAIMED_WEBHOOK_URL }}
+          AGENT_ELECTION_OPENED_WEBHOOK_URL: ${{ secrets.AGENT_ELECTION_OPENED_WEBHOOK_URL }}
+          PROPOSAL_CREATED_WEBHOOK_URL: ${{ secrets.PROPOSAL_CREATED_WEBHOOK_URL }}
+          PROPOSAL_FINALIZED_WEBHOOK_URL: ${{ secrets.PROPOSAL_FINALIZED_WEBHOOK_URL }}
+          CHALLENGE_CREATED_WEBHOOK_URL: ${{ secrets.CHALLENGE_CREATED_WEBHOOK_URL }}
+          CHALLENGE_FINALIZED_WEBHOOK_URL: ${{ secrets.CHALLENGE_FINALIZED_WEBHOOK_URL }}
+          HOLDER_CHANGED_WEBHOOK_URL: ${{ secrets.HOLDER_CHANGED_WEBHOOK_URL }}
           # ADR-35 sold-out claim notifications: OPTIONAL but all-or-nothing, mirroring
           # config.rs exactly -- a partial pair fails HERE, at render time, instead of
           # crash-looping the indexer on the server.
@@ -272,6 +280,13 @@ jobs:
             dotenv_optional DEAL_EXECUTED_WEBHOOK_URL "$DEAL_EXECUTED_WEBHOOK_URL"
             dotenv_optional LETTING_AGENT_APPOINTED_WEBHOOK_URL "$LETTING_AGENT_APPOINTED_WEBHOOK_URL"
             dotenv_optional SHARES_TRANSFERRED_WEBHOOK_URL "$SHARES_TRANSFERRED_WEBHOOK_URL"
+            dotenv_optional SPV_CASE_CLAIMED_WEBHOOK_URL "$SPV_CASE_CLAIMED_WEBHOOK_URL"
+            dotenv_optional AGENT_ELECTION_OPENED_WEBHOOK_URL "$AGENT_ELECTION_OPENED_WEBHOOK_URL"
+            dotenv_optional PROPOSAL_CREATED_WEBHOOK_URL "$PROPOSAL_CREATED_WEBHOOK_URL"
+            dotenv_optional PROPOSAL_FINALIZED_WEBHOOK_URL "$PROPOSAL_FINALIZED_WEBHOOK_URL"
+            dotenv_optional CHALLENGE_CREATED_WEBHOOK_URL "$CHALLENGE_CREATED_WEBHOOK_URL"
+            dotenv_optional CHALLENGE_FINALIZED_WEBHOOK_URL "$CHALLENGE_FINALIZED_WEBHOOK_URL"
+            dotenv_optional HOLDER_CHANGED_WEBHOOK_URL "$HOLDER_CHANGED_WEBHOOK_URL"
             if [ "$notifications_set" -eq 2 ]; then
               dotenv_secret NOTIFICATIONS_API_URL "$NOTIFICATIONS_API_URL"
               dotenv_secret NOTIFICATIONS_API_KEY "$NOTIFICATIONS_API_KEY"

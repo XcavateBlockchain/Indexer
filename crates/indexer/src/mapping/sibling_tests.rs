@@ -497,8 +497,9 @@ mod marketplace {
         AcceptOffer, BuyPropertyShares, BuyRelistedShares, CancelOffer, ClaimShares, ClaimSpvCase,
         CloseCancelledPosition, CloseCase, CloseDeadListing, CloseShareHolding, DelistShares,
         ExecuteDeal, FinalizeSpvElection, InitPropertyAssets, MakeOffer, MarketplaceInstruction,
-        RejectOffer, ReleaseReservation, RelistShares, SendPropertyShares, UnregisterLawyer,
-        WithdrawCancelled, WithdrawExpired, WithdrawLegalProcessExpired,
+        RejectOffer, ReleaseReservation, RelistShares, ReserveShares, SendPropertyShares,
+        UnregisterLawyer, UnreserveShares, WithdrawCancelled, WithdrawExpired,
+        WithdrawLegalProcessExpired,
     };
     use carbon_marketplace_decoder::PROGRAM_ID;
 
@@ -1004,10 +1005,145 @@ mod marketplace {
     }
 
     #[test]
+    fn reserve_shares_emits_a_holder_added_event() {
+        // ADR-38: investor 0, listing 4, property 5; the amount is the arg.
+        let m = map(
+            MarketplaceInstruction::ReserveShares(ReserveShares {
+                listing_id: 7,
+                amount: 5,
+                max_total_cost: 100,
+            }),
+            8,
+        );
+        assert_eq!(m.instruction.ix_name, "reserve_shares");
+        assert_eq!(m.webhook_events.len(), 1);
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "property_holder_changed");
+        assert_eq!(ev.event_id, format!("property_holder_changed:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["event"], "property_holder_changed");
+        assert_eq!(p["action"], "added");
+        assert_eq!(p["reason"], "reserve_shares");
+        assert_eq!(p["investor"], pk(1).to_string()); // account index 0
+        assert_eq!(p["listing"], pk(5).to_string()); // account index 4
+        assert_eq!(p["property"], pk(6).to_string()); // account index 5
+        assert_eq!(p["listing_id"], serde_json::json!(7));
+        assert_eq!(p["amount"], serde_json::json!(5));
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["program"], "marketplace");
+    }
+
+    #[test]
+    fn buy_property_shares_emits_a_holder_added_event() {
+        // ADR-38: a direct primary-market purchase joins the holder set immediately.
+        let m = map(
+            MarketplaceInstruction::BuyPropertyShares(BuyPropertyShares {
+                listing_id: 7,
+                amount: 5,
+                max_total_cost: 100,
+            }),
+            8,
+        );
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "property_holder_changed");
+        let p = &ev.payload;
+        assert_eq!(p["action"], "added");
+        assert_eq!(p["reason"], "buy_property_shares");
+        assert_eq!(p["investor"], pk(1).to_string());
+        assert_eq!(p["listing"], pk(5).to_string());
+        assert_eq!(p["property"], pk(6).to_string());
+        assert_eq!(p["amount"], serde_json::json!(5));
+    }
+
+    #[test]
+    fn unreserve_shares_emits_a_holder_removed_event() {
+        // ADR-38: investor 0, listing 1; no property account and no amount arg on this one.
+        let m = map(
+            MarketplaceInstruction::UnreserveShares(UnreserveShares { listing_id: 7 }),
+            4,
+        );
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "property_holder_changed");
+        let p = &ev.payload;
+        assert_eq!(p["action"], "removed");
+        assert_eq!(p["reason"], "unreserve_shares");
+        assert_eq!(p["investor"], pk(1).to_string());
+        assert_eq!(p["listing"], pk(2).to_string()); // account index 1
+        assert_eq!(p["property"], serde_json::Value::Null);
+        assert_eq!(p["amount"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn release_reservation_emits_a_holder_removed_event_with_the_arg_investor() {
+        // ADR-38: the crank releases the reservation; the investor is an ARG, not an account.
+        let m = map(
+            MarketplaceInstruction::ReleaseReservation(ReleaseReservation {
+                listing_id: 7,
+                investor: pk(9),
+            }),
+            6,
+        );
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "property_holder_changed");
+        let p = &ev.payload;
+        assert_eq!(p["action"], "removed");
+        assert_eq!(p["reason"], "release_reservation");
+        assert_eq!(p["investor"], pk(9).to_string()); // the arg, not an account
+        assert_eq!(p["listing"], pk(4).to_string()); // account index 3
+    }
+
+    #[test]
+    fn close_cancelled_position_emits_a_holder_removed_event_with_the_arg_investor() {
+        let m = map(
+            MarketplaceInstruction::CloseCancelledPosition(CloseCancelledPosition {
+                listing_id: 7,
+                investor: pk(9),
+            }),
+            5,
+        );
+        let ev = &m.webhook_events[0];
+        let p = &ev.payload;
+        assert_eq!(p["action"], "removed");
+        assert_eq!(p["reason"], "close_cancelled_position");
+        assert_eq!(p["investor"], pk(9).to_string());
+        assert_eq!(p["listing"], pk(4).to_string()); // account index 3
+    }
+
+    #[test]
+    fn the_withdraw_trio_emits_holder_removed_events() {
+        // ADR-38: investor 0, listing 3, property 4 on all three exit paths of a dead listing.
+        for (name, data) in [
+            (
+                "withdraw_expired",
+                MarketplaceInstruction::WithdrawExpired(WithdrawExpired { listing_id: 7 }),
+            ),
+            (
+                "withdraw_cancelled",
+                MarketplaceInstruction::WithdrawCancelled(WithdrawCancelled { listing_id: 7 }),
+            ),
+            (
+                "withdraw_legal_process_expired",
+                MarketplaceInstruction::WithdrawLegalProcessExpired(WithdrawLegalProcessExpired {
+                    listing_id: 7,
+                }),
+            ),
+        ] {
+            let m = map(data, 7);
+            assert_eq!(m.webhook_events.len(), 1, "{name}");
+            let p = &m.webhook_events[0].payload;
+            assert_eq!(p["action"], "removed", "{name}");
+            assert_eq!(p["reason"], name, "{name}");
+            assert_eq!(p["investor"], pk(1).to_string(), "{name}");
+            assert_eq!(p["listing"], pk(4).to_string(), "{name}"); // index 3
+            assert_eq!(p["property"], pk(5).to_string(), "{name}"); // index 4
+        }
+    }
+
+    #[test]
     fn the_other_marketplace_instructions_emit_no_webhook_events() {
         // Webhooks fire ONLY on the producer instructions (asset registration, claim start,
-        // election finalization, deal execution, the three transfers); every other
-        // instruction leaves the vector empty (regions/realxhub always do).
+        // elections, deal execution, the transfers, holder changes); every other instruction
+        // leaves the vector empty (regions/realxhub always do).
         for (name, data, n) in [
             (
                 "cancel_offer",
@@ -1015,13 +1151,13 @@ mod marketplace {
                 11,
             ),
             (
-                "buy_property_shares",
-                MarketplaceInstruction::BuyPropertyShares(BuyPropertyShares {
-                    listing_id: 1,
+                "make_offer",
+                MarketplaceInstruction::MakeOffer(MakeOffer {
+                    id: 1,
                     amount: 2,
-                    max_total_cost: 100,
+                    share_price: 10,
                 }),
-                12,
+                13,
             ),
         ] {
             let m = map(data, n);
