@@ -1332,3 +1332,30 @@ table. `claim_shares` itself emits no holder event (a claim converts a reservati
 the `reserve_shares` event already covered). The two wallet-less crank closes remain
 a documented gap: their victims keep read access until a withdraw/sell event or a
 manual cleanup removes them.
+
+## ADR-39: `listings` gains a plural `statuses` filter — the marketplace feed's state checkboxes
+
+**Context.** The mobile app's marketplace feed used to ask for every still-open listing
+(`active: true`) and decide visibility client-side, because `listings` took at most one
+`status` value. The feed's filter popup then grew a State section — one checkbox per
+user-facing phase ("Can be reserved", "Waiting for claim", "Expired", "Finalized",
+"Cancelled / Refunding") — and each checkbox maps to one or two on-chain statuses.
+Answering that client-side means paging the whole table on every filter change and
+re-running the text filters over rows nobody will see; a query per checkbox merges
+badly with `first`/`offset` pagination (each status paginates independently, so a merged
+feed has no stable ordering or end marker).
+
+**Decision.** `listings` takes an additional, optional `statuses: [ListingStatus!]`
+argument, answered in SQL as `status = ANY($n)` on both the page query and the
+`count(*)` (the existing `status` singleton stays — additive, so every deployed client
+keeps working). An absent argument switches the filter off; an empty list matches
+nothing, which is exactly the feed's "all checkboxes off" case, so the app passes its
+selection verbatim and never branches. The app-side label mapping lives in the app
+(`Waiting for claim` = `SOLD_OUT` + `LEGAL` — the post-sell-out legal/SPV phase while
+the claim window runs, per ADR-35); the API stays chain-literal.
+
+**Consequences.** The feed's state filter is exact and cheap: one round-trip per page
+whatever the selection, correct `totalCount`, and no over-fetching. The query planner
+reuses `idx_mkt_listing_status`. The SQL and its sqlx offline data changed; no
+migration — the filter reads the existing `status` column. Clients on the old schema
+are unaffected until they adopt the argument (the app ships after this deploys).

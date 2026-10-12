@@ -73,10 +73,17 @@ async fn seed_image(pool: &PgPool, pubkey: &[u8], index: i32, thumb_uri: Option<
     .expect("seed marketplace_property_image");
 }
 
-/// One `LISTED` marketplace_listing row pointing at asset_id 7 (the join key the
-/// `listings` resolver uses to attach `propertyAsset`). All NOT NULL columns are seeded;
-/// the CHECK-constrained TEXT columns take a valid enum value.
-async fn seed_listing(pool: &PgPool, pubkey: &[u8]) {
+/// One marketplace_listing row with caller-chosen ids, slot (the feed's ordering key) and
+/// status. All NOT NULL columns are seeded; the CHECK-constrained TEXT columns take a valid
+/// enum value. A dangling `asset_id` is fine: the resolver LEFT JOINs the asset.
+async fn seed_listing_row(
+    pool: &PgPool,
+    pubkey: &[u8],
+    listing_id: i64,
+    asset_id: i64,
+    slot: i64,
+    status: &str,
+) {
     sqlx::query(
         r#"INSERT INTO marketplace_listing
                (pubkey, slot, lamports, listing_id, developer, asset_id, share_price,
@@ -91,11 +98,11 @@ async fn seed_listing(pool: &PgPool, pubkey: &[u8]) {
                 developer_engaged, spv_costs_due, spv_costs_payee, collected,
                 spv_election_expiry, spv_election_candidate_count, spv_election_round,
                 status, bump)
-           VALUES ($1, 101, 1000000, 7, $2, 7, 55, 10, 0, 0,
+           VALUES ($1, $8, 1000000, $9, $2, $10, 55, 10, 0, 0,
                    FALSE, 0, 0, 0, 10000, 0, 0, 0, 0, 0, 0,
                    0, 0, 0, $3, 0, 'PENDING', $4, $5, 0,
                    'PENDING', $6, FALSE, FALSE, 0, $7, '[]'::jsonb,
-                   0, 0, 0, 'LISTED', 254)"#,
+                   0, 0, 0, $11, 254)"#,
     )
     .bind(pubkey)
     .bind(vec![13u8; 32]) // developer
@@ -104,9 +111,19 @@ async fn seed_listing(pool: &PgPool, pubkey: &[u8]) {
     .bind(vec![15u8; 32]) // spv_lawyer
     .bind(vec![0u8; 32]) // spv_lawyer_documents_hash
     .bind(vec![16u8; 32]) // spv_costs_payee
+    .bind(slot)
+    .bind(listing_id)
+    .bind(asset_id)
+    .bind(status)
     .execute(pool)
     .await
     .expect("seed marketplace_listing");
+}
+
+/// One `LISTED` marketplace_listing row pointing at asset_id 7 (the join key the
+/// `listings` resolver uses to attach `propertyAsset`).
+async fn seed_listing(pool: &PgPool, pubkey: &[u8]) {
+    seed_listing_row(pool, pubkey, 7, 7, 101, "LISTED").await;
 }
 
 /// ADR-31: the mirrored 720x720 JPEGs are served as `metadata.propertyImageThumbnails`,
@@ -233,5 +250,79 @@ async fn mirrored_thumbnails_are_served_through_listings(pool: PgPool) {
                 }],
             },
         }),
+    );
+}
+
+/// ADR-39: `statuses` filters the feed to any of several statuses at once — the
+/// marketplace page's state checkboxes. An empty list matches nothing (`= ANY('{}')`);
+/// no argument switches the filter off.
+#[sqlx::test(migrations = "../../migrations")]
+async fn listings_filter_by_any_of_several_statuses(pool: PgPool) {
+    // Slot DESC ordering: 23 (SOLD_OUT), 22 (EXPIRED), 21 (LISTED).
+    seed_listing_row(&pool, &[21u8; 32], 21, 21, 201, "LISTED").await;
+    seed_listing_row(&pool, &[22u8; 32], 22, 22, 202, "EXPIRED").await;
+    seed_listing_row(&pool, &[23u8; 32], 23, 23, 203, "SOLD_OUT").await;
+
+    let (data, errors) = juniper::execute(
+        r#"{
+          listings(statuses: [LISTED, EXPIRED], first: 10) {
+            totalCount
+            nodes { listingId status }
+          }
+        }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool.clone()),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "listings": {
+                "totalCount": 2,
+                "nodes": [
+                    { "listingId": "22", "status": "EXPIRED" },
+                    { "listingId": "21", "status": "LISTED" },
+                ],
+            },
+        }),
+    );
+
+    // The "every state checkbox off" case: nothing matches.
+    let (data, errors) = juniper::execute(
+        r#"{ listings(statuses: [], first: 10) { totalCount } }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool.clone()),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({ "listings": { "totalCount": 0 } }),
+    );
+
+    // No argument: the filter is off, every active listing comes back.
+    let (data, errors) = juniper::execute(
+        r#"{ listings(first: 10) { totalCount } }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({ "listings": { "totalCount": 3 } }),
     );
 }

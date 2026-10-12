@@ -1149,11 +1149,13 @@ macro_rules! listing_from_row {
     }};
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn listings(
     context: &GraphQLContext,
     listing_id: Option<I64>,
     developer: Option<String>,
     status: Option<ListingStatus>,
+    statuses: Option<Vec<ListingStatus>>,
     active: Option<bool>,
     first: Option<i32>,
     offset: Option<i32>,
@@ -1166,6 +1168,11 @@ pub async fn listings(
         .map(|s| parse_b58("developer", s))
         .transpose()?;
     let status = status.map(|s| s.as_db_str());
+    // ADR-39: the multi-status filter the marketplace feed's state checkboxes need. An
+    // empty list matches nothing (`= ANY('{}')` is false for every row), which is exactly
+    // the feed's "all states unchecked" case; a missing argument switches the filter off.
+    let statuses: Option<Vec<String>> =
+        statuses.map(|v| v.into_iter().map(|s| s.as_db_str().to_owned()).collect());
 
     // LEFT JOIN brings `Listing.propertyAsset` along in the same round-trip (1:1 -- see the
     // `Listing` doc), so `listings { propertyAsset { ... } }` costs exactly this query plus
@@ -1208,6 +1215,7 @@ pub async fn listings(
           AND ($2::bytea IS NULL OR l.developer = $2)
           AND ($3::text IS NULL OR l.status = $3)
           AND ($4::bool IS NULL OR (l.closed_at_slot IS NULL) = $4)
+          AND ($7::text[] IS NULL OR l.status = ANY($7))
         ORDER BY l.slot DESC, l.pubkey ASC
         LIMIT $5 OFFSET $6
         "#,
@@ -1217,6 +1225,7 @@ pub async fn listings(
         active,
         limit,
         skip,
+        statuses.as_deref(),
     )
     .fetch_all(&context.pool)
     .await?;
@@ -1228,11 +1237,13 @@ pub async fn listings(
           AND ($2::bytea IS NULL OR developer = $2)
           AND ($3::text IS NULL OR status = $3)
           AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)
+          AND ($5::text[] IS NULL OR status = ANY($5))
         "#,
         listing_id,
         developer.as_deref(),
         status,
         active,
+        statuses.as_deref(),
     )
     .fetch_one(&context.pool)
     .await?
