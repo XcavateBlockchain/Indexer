@@ -8,8 +8,8 @@ use juniper::{graphql_object, FieldError, FieldResult, Value, ID};
 
 use super::context::GraphQLContext;
 use super::enums::{
-    unknown_enum_value, ActionType, ListingStatus, Permission, ProgramName, RegionStatus,
-    RemovalKind, Role,
+    unknown_enum_value, ActionType, ListingFeedState, ListingStatus, Permission, ProgramName,
+    RegionStatus, RemovalKind, Role,
 };
 use super::programs;
 use super::types::{
@@ -585,9 +585,11 @@ impl QueryRoot {
 
     /// Property listings on the marketplace. Each node's `propertyAsset` is LEFT-JOINed in
     /// (see `programs::marketplace::Listing`), so listings and their tokenised property come
-    /// back in a single round-trip. `statuses` (ADR-39) filters to any of several statuses
-    /// at once — the marketplace feed's state checkboxes — where `status` takes only one;
-    /// an empty list matches nothing, an absent argument switches the filter off.
+    /// back in a single round-trip. `feedStates` (ADR-39) filters by the feed's DERIVED
+    /// listing states (status + wall clock + availability — see `ListingFeedState`) — the
+    /// marketplace page's state checkboxes. `statuses` is the plain multi-status match from
+    /// the first cut of ADR-39, kept for the clients built against it; an empty list of
+    /// either matches nothing, an absent argument switches that filter off.
     #[allow(clippy::too_many_arguments)]
     async fn listings(
         context: &GraphQLContext,
@@ -595,12 +597,21 @@ impl QueryRoot {
         developer: Option<String>,
         status: Option<ListingStatus>,
         statuses: Option<Vec<ListingStatus>>,
+        feed_states: Option<Vec<ListingFeedState>>,
         active: Option<bool>,
         first: Option<i32>,
         offset: Option<i32>,
     ) -> FieldResult<programs::marketplace::ListingConnection> {
         programs::marketplace::listings(
-            context, listing_id, developer, status, statuses, active, first, offset,
+            context,
+            listing_id,
+            developer,
+            status,
+            statuses,
+            feed_states,
+            active,
+            first,
+            offset,
         )
         .await
     }

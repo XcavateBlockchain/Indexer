@@ -1862,23 +1862,33 @@ it); `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings
 (203 green) — all clean. The endpoint side was verified live against the devnet
 indexer GraphQL (reconcile enumerated the real holder set of a sold-out listing).
 
-## API: `listings(statuses:)` — multi-status filter for the marketplace feed's state checkboxes (ADR-39) — 2026-10-12
+## API: `listings(feedStates:)` — derived listing-state filter for the marketplace feed's checkboxes (ADR-39) — 2026-10-12
 
 **Why**: the mobile app's marketplace filter popup gained a State section — one checkbox
-per user-facing listing phase, each mapping to one or two on-chain statuses. Client-side
-filtering paged the whole table per filter change; one query per checkbox breaks
-`first`/`offset` pagination.
+per user-facing listing phase. A raw multi-status filter cannot express "for sale and
+not expired" or "waiting for claim": the chain status lags the wall clock (a LISTED row
+past `listing_expiry` stays LISTED until cranked) and the claim phase runs UNDER LISTED
+(`claim_deadline` set at full commitment; SOLD_OUT flips only when fully sold).
 
-**What**: `listings` takes an additive optional `statuses: [ListingStatus!]`, answered in
-SQL (`status = ANY($n)`) on the page query and the `count(*)`; the `status` singleton
-stays. Empty list = match nothing (the "all checkboxes off" case); absent = filter off.
-The label→status mapping stays in the app. Two query texts changed, so
-`cargo sqlx prepare` regenerated two `.sqlx` files; no migration.
+**What**: `listings` takes an additive optional `feedStates: [ListingFeedState!]` over a
+new query-only enum — six derived states (FOR_SALE / WAITING_FOR_CLAIM / SOLD_OUT /
+EXPIRED / FINALIZED / CANCELLED_OR_REFUNDING), each one SQL arm in a static OR over
+status + `listing_expiry` / `claim_deadline` + share availability, byte-identical in the
+page and count queries with one bound wall clock. Empty list = match nothing (the "all
+checkboxes off" case); absent = filter off. The first cut's plural `statuses` (merged and
+deployed the same day, before the wall-clock problem was caught) STAYS alongside for the
+clients built against it; the two combine by AND. PENDING_ASSETS
+unreachable. No migration; `cargo sqlx prepare` regenerated the two `.sqlx` query files
+(the same-day first cut's plural `statuses` had already merged and deployed when the
+wall-clock problem was caught, so it stays as a kept compatible argument rather than
+being replaced).
 
-**Verification**: new `listings_filter_by_any_of_several_statuses` end-to-end test
-(seeded LISTED/EXPIRED/SOLD_OUT rows; `[LISTED, EXPIRED]` → exactly those two in slot
-order, `[]` → none, absent → all); `cargo fmt --check`,
-`cargo clippy --workspace --all-targets -- -D warnings`,
+**Verification**: `listings_filter_by_feed_state_partitions_every_listing` seeds one row
+per partition cell (incl. uncranked expired LISTED and the three claim-phase shapes) and
+asserts each state's exact member set, the all-states union (11 of 12 rows —
+PENDING_ASSETS excluded), the empty list (0), and the absent argument (12);
+`cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
 `SQLX_OFFLINE=true cargo build --workspace --locked`, `cargo test --workspace --locked`,
-`cargo sqlx prepare --check` (both crates) — all green. App side ships after deploy:
-the deployed API must know `statuses` before the app's feed query adopts it.
+`cargo sqlx prepare --check` (both crates), `scripts/agent/verify-devnet.sh` — all green.
+App side ships after deploy: the deployed API must know `feedStates` before the app's
+feed query adopts it.

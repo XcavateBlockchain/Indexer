@@ -182,6 +182,49 @@ impl ListingStatus {
     }
 }
 
+/// The marketplace feed's user-facing listing states (ADR-39): a DERIVED, query-only
+/// partition of the active listings — unlike [`ListingStatus`], which mirrors the chain
+/// column, nothing here is stored. Each state is a status + wall-clock + availability
+/// condition evaluated in SQL (`programs::marketplace::listings`):
+///
+/// - `FOR_SALE`: LISTED with the sale window open (`listing_expiry` in the future) and
+///   shares still available (`listed - sold - reserved > 0`).
+/// - `WAITING_FOR_CLAIM`: LISTED but fully committed (no shares available): either the
+///   SPV is still to be created (`claim_deadline = 0`) or the claim window is open
+///   (`claim_deadline` in the future). The claim phase runs under LISTED on chain —
+///   SOLD_OUT only flips once every share is actually sold/claimed.
+/// - `SOLD_OUT`: SOLD_OUT or LEGAL — claims are done, the legal/settlement process runs.
+/// - `EXPIRED`: EXPIRED on chain, or LISTED past `listing_expiry` with shares left (the
+///   chain status lags the wall clock until `withdraw_expired` is cranked), or LISTED,
+///   fully committed, with the claim window lapsed (`claim_deadline` reached) while
+///   shares stay unclaimed — the "claim period expired" case.
+/// - `FINALIZED`: FINALIZED.
+/// - `CANCELLED_OR_REFUNDING`: CANCELLED or REFUNDING.
+///
+/// PENDING_ASSETS is deliberately unreachable: pre-sale rows never belonged to the feed.
+#[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListingFeedState {
+    ForSale,
+    WaitingForClaim,
+    SoldOut,
+    Expired,
+    Finalized,
+    CancelledOrRefunding,
+}
+
+impl ListingFeedState {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            ListingFeedState::ForSale => "FOR_SALE",
+            ListingFeedState::WaitingForClaim => "WAITING_FOR_CLAIM",
+            ListingFeedState::SoldOut => "SOLD_OUT",
+            ListingFeedState::Expired => "EXPIRED",
+            ListingFeedState::Finalized => "FINALIZED",
+            ListingFeedState::CancelledOrRefunding => "CANCELLED_OR_REFUNDING",
+        }
+    }
+}
+
 /// `marketplace_listing.developer_lawyer_doc_status` / `spv_lawyer_doc_status`
 /// (`DocumentStatus` on chain).
 #[derive(GraphQLEnum, Debug, Clone, Copy, PartialEq, Eq)]

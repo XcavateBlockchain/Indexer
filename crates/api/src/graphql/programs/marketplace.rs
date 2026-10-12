@@ -12,7 +12,7 @@ use sqlx::PgPool;
 
 use super::{b58, hex_string, json_string, parse_b58, total_count_i32, utf8_lossy};
 use crate::graphql::context::GraphQLContext;
-use crate::graphql::enums::{unknown_enum_value, DocumentStatus, ListingStatus};
+use crate::graphql::enums::{unknown_enum_value, DocumentStatus, ListingFeedState, ListingStatus};
 use crate::guards::{clamp_first, clamp_offset};
 
 /// The marketplace program's Config PDA (singleton). `null` until `initialize_config` has been
@@ -1156,6 +1156,7 @@ pub async fn listings(
     developer: Option<String>,
     status: Option<ListingStatus>,
     statuses: Option<Vec<ListingStatus>>,
+    feed_states: Option<Vec<ListingFeedState>>,
     active: Option<bool>,
     first: Option<i32>,
     offset: Option<i32>,
@@ -1168,11 +1169,22 @@ pub async fn listings(
         .map(|s| parse_b58("developer", s))
         .transpose()?;
     let status = status.map(|s| s.as_db_str());
-    // ADR-39: the multi-status filter the marketplace feed's state checkboxes need. An
-    // empty list matches nothing (`= ANY('{}')` is false for every row), which is exactly
-    // the feed's "all states unchecked" case; a missing argument switches the filter off.
+    // `statuses` stays for clients built against the first cut of ADR-39 (it merged and
+    // deployed before the derived filter landed); the feed itself uses `feed_states`.
     let statuses: Option<Vec<String>> =
         statuses.map(|v| v.into_iter().map(|s| s.as_db_str().to_owned()).collect());
+    // ADR-39: the marketplace feed's state checkboxes — a DERIVED filter (status +
+    // wall clock + availability, see ListingFeedState's doc), not a raw status match.
+    // An empty list matches nothing (every arm's `= ANY('{}')` is false), which is
+    // exactly the feed's "all states unchecked" case; a missing argument switches the
+    // filter off. One wall clock is bound for both statements so the page and its
+    // count cannot disagree on a deadline crossing between them.
+    let feed_states: Option<Vec<String>> =
+        feed_states.map(|v| v.into_iter().map(|s| s.as_db_str().to_owned()).collect());
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
 
     // LEFT JOIN brings `Listing.propertyAsset` along in the same round-trip (1:1 -- see the
     // `Listing` doc), so `listings { propertyAsset { ... } }` costs exactly this query plus
@@ -1215,7 +1227,28 @@ pub async fn listings(
           AND ($2::bytea IS NULL OR l.developer = $2)
           AND ($3::text IS NULL OR l.status = $3)
           AND ($4::bool IS NULL OR (l.closed_at_slot IS NULL) = $4)
-          AND ($7::text[] IS NULL OR l.status = ANY($7))
+          -- ADR-39, one arm per feed state (see ListingFeedState's doc for the partition):
+          -- the sale phase is LISTED with shares available, split by the wall clock; the
+          -- claim phase is LISTED fully committed (claims run under LISTED on chain);
+          -- SOLD_OUT/LEGAL are the sold-out legal/settlement phase.
+          AND ($7::text[] IS NULL OR (
+                 ('FOR_SALE' = ANY($7) AND l.status = 'LISTED'
+                      AND l.listing_expiry > $8
+                      AND (l.listed_share_amount - l.sold_share_amount - l.reserved_share_amount) > 0)
+              OR ('WAITING_FOR_CLAIM' = ANY($7) AND l.status = 'LISTED'
+                      AND (l.listed_share_amount - l.sold_share_amount - l.reserved_share_amount) = 0
+                      AND (l.claim_deadline = 0 OR l.claim_deadline > $8))
+              OR ('SOLD_OUT' = ANY($7) AND l.status IN ('SOLD_OUT', 'LEGAL'))
+              OR ('EXPIRED' = ANY($7) AND (l.status = 'EXPIRED'
+                      OR (l.status = 'LISTED'
+                          AND (l.listed_share_amount - l.sold_share_amount - l.reserved_share_amount) > 0
+                          AND l.listing_expiry <= $8)
+                      OR (l.status = 'LISTED'
+                          AND (l.listed_share_amount - l.sold_share_amount - l.reserved_share_amount) = 0
+                          AND l.claim_deadline > 0 AND l.claim_deadline <= $8)))
+              OR ('FINALIZED' = ANY($7) AND l.status = 'FINALIZED')
+              OR ('CANCELLED_OR_REFUNDING' = ANY($7) AND l.status IN ('CANCELLED', 'REFUNDING'))))
+          AND ($9::text[] IS NULL OR l.status = ANY($9))
         ORDER BY l.slot DESC, l.pubkey ASC
         LIMIT $5 OFFSET $6
         "#,
@@ -1225,6 +1258,8 @@ pub async fn listings(
         active,
         limit,
         skip,
+        feed_states.as_deref(),
+        now_unix,
         statuses.as_deref(),
     )
     .fetch_all(&context.pool)
@@ -1237,12 +1272,33 @@ pub async fn listings(
           AND ($2::bytea IS NULL OR developer = $2)
           AND ($3::text IS NULL OR status = $3)
           AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)
-          AND ($5::text[] IS NULL OR status = ANY($5))
+          -- ADR-39: byte-identical feed-state arms to the page query above (no table
+          -- alias here) so the count can never disagree with the page.
+          AND ($5::text[] IS NULL OR (
+                 ('FOR_SALE' = ANY($5) AND status = 'LISTED'
+                      AND listing_expiry > $6
+                      AND (listed_share_amount - sold_share_amount - reserved_share_amount) > 0)
+              OR ('WAITING_FOR_CLAIM' = ANY($5) AND status = 'LISTED'
+                      AND (listed_share_amount - sold_share_amount - reserved_share_amount) = 0
+                      AND (claim_deadline = 0 OR claim_deadline > $6))
+              OR ('SOLD_OUT' = ANY($5) AND status IN ('SOLD_OUT', 'LEGAL'))
+              OR ('EXPIRED' = ANY($5) AND (status = 'EXPIRED'
+                      OR (status = 'LISTED'
+                          AND (listed_share_amount - sold_share_amount - reserved_share_amount) > 0
+                          AND listing_expiry <= $6)
+                      OR (status = 'LISTED'
+                          AND (listed_share_amount - sold_share_amount - reserved_share_amount) = 0
+                          AND claim_deadline > 0 AND claim_deadline <= $6)))
+              OR ('FINALIZED' = ANY($5) AND status = 'FINALIZED')
+              OR ('CANCELLED_OR_REFUNDING' = ANY($5) AND status IN ('CANCELLED', 'REFUNDING'))))
+          AND ($7::text[] IS NULL OR status = ANY($7))
         "#,
         listing_id,
         developer.as_deref(),
         status,
         active,
+        feed_states.as_deref(),
+        now_unix,
         statuses.as_deref(),
     )
     .fetch_one(&context.pool)

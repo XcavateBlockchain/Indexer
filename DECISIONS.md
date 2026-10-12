@@ -1333,29 +1333,47 @@ the `reserve_shares` event already covered). The two wallet-less crank closes re
 a documented gap: their victims keep read access until a withdraw/sell event or a
 manual cleanup removes them.
 
-## ADR-39: `listings` gains a plural `statuses` filter — the marketplace feed's state checkboxes
+## ADR-39: `listings` gains a derived `feedStates` filter — the marketplace feed's state checkboxes
+
+*(The same-day first cut shipped a plain plural `statuses` filter and reached the
+deployed API before the wall-clock problem was caught; `statuses` stays for those
+clients, and the feed itself uses `feedStates`.)*
 
 **Context.** The mobile app's marketplace feed used to ask for every still-open listing
 (`active: true`) and decide visibility client-side, because `listings` took at most one
 `status` value. The feed's filter popup then grew a State section — one checkbox per
-user-facing phase ("Can be reserved", "Waiting for claim", "Expired", "Finalized",
-"Cancelled / Refunding") — and each checkbox maps to one or two on-chain statuses.
-Answering that client-side means paging the whole table on every filter change and
-re-running the text filters over rows nobody will see; a query per checkbox merges
-badly with `first`/`offset` pagination (each status paginates independently, so a merged
-feed has no stable ordering or end marker).
+user-facing phase ("Can be reserved", "Waiting for claim", "Sold out", "Expired",
+"Finalized", "Cancelled / Refunding"). A raw multi-status filter (`statuses =
+ANY(...)`) is NOT enough: the chain status lags the wall clock twice — a LISTED row
+past `listing_expiry` stays LISTED until someone cranks `withdraw_expired`, and the
+claim phase runs UNDER LISTED (`create_spv` sets `claim_deadline` once a listing is
+fully committed; SOLD_OUT only flips when `sold_share_amount == listed_share_amount`).
+"For sale and not expired" and "waiting for claim" are therefore status + wall-clock +
+availability conditions, which a client cannot answer without over-fetching the whole
+table; a query per checkbox breaks `first`/`offset` pagination.
 
-**Decision.** `listings` takes an additional, optional `statuses: [ListingStatus!]`
-argument, answered in SQL as `status = ANY($n)` on both the page query and the
-`count(*)` (the existing `status` singleton stays — additive, so every deployed client
-keeps working). An absent argument switches the filter off; an empty list matches
-nothing, which is exactly the feed's "all checkboxes off" case, so the app passes its
-selection verbatim and never branches. The app-side label mapping lives in the app
-(`Waiting for claim` = `SOLD_OUT` + `LEGAL` — the post-sell-out legal/SPV phase while
-the claim window runs, per ADR-35); the API stays chain-literal.
+**Decision.** `listings` takes an additional, optional `feedStates: [ListingFeedState!]`
+argument over a new QUERY-ONLY enum (`ListingFeedState` — derived, nothing stored),
+each value one SQL arm in a static OR: FOR_SALE is LISTED with `listing_expiry` in the
+future and shares available; WAITING_FOR_CLAIM is LISTED fully committed with the
+claim window pending (`claim_deadline = 0`) or open; SOLD_OUT is SOLD_OUT or LEGAL
+(claims done, legal/settlement running); EXPIRED is EXPIRED on chain, LISTED past the
+sale deadline with shares left, or LISTED fully committed with the claim window
+lapsed; FINALIZED is FINALIZED; CANCELLED_OR_REFUNDING is CANCELLED or REFUNDING.
+PENDING_ASSETS stays unreachable (pre-sale rows never belonged to the feed), and the
+arms partition the remaining active rows without overlap. One wall clock is bound for
+the page query and its `count(*)`, which carry byte-identical arms; the existing
+`status` singleton and the first cut's `statuses` plural both stay untouched
+(additive, every deployed client keeps working; the two combine by AND if both are
+ever passed).
+An absent argument switches the filter off; an empty list matches nothing — the feed's
+"all checkboxes off" case — so the app passes its selection verbatim.
 
 **Consequences.** The feed's state filter is exact and cheap: one round-trip per page
-whatever the selection, correct `totalCount`, and no over-fetching. The query planner
-reuses `idx_mkt_listing_status`. The SQL and its sqlx offline data changed; no
-migration — the filter reads the existing `status` column. Clients on the old schema
-are unaffected until they adopt the argument (the app ships after this deploys).
+whatever the selection, correct `totalCount`, no over-fetching, and the expired-but-
+uncranked rows the raw status would misfile land under EXPIRED as the cards' own
+"Listing expired" chips already display them. The arms read the existing
+`listing_expiry` / `claim_deadline` / share-amount columns — no migration; the two
+query texts changed, so `.sqlx` was regenerated. The checkbox label mapping lives in
+the app; the API stays presentation-free. Clients on the old schema are unaffected
+until they adopt the argument (the app ships after this deploys).
