@@ -585,18 +585,22 @@ impl QueryRoot {
 
     /// Property listings on the marketplace. Each node's `propertyAsset` is LEFT-JOINed in
     /// (see `programs::marketplace::Listing`), so listings and their tokenised property come
-    /// back in a single round-trip.
+    /// back in a single round-trip. `statuses` (ADR-39) filters to any of several statuses
+    /// at once — the marketplace feed's state checkboxes — where `status` takes only one;
+    /// an empty list matches nothing, an absent argument switches the filter off.
+    #[allow(clippy::too_many_arguments)]
     async fn listings(
         context: &GraphQLContext,
         listing_id: Option<I64>,
         developer: Option<String>,
         status: Option<ListingStatus>,
+        statuses: Option<Vec<ListingStatus>>,
         active: Option<bool>,
         first: Option<i32>,
         offset: Option<i32>,
     ) -> FieldResult<programs::marketplace::ListingConnection> {
         programs::marketplace::listings(
-            context, listing_id, developer, status, active, first, offset,
+            context, listing_id, developer, status, statuses, active, first, offset,
         )
         .await
     }

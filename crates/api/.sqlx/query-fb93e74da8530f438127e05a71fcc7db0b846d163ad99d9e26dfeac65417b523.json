@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT l.pubkey, l.slot, l.lamports, l.closed_at_slot, l.listing_id, l.developer,\n               l.asset_id, l.share_price, l.listed_share_amount, l.sold_share_amount,\n               l.reserved_share_amount, l.tax_paid_by_developer, l.tax_bps,\n               l.marketplace_fee_bps, l.investor_fee_bps, l.max_ownership_bps,\n               l.listing_expiry, l.claiming_time, l.claim_deadline, l.legal_process_time,\n               l.lawyer_voting_time, l.min_voting_quorum_bps, l.position_count,\n               l.legal_deadline, l.deposit, l.developer_lawyer, l.developer_lawyer_costs,\n               l.developer_lawyer_doc_status, l.developer_lawyer_documents_hash, l.spv_lawyer,\n               l.spv_lawyer_costs, l.spv_lawyer_doc_status, l.spv_lawyer_documents_hash,\n               l.second_attempt, l.developer_engaged, l.spv_costs_due, l.spv_costs_payee,\n               l.collected_fee_quote, l.collected, l.spv_election_expiry,\n               l.spv_election_candidate_count, l.spv_election_round, l.status,\n               pa.pubkey AS \"pa_pubkey?\", pa.slot AS \"pa_slot?\",\n               pa.lamports AS \"pa_lamports?\",\n               pa.closed_at_slot AS \"pa_closed_at_slot?\",\n               pa.asset_id AS \"pa_asset_id?\",\n               pa.name AS \"pa_name?\",\n               pa.metadata_uri AS \"pa_metadata_uri?\",\n               pa.share_mint AS \"pa_share_mint?\",\n               pa.region_id AS \"pa_region_id?\",\n               pa.location AS \"pa_location?\",\n               pa.share_amount AS \"pa_share_amount?\",\n               pa.spv_created AS \"pa_spv_created?\",\n               pa.finalized AS \"pa_finalized?\",\n               pa.holder_count AS \"pa_holder_count?\"\n        FROM marketplace_listing AS l\n        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id\n        WHERE ($1::bigint IS NULL OR l.listing_id = $1)\n          AND ($2::bytea IS NULL OR l.developer = $2)\n          AND ($3::text IS NULL OR l.status = $3)\n          AND ($4::bool IS NULL OR (l.closed_at_slot IS NULL) = $4)\n        ORDER BY l.slot DESC, l.pubkey ASC\n        LIMIT $5 OFFSET $6\n        ",
+  "query": "\n        SELECT l.pubkey, l.slot, l.lamports, l.closed_at_slot, l.listing_id, l.developer,\n               l.asset_id, l.share_price, l.listed_share_amount, l.sold_share_amount,\n               l.reserved_share_amount, l.tax_paid_by_developer, l.tax_bps,\n               l.marketplace_fee_bps, l.investor_fee_bps, l.max_ownership_bps,\n               l.listing_expiry, l.claiming_time, l.claim_deadline, l.legal_process_time,\n               l.lawyer_voting_time, l.min_voting_quorum_bps, l.position_count,\n               l.legal_deadline, l.deposit, l.developer_lawyer, l.developer_lawyer_costs,\n               l.developer_lawyer_doc_status, l.developer_lawyer_documents_hash, l.spv_lawyer,\n               l.spv_lawyer_costs, l.spv_lawyer_doc_status, l.spv_lawyer_documents_hash,\n               l.second_attempt, l.developer_engaged, l.spv_costs_due, l.spv_costs_payee,\n               l.collected_fee_quote, l.collected, l.spv_election_expiry,\n               l.spv_election_candidate_count, l.spv_election_round, l.status,\n               pa.pubkey AS \"pa_pubkey?\", pa.slot AS \"pa_slot?\",\n               pa.lamports AS \"pa_lamports?\",\n               pa.closed_at_slot AS \"pa_closed_at_slot?\",\n               pa.asset_id AS \"pa_asset_id?\",\n               pa.name AS \"pa_name?\",\n               pa.metadata_uri AS \"pa_metadata_uri?\",\n               pa.share_mint AS \"pa_share_mint?\",\n               pa.region_id AS \"pa_region_id?\",\n               pa.location AS \"pa_location?\",\n               pa.share_amount AS \"pa_share_amount?\",\n               pa.spv_created AS \"pa_spv_created?\",\n               pa.finalized AS \"pa_finalized?\",\n               pa.holder_count AS \"pa_holder_count?\"\n        FROM marketplace_listing AS l\n        LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id\n        WHERE ($1::bigint IS NULL OR l.listing_id = $1)\n          AND ($2::bytea IS NULL OR l.developer = $2)\n          AND ($3::text IS NULL OR l.status = $3)\n          AND ($4::bool IS NULL OR (l.closed_at_slot IS NULL) = $4)\n          AND ($7::text[] IS NULL OR l.status = ANY($7))\n        ORDER BY l.slot DESC, l.pubkey ASC\n        LIMIT $5 OFFSET $6\n        ",
   "describe": {
     "columns": [
       {
@@ -296,7 +296,8 @@
         "Text",
         "Bool",
         "Int8",
-        "Int8"
+        "Int8",
+        "TextArray"
       ]
     },
     "nullable": [
@@ -359,5 +360,5 @@
       false
     ]
   },
-  "hash": "1b849ace70b24fff13044ab101da656b4820d3798cc4aa680a85c8c2f9988a67"
+  "hash": "fb93e74da8530f438127e05a71fcc7db0b846d163ad99d9e26dfeac65417b523"
 }

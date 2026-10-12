@@ -1861,3 +1861,24 @@ it); `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings
 `SQLX_OFFLINE=true cargo build --workspace --locked`, `cargo test -p indexer --lib`
 (203 green) — all clean. The endpoint side was verified live against the devnet
 indexer GraphQL (reconcile enumerated the real holder set of a sold-out listing).
+
+## API: `listings(statuses:)` — multi-status filter for the marketplace feed's state checkboxes (ADR-39) — 2026-10-12
+
+**Why**: the mobile app's marketplace filter popup gained a State section — one checkbox
+per user-facing listing phase, each mapping to one or two on-chain statuses. Client-side
+filtering paged the whole table per filter change; one query per checkbox breaks
+`first`/`offset` pagination.
+
+**What**: `listings` takes an additive optional `statuses: [ListingStatus!]`, answered in
+SQL (`status = ANY($n)`) on the page query and the `count(*)`; the `status` singleton
+stays. Empty list = match nothing (the "all checkboxes off" case); absent = filter off.
+The label→status mapping stays in the app. Two query texts changed, so
+`cargo sqlx prepare` regenerated two `.sqlx` files; no migration.
+
+**Verification**: new `listings_filter_by_any_of_several_statuses` end-to-end test
+(seeded LISTED/EXPIRED/SOLD_OUT rows; `[LISTED, EXPIRED]` → exactly those two in slot
+order, `[]` → none, absent → all); `cargo fmt --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`SQLX_OFFLINE=true cargo build --workspace --locked`, `cargo test --workspace --locked`,
+`cargo sqlx prepare --check` (both crates) — all green. App side ships after deploy:
+the deployed API must know `statuses` before the app's feed query adopts it.
