@@ -41,7 +41,10 @@
 //! `finalize_challenge` (`challenge_finalized`). The finalize payloads carry the closing
 //! PDA only; outcomes and tallies live in the frozen proposal/challenge rows and the
 //! letting row (strikes, seat), which the endpoint reads -- the same ADR-36 accepted gap
-//! as the appointment event.
+//! as the appointment event. `distribute_income` records `income_distributed` (ADR-40):
+//! the agent paid rental income into the property's vault, which the profile API turns
+//! into per-holder income notifications; the resulting per-mint balances stay readable in
+//! the `property_income` row the account stream updates.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
@@ -363,6 +366,34 @@ pub fn map_instruction(
                     "property": account_at(accounts, 4, name)?,
                     "challenge": account_at(accounts, 5, name)?,
                     "agent_entry": accounts.get(6).map(|a| a.pubkey.to_string()),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "property",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // ADR-40: the letting agent paid rental income into the property's vault
+        // (accounts: agent 0, letting 3, property 4 -- the marketplace PropertyAsset PDA,
+        // income 6, payment_mint 7; the amount is the `amount` arg, base units of the
+        // mint). Tx-scoped event id: distributions legitimately repeat per property (one
+        // per rent payment), so each occurrence is its own event.
+        PropertyInstruction::DistributeIncome(args) => {
+            vec![WebhookEvent {
+                event_id: format!("income_distributed:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::INCOME_DISTRIBUTED,
+                payload: serde_json::json!({
+                    "event": event_type::INCOME_DISTRIBUTED,
+                    "asset_id": args.asset_id,
+                    "mint": account_at(accounts, 7, name)?,
+                    "amount": args.amount,
+                    "agent": account_at(accounts, 0, name)?,
+                    "letting": account_at(accounts, 3, name)?,
+                    "property": account_at(accounts, 4, name)?,
+                    "income": account_at(accounts, 6, name)?,
                     "slot": slot,
                     "tx_signature": &tx_signature,
                     "block_time": block_time.to_rfc3339(),

@@ -1377,3 +1377,67 @@ uncranked rows the raw status would misfile land under EXPIRED as the cards' own
 query texts changed, so `.sqlx` was regenerated. The checkbox label mapping lives in
 the app; the API stays presentation-free. Clients on the old schema are unaffected
 until they adopt the argument (the app ships after this deploys).
+
+## ADR-40: Computed `claimableIncome` / `pendingFinalizations` reads, and `distribute_income` joins the webhook outbox
+
+**Context.** The mobile app's property screens answer two questions client-side today,
+from raw mirror columns over several round-trips: "what can this holder claim from this
+property's income ledger?" (streams/checkpoint/holding math ported from the on-chain
+`bank`/`sync_entries`) and "which of the six finalization cranks is this listing/property
+ready for?" (proposal / challenge / agent election / SPV election / silent verdict /
+execute_deal — each a status + counter + wall-clock gate over five tables). That logic is
+the app's `XcavateMarketplaceIndexerModel.cs` (`PropertyIncomeState.GetClaimable`,
+`EvaluatePendingFinalizations`) — a second, client-side implementation of rules the chain
+already enforces, re-derived per screen with the wall-clock read at a different moment per
+query. The same ADR-39 argument as the feed applies: derived status+clock conditions
+belong server-side, evaluated once against a single clock reading, or two clients will
+disagree at every boundary. Separately, the profile API needs to know when rental income
+lands in a property's vault to push per-holder income notifications — an event with no
+webhook producer so far.
+
+**Decision.** Two computed root fields (new `programs::derived` module — cross-program,
+no account mirror behind it): `claimableIncome(owner, assetId)` settles the property's
+income ledger against the holder's checkpoint at their CURRENT share holding — per stream
+i, `(streams[i].per_share - entries[i].per_share) * shares + entries[i].pending`, entries
+pairing by index, a missing checkpoint row or entry reading as all-zero cursors (full
+accrual), a negative delta clamping to zero, no fixed-point divisor (SCALE = 1), and zero
+shares leaving only the banked pending — one `{ mint, claimableBaseUnits,
+pendingBaseUnits }` per stream, the amounts as decimal STRINGS because `per_share` is
+u128 on-chain (the mirror stores it as a decimal string; GraphQL `Int`/`I64` cannot carry
+it). `pendingFinalizations(assetId, listingId)` returns one object with a nullable field
+per crank plus the `silentVerdictOverdue` flag, each non-null field carrying exactly the
+account-derivation inputs its on-chain instruction needs (proposal/challenge ids + rent
+payer + parties; election winner/round/candidates; execute_deal's region, parties,
+config mints/treasury and the listing's collected mints parsed from the raw JSON
+`collected`). The gates are the C# reference ported 1:1 — inclusive expiries
+(`now >= expiry`), the silent-verdict window `legal_deadline - legal_process_time/5 <=
+now <= legal_deadline` (truncating division), `execute_deal` lapsing at `legal_deadline`
+inclusive, the SPV gate requiring the all-zero vacant-seat sentinel, election winners by
+the strict-unique-max fold over the current round's OPEN candidacies' SUMMED
+`vote_power` (verified in `realxmarket-solana`: both `vote_on_agent` and
+`vote_on_lawyer` accumulate onto `candidacy.vote_power`, and both finalize handlers run
+the same fold; a tie yields `winner: null` while the crank stays due — quorum and a
+non-zero tally remain the chain's own checks). The resolver fetches only the mirror rows
+(one indexed lookup each, dependent rows only when the clock-free counters pass), parses
+them into snapshots, and hands them with ONE wall-clock reading (the ADR-39 `feedStates`
+precedent) to a pure `evaluate_pending_finalizations`, so the boundary semantics are
+unit-tested with a frozen clock and the DB-seeded tests only prove wiring. The malformed-
+JSON reads are deliberately lenient exactly like the C# (`ParseBigInteger` zero-fallback,
+malformed list = empty state): these JSONB columns are written only by this indexer's own
+mapper from decoded accounts. And `distribute_income` joins the webhook outbox as
+`income_distributed` — one durable event per indexed instruction (tx-scoped event id;
+distributions legitimately repeat per property), the payload carrying the asset id, the
+payment mint and the base-unit amount (a u64 JSON number like every other webhook
+amount) plus the agent/letting/property/income PDAs, routed by a new optional
+`INCOME_DISTRIBUTED_WEBHOOK_URL` exactly like the ADR-37/38 routes.
+
+**Consequences.** The app swaps its per-screen client math for two single queries whose
+answers are bit-identical to its own reference implementation's (the pure core is a line-
+level port, clock included), and every consumer of the API sees the same crank banners at
+the same time. No migration: the derived reads sit on the existing mirror tables (`.sqlx`
+regenerated for the api crate's eleven new query texts), and `webhook_events.event_type`
+is free-text. The webhook inherits the outbox's whole posture for free — durable
+at-most-once RECORD, at-least-once delivery with per-event backoff, disabled by default,
+rows accumulating undelivered (never failing indexing) while the route is unset. The
+profile API consumes `income_distributed` as its trigger and can read exact per-holder
+claimables from `claimableIncome` instead of recomputing them.

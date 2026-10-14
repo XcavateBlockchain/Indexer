@@ -50,7 +50,8 @@ pub struct MappedInstruction {
     /// candidacy), `finalize_spv_election`, `execute_deal`, and the three secondary-market
     /// transfer instructions, plus property's `finalize_agent_election`, `claim_property`,
     /// `propose`/`finalize_proposal`, and `challenge_agent`/`finalize_challenge` -- see
-    /// [`event_type`]. The batcher commits each as a durable `webhook_events` row
+    /// [`event_type`]. `distribute_income` joins them as `income_distributed` (ADR-40).
+    /// The batcher commits each as a durable `webhook_events` row
     /// (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
     pub webhook_events: Vec<WebhookEvent>,
 }
@@ -99,6 +100,9 @@ pub mod event_type {
     /// exit paths remove); the payload's `action` says which, `reason` names the
     /// instruction (ADR-38).
     pub const PROPERTY_HOLDER_CHANGED: &str = "property_holder_changed";
+    /// property `distribute_income` -- the letting agent paid rental income into the
+    /// property's vault (ADR-40); the payload names the mint and the amount.
+    pub const INCOME_DISTRIBUTED: &str = "income_distributed";
 }
 
 /// One durable, idempotent webhook notification the mapper wants recorded (ADR-28/ADR-36).

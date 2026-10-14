@@ -172,6 +172,8 @@ jobs:
           CHALLENGE_CREATED_WEBHOOK_URL: ${{ secrets.CHALLENGE_CREATED_WEBHOOK_URL }}
           CHALLENGE_FINALIZED_WEBHOOK_URL: ${{ secrets.CHALLENGE_FINALIZED_WEBHOOK_URL }}
           HOLDER_CHANGED_WEBHOOK_URL: ${{ secrets.HOLDER_CHANGED_WEBHOOK_URL }}
+          # ADR-40: rental-income distributions (property `distribute_income`).
+          INCOME_DISTRIBUTED_WEBHOOK_URL: ${{ secrets.INCOME_DISTRIBUTED_WEBHOOK_URL }}
           # ADR-35 sold-out claim notifications: OPTIONAL but all-or-nothing, mirroring
           # config.rs exactly -- a partial pair fails HERE, at render time, instead of
           # crash-looping the indexer on the server.
@@ -287,6 +289,7 @@ jobs:
             dotenv_optional CHALLENGE_CREATED_WEBHOOK_URL "$CHALLENGE_CREATED_WEBHOOK_URL"
             dotenv_optional CHALLENGE_FINALIZED_WEBHOOK_URL "$CHALLENGE_FINALIZED_WEBHOOK_URL"
             dotenv_optional HOLDER_CHANGED_WEBHOOK_URL "$HOLDER_CHANGED_WEBHOOK_URL"
+            dotenv_optional INCOME_DISTRIBUTED_WEBHOOK_URL "$INCOME_DISTRIBUTED_WEBHOOK_URL"
             if [ "$notifications_set" -eq 2 ]; then
               dotenv_secret NOTIFICATIONS_API_URL "$NOTIFICATIONS_API_URL"
               dotenv_secret NOTIFICATIONS_API_KEY "$NOTIFICATIONS_API_KEY"

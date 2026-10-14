@@ -138,9 +138,9 @@ mod property {
     use crate::mapping::property::map_instruction;
     use carbon_property_decoder::instructions::{
         ChallengeAgent, ClaimProperty, CloseAgentCandidacy, CloseIncomeCheckpoint,
-        FinalizeAgentElection, FinalizeChallenge, FinalizeProposal, FinalizeResignation,
-        PropertyInstruction, Propose, RemoveLettingAgent, UnlockAgentVotes, UnlockChallengeVotes,
-        UnlockProposalVotes, VoteOnAgent,
+        DistributeIncome, FinalizeAgentElection, FinalizeChallenge, FinalizeProposal,
+        FinalizeResignation, PropertyInstruction, Propose, RemoveLettingAgent, UnlockAgentVotes,
+        UnlockChallengeVotes, UnlockProposalVotes, VoteOnAgent,
     };
     use carbon_property_decoder::PROGRAM_ID;
 
@@ -485,6 +485,60 @@ mod property {
             m.webhook_events[0].payload["agent_entry"],
             serde_json::Value::Null
         );
+    }
+
+    #[test]
+    fn distribute_income_emits_the_income_distributed_event() {
+        // ADR-40: the agent paid rental income into the property's vault. Accounts 0/3/4/6/7
+        // are the agent, the PropertyLetting, the (marketplace) PropertyAsset, the
+        // PropertyIncome PDA, and the payment mint; the base-unit amount rides the arg.
+        // Tx-scoped event id: distributions repeat per property.
+        let m = map(
+            PropertyInstruction::DistributeIncome(DistributeIncome {
+                asset_id: 9,
+                amount: 1_500_000,
+            }),
+            14,
+        );
+        assert_eq!(m.instruction.ix_name, "distribute_income");
+        assert!(m.closes.is_empty());
+        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "income_distributed");
+        assert_eq!(ev.event_id, format!("income_distributed:{}:0", sig()));
+        assert_eq!(ev.slot, SLOT as i64);
+        assert_eq!(ev.tx_signature, sig().to_string());
+        assert_eq!(ev.block_time, block_time());
+        let p = &ev.payload;
+        assert_eq!(p["event"], "income_distributed");
+        assert_eq!(p["asset_id"], serde_json::json!(9));
+        assert_eq!(p["amount"], serde_json::json!(1_500_000));
+        assert_eq!(p["agent"], pk(1).to_string()); // account index 0
+        assert_eq!(p["letting"], pk(4).to_string()); // account index 3
+        assert_eq!(p["property"], pk(5).to_string()); // account index 4
+        assert_eq!(p["income"], pk(7).to_string()); // account index 6
+        assert_eq!(p["mint"], pk(8).to_string()); // account index 7
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["program"], "property");
+    }
+
+    #[test]
+    fn distribute_income_needs_the_payment_mint_account() {
+        // A truncated account list is a loud mapping error, never a dropped event: the
+        // mint (index 7) and the other carried accounts are required.
+        let result = map_instruction(
+            &metadata(),
+            &decoded_for(
+                PROGRAM_ID,
+                PropertyInstruction::DistributeIncome(DistributeIncome {
+                    asset_id: 9,
+                    amount: 1,
+                }),
+                &pks(7),
+            ),
+            block_time(),
+        );
+        assert!(result.is_err(), "missing account 7 must fail the mapping");
     }
 }
 

@@ -2,7 +2,8 @@
 //! realxhub), one submodule each: entity types mirroring the account-state tables of
 //! migrations 0008..0015, plus the resolver bodies `QueryRoot` delegates to (juniper
 //! permits only one `#[graphql_object]` impl per type, so the fields live on `QueryRoot`
-//! and the work lives here).
+//! and the work lives here). `derived` is the exception: cross-program COMPUTED reads
+//! (ADR-40's `claimableIncome` / `pendingFinalizations`), no account mirror behind them.
 //!
 //! Shared conventions (matching the whitelist surface in `super::types`):
 //!
@@ -19,6 +20,7 @@
 
 use juniper::{FieldError, FieldResult, Value};
 
+pub mod derived;
 pub mod marketplace;
 pub mod property;
 pub mod realxhub;
