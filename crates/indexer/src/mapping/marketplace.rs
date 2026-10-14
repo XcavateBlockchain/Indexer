@@ -40,6 +40,8 @@
 //! `init_property_assets`, `claim_shares`, `claim_spv_case`, `finalize_spv_election`,
 //! `execute_deal`, and the three secondary-market transfers each record one durable
 //! `webhook_events` row -- see the table above the `webhook_events` match below.
+//! `send_property_shares` additionally records the narrow `shares_transferred`
+//! notification event (ADR-41) alongside its ADR-36 transfer event.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
@@ -303,6 +305,7 @@ pub fn map_instruction(
     // | `finalize_spv_election` | `spv_lawyer_elected` | the transaction + instruction path |
     // | `execute_deal` | `deal_executed` | the transaction + instruction path |
     // | `buy_relisted_shares` / `accept_offer` / `send_property_shares` | `property_shares_transferred` | the transaction + instruction path |
+    // | `send_property_shares` | `shares_transferred` | the transaction + instruction path |
     // | `claim_spv_case` | `spv_case_claimed` | the transaction + instruction path |
     // | `reserve_shares` / `buy_property_shares` / `unreserve_shares` / `release_reservation` / `close_cancelled_position` / `withdraw_*` | `property_holder_changed` | the transaction + instruction path |
     //
@@ -470,31 +473,56 @@ pub fn map_instruction(
             }]
         }
         MarketplaceInstruction::SendPropertyShares(args) => {
-            vec![WebhookEvent {
-                event_id: format!(
-                    "property_shares_transferred:{tx_signature}:{}",
-                    ctx.index_str
-                ),
-                event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
-                payload: serde_json::json!({
-                    "event": event_type::PROPERTY_SHARES_TRANSFERRED,
-                    "kind": "direct_send",
-                    "property": account_at(accounts, 6, name)?,
-                    "listing": account_at(accounts, 5, name)?,
-                    "from": account_at(accounts, 0, name)?,  // sender
-                    "to": account_at(accounts, 3, name)?,    // receiver
-                    "amount": args.amount,
-                    "asset_id": args.asset_id,
-                    "offer": serde_json::Value::Null,
-                    "slot": slot,
-                    "tx_signature": &tx_signature,
-                    "block_time": block_time.to_rfc3339(),
-                    "program": "marketplace",
-                }),
-                slot,
-                tx_signature,
-                block_time,
-            }]
+            vec![
+                WebhookEvent {
+                    event_id: format!(
+                        "property_shares_transferred:{tx_signature}:{}",
+                        ctx.index_str
+                    ),
+                    event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
+                    payload: serde_json::json!({
+                        "event": event_type::PROPERTY_SHARES_TRANSFERRED,
+                        "kind": "direct_send",
+                        "property": account_at(accounts, 6, name)?,
+                        "listing": account_at(accounts, 5, name)?,
+                        "from": account_at(accounts, 0, name)?,  // sender
+                        "to": account_at(accounts, 3, name)?,    // receiver
+                        "amount": args.amount,
+                        "asset_id": args.asset_id,
+                        "offer": serde_json::Value::Null,
+                        "slot": slot,
+                        "tx_signature": &tx_signature,
+                        "block_time": block_time.to_rfc3339(),
+                        "program": "marketplace",
+                    }),
+                    slot,
+                    tx_signature: tx_signature.clone(),
+                    block_time,
+                },
+                // ADR-41: the narrow notification event for the same direct send -- a wallet
+                // pushed shares to another wallet, and the profile API turns this into a
+                // "you received shares" push for the receiver. Recorded ALONGSIDE the ADR-36
+                // transfer event above (whose bucket-access consumer keeps its contract);
+                // tx-scoped event id, since direct sends legitimately repeat per pair.
+                WebhookEvent {
+                    event_id: format!("shares_transferred:{tx_signature}:{}", ctx.index_str),
+                    event_type: event_type::SHARES_TRANSFERRED,
+                    payload: serde_json::json!({
+                        "event": event_type::SHARES_TRANSFERRED,
+                        "asset_id": args.asset_id,
+                        "amount": args.amount,
+                        "sender": account_at(accounts, 0, name)?,
+                        "receiver": account_at(accounts, 3, name)?,
+                        "slot": slot,
+                        "tx_signature": &tx_signature,
+                        "block_time": block_time.to_rfc3339(),
+                        "program": "marketplace",
+                    }),
+                    slot,
+                    tx_signature,
+                    block_time,
+                },
+            ]
         }
         // A lawyer stood for the listing's SPV case (accounts: lawyer 0, listing 4,
         // property 5, candidacy 6). Investors then vote on the candidacy -- this is the

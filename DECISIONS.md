@@ -1441,3 +1441,38 @@ at-most-once RECORD, at-least-once delivery with per-event backoff, disabled by 
 rows accumulating undelivered (never failing indexing) while the route is unset. The
 profile API consumes `income_distributed` as its trigger and can read exact per-holder
 claimables from `claimableIncome` instead of recomputing them.
+
+## ADR-41: `send_property_shares` also records the narrow `shares_transferred` notification event
+
+**Context.** The profile API's push notifications (the investor-income-cranks work) need
+a trigger when a wallet directly sends property shares to another wallet, so the receiver
+can be told "you received shares". Marketplace `send_property_shares` already records the
+ADR-36 `property_shares_transferred` event (`kind: "direct_send"`), but that feed is the
+bucket-access swap contract: one event type covering all three secondary-market transfer
+instructions, consumed by the endpoint that grants/revokes document-bucket read access.
+Growing a notification fanout onto that consumer would couple two unrelated concerns on
+one route — the push endpoint wants only direct sends, wants a payload shaped for
+notification (sender/receiver/amount, no offer/listing resolution), and must be
+switchable without touching bucket access. The natural route name
+`SHARES_TRANSFERRED_WEBHOOK_URL` is already taken by the ADR-36 route, so the new route
+needs a non-colliding name.
+
+**Decision.** The `send_property_shares` mapping records a SECOND durable event,
+`shares_transferred`, alongside the unchanged ADR-36 one: tx-scoped event id
+(`shares_transferred:<signature>:<instruction path>` — direct sends legitimately repeat
+per sender/receiver pair), payload `{"event", "asset_id", "amount" (the u32 arg, a JSON
+number like every other webhook amount), "sender" (account 0), "receiver" (account 3),
+"slot", "tx_signature", "block_time", "program": "marketplace"}` — the account indices
+re-derived from `idls/marketplace.json`. Routed by the new optional
+`SHARES_RECEIVED_WEBHOOK_URL` (named for what the endpoint does with the event; the
+event-shaped spelling was already taken), exactly like the ADR-37/38/40 routes: unset =
+the rows accumulate undelivered and drain when set.
+
+**Consequences.** One indexed instruction now writes two `webhook_events` rows — the
+outbox supports this unchanged (`event_type` is free-text, the `ON CONFLICT` keys are
+type-prefixed), so there is no migration and no delivery-loop change; each type's route,
+backoff, and failure posture stay independent. The bucket-access consumer sees no
+change; the notification endpoint gets a feed containing only direct sends, deduped by
+`tx_signature` on its side (at-least-once delivery, per the outbox's whole posture).
+Both events from one instruction share the instruction's account list, so a truncated
+list fails the mapping loudly before either is recorded — no silent drops.

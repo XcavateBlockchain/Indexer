@@ -81,11 +81,11 @@ pub struct Config {
     /// [`DEFAULT_METADATA_FETCH_INTERVAL_SECS`].
     pub metadata_fetch_interval: Duration,
     /// The `*_WEBHOOK_URL` variables, one per webhook event type (ADR-28/ADR-36/ADR-37/
-    /// ADR-38/ADR-40): each the full endpoint that type's payloads POST to. An unset/empty
-    /// variable disables just that type -- its durable `webhook_events` rows are still
-    /// recorded and drain when the variable is later set; with NO routes at all the delivery
-    /// loop is never spawned and no external call is ever made. URLs are never logged (an
-    /// operator may encode a bearer token in the query string).
+    /// ADR-38/ADR-40/ADR-41): each the full endpoint that type's payloads POST to. An
+    /// unset/empty variable disables just that type -- its durable `webhook_events` rows are
+    /// still recorded and drain when the variable is later set; with NO routes at all the
+    /// delivery loop is never spawned and no external call is ever made. URLs are never
+    /// logged (an operator may encode a bearer token in the query string).
     pub webhook_routes: Vec<WebhookRoute>,
     /// `WEBHOOK_INTERVAL` (seconds), default [`DEFAULT_WEBHOOK_INTERVAL_SECS`].
     pub webhook_interval: Duration,
@@ -440,6 +440,13 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
         (
             "INCOME_DISTRIBUTED_WEBHOOK_URL",
             event_type::INCOME_DISTRIBUTED,
+        ),
+        (
+            // ADR-41: the natural `SHARES_TRANSFERRED_WEBHOOK_URL` spelling is already the
+            // ADR-36 `property_shares_transferred` route (above), so the receiver-push
+            // route is named for what the endpoint does with the event.
+            "SHARES_RECEIVED_WEBHOOK_URL",
+            event_type::SHARES_TRANSFERRED,
         ),
     ]
     .into_iter()

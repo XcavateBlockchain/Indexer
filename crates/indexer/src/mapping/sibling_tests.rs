@@ -1037,7 +1037,8 @@ mod marketplace {
 
     #[test]
     fn send_property_shares_emits_a_direct_send_transfer() {
-        // ADR-36: sender 0, receiver 3, listing 5, property 6.
+        // ADR-36: sender 0, receiver 3, listing 5, property 6. ADR-41 adds a SECOND event
+        // (the narrow `shares_transferred` notification) after this one.
         let m = map(
             MarketplaceInstruction::SendPropertyShares(SendPropertyShares {
                 asset_id: 9,
@@ -1045,7 +1046,7 @@ mod marketplace {
             }),
             7,
         );
-        assert_eq!(m.webhook_events.len(), 1);
+        assert_eq!(m.webhook_events.len(), 2);
         let ev = &m.webhook_events[0];
         assert_eq!(ev.event_type, "property_shares_transferred");
         let p = &ev.payload;
@@ -1056,6 +1057,62 @@ mod marketplace {
         assert_eq!(p["property"], pk(7).to_string()); // account index 6
         assert_eq!(p["amount"], serde_json::json!(2));
         assert_eq!(p["asset_id"], serde_json::json!(9));
+    }
+
+    #[test]
+    fn send_property_shares_also_emits_the_shares_transferred_notification() {
+        // ADR-41: the receiver-push event, recorded alongside the ADR-36 transfer event.
+        // Sender is account 0, receiver account 3; the share amount rides the arg (a u32,
+        // like the ADR-36 payload's). Tx-scoped event id: direct sends legitimately repeat
+        // per sender/receiver pair.
+        let m = map(
+            MarketplaceInstruction::SendPropertyShares(SendPropertyShares {
+                asset_id: 9,
+                amount: 2,
+            }),
+            7,
+        );
+        assert_eq!(m.instruction.ix_name, "send_property_shares");
+        assert_eq!(m.webhook_events.len(), 2, "the ADR-36 event plus this one");
+        let ev = &m.webhook_events[1];
+        assert_eq!(ev.event_type, "shares_transferred");
+        assert_eq!(ev.event_id, format!("shares_transferred:{}:0", sig()));
+        assert_eq!(ev.slot, SLOT as i64);
+        assert_eq!(ev.tx_signature, sig().to_string());
+        assert_eq!(ev.block_time, block_time());
+        let p = &ev.payload;
+        assert_eq!(p["event"], "shares_transferred");
+        assert_eq!(p["asset_id"], serde_json::json!(9));
+        assert_eq!(p["amount"], serde_json::json!(2));
+        assert_eq!(p["sender"], pk(1).to_string()); // account index 0
+        assert_eq!(p["receiver"], pk(4).to_string()); // account index 3
+        assert_eq!(p["slot"], serde_json::json!(SLOT as i64));
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["block_time"], block_time().to_rfc3339());
+        assert_eq!(p["program"], "marketplace");
+    }
+
+    #[test]
+    fn send_property_shares_needs_the_carried_accounts() {
+        // A truncated account list is a loud mapping error, never a dropped event: both
+        // events carry the receiver (index 3), and the ADR-36 event also needs the listing
+        // (5) and property (6) -- a 3-account instruction cannot map.
+        let result = map_instruction(
+            &metadata(),
+            &decoded_for(
+                PROGRAM_ID,
+                MarketplaceInstruction::SendPropertyShares(SendPropertyShares {
+                    asset_id: 9,
+                    amount: 1,
+                }),
+                &pks(3),
+            ),
+            block_time(),
+        );
+        assert!(
+            result.is_err(),
+            "a truncated account list must fail the mapping"
+        );
     }
 
     #[test]

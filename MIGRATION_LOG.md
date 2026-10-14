@@ -1942,3 +1942,31 @@ shape + a loud error on a truncated account list); `cargo fmt --check`, `cargo c
 --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build --workspace
 --locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check` (both
 crates), `scripts/lint-migrations.sh`, `scripts/agent/verify-devnet.sh` — all green.
+
+## Indexer: `shares_transferred` webhook event for direct share sends (ADR-41) — 2026-10-15
+
+**Why**: the profile API's push fanout needs a trigger when a wallet directly sends
+property shares to another wallet (the receiver gets a "you received shares" push). The
+ADR-36 `property_shares_transferred` event already covers `send_property_shares`, but it
+is the bucket-access swap contract (all three secondary-market transfers, one consumer);
+the notification endpoint needs its own route and a notification-shaped payload.
+
+**What**: the marketplace `send_property_shares` mapping records a second durable
+webhook event, `shares_transferred` (tx-scoped event id), alongside the unchanged
+ADR-36 one — payload `{"event": "shares_transferred", "asset_id", "amount", "sender",
+"receiver", "slot", "tx_signature", "block_time", "program": "marketplace"}` (sender =
+account 0, receiver = account 3, amount = the u32 arg; indices re-derived from
+`idls/marketplace.json`). Routed by the new optional `SHARES_RECEIVED_WEBHOOK_URL` — the
+natural `SHARES_TRANSFERRED_WEBHOOK_URL` spelling is already the ADR-36 route, so the
+route is named for what the endpoint does. Same outbox, same failure posture: disabled
+by default, rows accumulate undelivered (never failing indexing) while unset. No
+migration; `webhook_events.event_type` is free-text. Wiring per the ADR-38/40 precedent:
+`.env.example`, `docker-compose.yml`, `deploy.yml` (env + dotenv), README / RUNBOOK /
+docs-deployment rows.
+
+**Verification**: 3 mapper tests (the ADR-36 event unchanged as the first of two events,
+the new event's full payload shape, a loud error on a truncated account list); `cargo
+fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true
+cargo build --workspace --locked`, `cargo test --workspace --locked`, `cargo sqlx
+prepare --check` (both crates — no query changes), `scripts/lint-migrations.sh`,
+`scripts/agent/verify-devnet.sh` — all green.

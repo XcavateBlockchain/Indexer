@@ -334,6 +334,7 @@ table — one optional env var per event type, each independently switchable:
 | `challenge_finalized` | `CHALLENGE_FINALIZED_WEBHOOK_URL` | property `finalize_challenge` (outcome/tallies resolved from the frozen challenge row) | the transaction + instruction path |
 | `property_holder_changed` | `HOLDER_CHANGED_WEBHOOK_URL` | marketplace `reserve_shares` / `buy_property_shares` (added) and `unreserve_shares` / `release_reservation` / `close_cancelled_position` / `withdraw_expired` / `withdraw_cancelled` / `withdraw_legal_process_expired` (removed) | the transaction + instruction path |
 | `income_distributed` | `INCOME_DISTRIBUTED_WEBHOOK_URL` | property `distribute_income` (the letting agent paid rental income into the property's vault) | the transaction + instruction path |
+| `shares_transferred` | `SHARES_RECEIVED_WEBHOOK_URL` | marketplace `send_property_shares` (a wallet directly sent shares to another wallet; recorded ALONGSIDE the ADR-36 `property_shares_transferred` event) | the transaction + instruction path |
 
 **Enable it.** Set any of the `*_WEBHOOK_URL` variables to an http(s) endpoint the
 indexer can reach from the compose network (the operator's own endpoint — the ADR-27
@@ -425,6 +426,17 @@ repeatable events).
       // note: "amount" is the distribution's base units of "mint" (a u64 JSON number,
       // like every other webhook amount); the resulting per-holder claimables stay
       // readable via the claimableIncome GraphQL field (ADR-40).
+
+    { "event": "shares_transferred",
+      "asset_id": 12, "amount": 3,
+      "sender": "<base58 wallet the shares left>",
+      "receiver": "<base58 wallet the shares landed with>",
+      "program": "marketplace", ... }
+      // note: ADR-41. "amount" is the u32 share count (a JSON number). The narrow,
+      // notification-shaped sibling of property_shares_transferred's "direct_send" —
+      // sender/receiver are that event's "from"/"to". Routed by
+      // SHARES_RECEIVED_WEBHOOK_URL (the SHARES_TRANSFERRED_WEBHOOK_URL spelling is
+      // already the ADR-36 route).
 
 **Not firing / not delivered.** Check, in order:
 

@@ -50,9 +50,10 @@ pub struct MappedInstruction {
     /// candidacy), `finalize_spv_election`, `execute_deal`, and the three secondary-market
     /// transfer instructions, plus property's `finalize_agent_election`, `claim_property`,
     /// `propose`/`finalize_proposal`, and `challenge_agent`/`finalize_challenge` -- see
-    /// [`event_type`]. `distribute_income` joins them as `income_distributed` (ADR-40).
-    /// The batcher commits each as a durable `webhook_events` row
-    /// (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
+    /// [`event_type`]. `distribute_income` joins them as `income_distributed` (ADR-40), and
+    /// `send_property_shares` additionally records the narrow `shares_transferred`
+    /// notification event (ADR-41). The batcher commits each as a durable `webhook_events`
+    /// row (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
     pub webhook_events: Vec<WebhookEvent>,
 }
 
@@ -103,6 +104,12 @@ pub mod event_type {
     /// property `distribute_income` -- the letting agent paid rental income into the
     /// property's vault (ADR-40); the payload names the mint and the amount.
     pub const INCOME_DISTRIBUTED: &str = "income_distributed";
+    /// marketplace `send_property_shares` -- a wallet directly sent property shares to
+    /// another wallet (ADR-41); the payload names sender, receiver, and the share amount.
+    /// A NARROW duplicate of the ADR-36 `property_shares_transferred` `direct_send` event,
+    /// recorded alongside it so the notification endpoint gets its own route without
+    /// touching the bucket-access consumer.
+    pub const SHARES_TRANSFERRED: &str = "shares_transferred";
 }
 
 /// One durable, idempotent webhook notification the mapper wants recorded (ADR-28/ADR-36).
