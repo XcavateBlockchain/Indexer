@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT amount FROM marketplace_share_holding\n        WHERE asset_id = $1 AND owner = $2 AND closed_at_slot IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "amount",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ec8c2987d37f3f622469a65c3436b7e355b16e84a493afb3e0785e7fb1e02981"
+}

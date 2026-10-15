@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, expiry, rent_payer, challenger, agent FROM property_challenge\n        WHERE asset_id = $1 AND id = $2 AND closed_at_slot IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "rent_payer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "challenger",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "agent",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "aca348d0a513ddab018493ddbccecf5b5e25ca3cf3b5d778856023fdc4fa0959"
+}

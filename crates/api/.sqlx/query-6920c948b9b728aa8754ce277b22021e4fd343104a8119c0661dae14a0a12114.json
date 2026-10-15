@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT lawyer, vote_power FROM marketplace_lawyer_candidacy\n        WHERE listing_id = $1 AND round = $2 AND closed_at_slot IS NULL\n        ORDER BY vote_power DESC, slot DESC, pubkey ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "vote_power",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6920c948b9b728aa8754ce277b22021e4fd343104a8119c0661dae14a0a12114"
+}

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, expiry, rent_payer FROM property_proposal\n        WHERE asset_id = $1 AND id = $2 AND closed_at_slot IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "rent_payer",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "09a78833b6979446b63db9be3db4807c60bed199b01bba756a6d00b442c79d1e"
+}

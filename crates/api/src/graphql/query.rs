@@ -915,6 +915,33 @@ impl QueryRoot {
             .await
     }
 
+    // --- derived (cross-program computed reads, ADR-40) -------------------------------------
+
+    /// One holder's per-mint claimable income on one property: the property program's income
+    /// ledger settled against the holder's checkpoint at their CURRENT share holding, one
+    /// entry per stream (`claimableBaseUnits`/`pendingBaseUnits` are base-unit decimal
+    /// strings — u128-safe). Empty while the property has no income ledger.
+    async fn claimable_income(
+        context: &GraphQLContext,
+        owner: String,
+        asset_id: I64,
+    ) -> FieldResult<Vec<programs::derived::ClaimableIncome>> {
+        programs::derived::claimable_income(context, owner, asset_id).await
+    }
+
+    /// Which finalization cranks one listing/property is ready for RIGHT NOW (ADR-40): one
+    /// object with a nullable field per crank (proposal / challenge / agentElection /
+    /// spvElection / executeDeal) plus the `silentVerdictOverdue` flag, each non-null field
+    /// carrying exactly the inputs the matching on-chain instruction derives its accounts
+    /// from. Computed from the mirror rows against a single wall-clock reading.
+    async fn pending_finalizations(
+        context: &GraphQLContext,
+        asset_id: I64,
+        listing_id: I64,
+    ) -> FieldResult<programs::derived::PendingFinalizations> {
+        programs::derived::pending_finalizations(context, asset_id, listing_id).await
+    }
+
     // --- regions ----------------------------------------------------------------------------
 
     /// The regions program's singleton config PDA.

@@ -490,3 +490,791 @@ async fn listings_filter_by_feed_state_partitions_every_listing(pool: PgPool) {
         juniper::graphql_value!({ "listings": { "totalCount": 5 } }),
     );
 }
+
+// ============================================================================================
+// ADR-40 derived reads: `claimableIncome` / `pendingFinalizations`. The gate boundary
+// semantics (inclusive expiries, the tie rule, the clamps) are pinned by
+// `programs::derived`'s pure-core unit tests with a frozen clock; these DB-seeded tests
+// prove the wiring: rows land in the right snapshots, the JSONB columns parse, and the
+// results surface through GraphQL.
+// ============================================================================================
+
+fn b58key(byte: u8) -> String {
+    bs58::encode([byte; 32]).into_string()
+}
+
+/// One active `property_income` row (the property's rental income ledger; `streams` is the
+/// migration-0012 JSONB shape, `per_share` a u128 decimal string).
+async fn seed_income_ledger(pool: &PgPool, asset_id: i64, streams: &str) {
+    sqlx::query(
+        r#"INSERT INTO property_income (pubkey, slot, lamports, asset_id, streams, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $2, $3::jsonb, $4, 255)"#,
+    )
+    .bind(vec![50u8; 32])
+    .bind(asset_id)
+    .bind(streams)
+    .bind(vec![51u8; 32])
+    .execute(pool)
+    .await
+    .expect("seed property_income");
+}
+
+/// One active `property_income_checkpoint` row (`entries[i]` tracking `streams[i]`).
+async fn seed_income_checkpoint(pool: &PgPool, asset_id: i64, owner: &[u8], entries: &str) {
+    sqlx::query(
+        r#"INSERT INTO property_income_checkpoint
+               (pubkey, slot, lamports, asset_id, owner, entries, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4::jsonb, $5, 255)"#,
+    )
+    .bind(vec![52u8; 32])
+    .bind(asset_id)
+    .bind(owner)
+    .bind(entries)
+    .bind(vec![53u8; 32])
+    .execute(pool)
+    .await
+    .expect("seed property_income_checkpoint");
+}
+
+/// One active `marketplace_share_holding` row (the holder's current shares).
+async fn seed_share_holding(pool: &PgPool, asset_id: i64, owner: &[u8], amount: i64) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_share_holding (pubkey, slot, lamports, asset_id, owner, amount, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, 255)"#,
+    )
+    .bind(vec![54u8; 32])
+    .bind(asset_id)
+    .bind(owner)
+    .bind(amount)
+    .execute(pool)
+    .await
+    .expect("seed marketplace_share_holding");
+}
+
+/// One active `property_letting` row with caller-chosen governance counters and election
+/// state (the crank gates read exactly these columns).
+#[allow(clippy::too_many_arguments)]
+async fn seed_letting(
+    pool: &PgPool,
+    asset_id: i64,
+    active_proposal: i64,
+    active_challenge: i64,
+    election_round: i64,
+    election_expiry: i64,
+    election_candidate_count: i64,
+) {
+    sqlx::query(
+        r#"INSERT INTO property_letting
+               (pubkey, slot, lamports, asset_id, agent, election_expiry,
+                election_candidate_count, election_round, election_quorum_bps,
+                governance_active_proposal, governance_active_challenge, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, $5, $6, 0, $7, $8, $9, 255)"#,
+    )
+    .bind(vec![55u8; 32])
+    .bind(asset_id)
+    .bind(vec![56u8; 32]) // agent
+    .bind(election_expiry)
+    .bind(election_candidate_count)
+    .bind(election_round)
+    .bind(active_proposal)
+    .bind(active_challenge)
+    .bind(vec![57u8; 32]) // rent_payer
+    .execute(pool)
+    .await
+    .expect("seed property_letting");
+}
+
+/// One open `property_proposal` row.
+async fn seed_proposal(pool: &PgPool, asset_id: i64, id: i64, expiry: i64, rent_payer: &[u8]) {
+    sqlx::query(
+        r#"INSERT INTO property_proposal
+               (pubkey, slot, lamports, asset_id, id, proposer, amount, details_hash, expiry,
+                tally_yes, tally_no, tally_abstain, quorum_bps, threshold_bps, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, 5, $5, $6,
+                   0, 0, 0, 0, 0, $7, 255)"#,
+    )
+    .bind(vec![58u8; 32])
+    .bind(asset_id)
+    .bind(id)
+    .bind(vec![59u8; 32]) // proposer
+    .bind(vec![0u8; 32]) // details_hash
+    .bind(expiry)
+    .bind(rent_payer)
+    .execute(pool)
+    .await
+    .expect("seed property_proposal");
+}
+
+/// One open `property_challenge` row.
+#[allow(clippy::too_many_arguments)]
+async fn seed_challenge(
+    pool: &PgPool,
+    asset_id: i64,
+    id: i64,
+    expiry: i64,
+    rent_payer: &[u8],
+    challenger: &[u8],
+    struck_agent: &[u8],
+) {
+    sqlx::query(
+        r#"INSERT INTO property_challenge
+               (pubkey, slot, lamports, asset_id, id, challenger, agent, deposit, expiry,
+                tally_yes, tally_no, tally_abstain, quorum_bps, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, $5, 10, $6,
+                   0, 0, 0, 0, $7, 255)"#,
+    )
+    .bind(vec![60u8; 32])
+    .bind(asset_id)
+    .bind(id)
+    .bind(challenger)
+    .bind(struck_agent)
+    .bind(expiry)
+    .bind(rent_payer)
+    .execute(pool)
+    .await
+    .expect("seed property_challenge");
+}
+
+/// One `property_agent_candidacy` row; `closed_at_slot: Some(1)` seeds a closed candidacy
+/// (the winner fold must skip it).
+#[allow(clippy::too_many_arguments)]
+async fn seed_agent_candidacy(
+    pool: &PgPool,
+    pubkey: &[u8],
+    asset_id: i64,
+    round: i64,
+    slot: i64,
+    agent: &[u8],
+    vote_power: i64,
+    closed: bool,
+) {
+    sqlx::query(
+        r#"INSERT INTO property_agent_candidacy
+               (pubkey, slot, lamports, closed_at_slot, asset_id, round, agent, vote_power,
+                rent_payer, bump)
+           VALUES ($1, $2, 1000000, CASE WHEN $3 THEN 1 ELSE NULL END, $4, $5, $6, $7, $8, 255)"#,
+    )
+    .bind(pubkey)
+    .bind(slot)
+    .bind(closed)
+    .bind(asset_id)
+    .bind(round)
+    .bind(agent)
+    .bind(vote_power)
+    .bind(vec![63u8; 32]) // rent_payer
+    .execute(pool)
+    .await
+    .expect("seed property_agent_candidacy");
+}
+
+/// One open `marketplace_lawyer_candidacy` row.
+#[allow(clippy::too_many_arguments)]
+async fn seed_lawyer_candidacy(
+    pool: &PgPool,
+    pubkey: &[u8],
+    listing_id: i64,
+    round: i64,
+    slot: i64,
+    lawyer: &[u8],
+    vote_power: i64,
+) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_lawyer_candidacy
+               (pubkey, slot, lamports, listing_id, round, lawyer, costs, vote_power,
+                rent_payer, bump)
+           VALUES ($1, $2, 1000000, $3, $4, $5, 0, $6, $7, 255)"#,
+    )
+    .bind(pubkey)
+    .bind(slot)
+    .bind(listing_id)
+    .bind(round)
+    .bind(lawyer)
+    .bind(vote_power)
+    .bind(vec![64u8; 32]) // rent_payer
+    .execute(pool)
+    .await
+    .expect("seed marketplace_lawyer_candidacy");
+}
+
+/// The marketplace singleton config row (only the mints/treasury the crank reads vary).
+async fn seed_marketplace_config(pool: &PgPool, xcav_mint: &[u8], treasury: &[u8], accepted: &str) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_config
+               (pubkey, slot, lamports, authority, xcav_mint, treasury, rent_collector,
+                accepted_payment_mints, listing_deposit, lawyer_deposit, min_property_shares,
+                max_property_shares, marketplace_fee_bps, investor_fee_bps, max_ownership_bps,
+                claiming_time, legal_process_time, lawyer_voting_time, min_voting_quorum_bps,
+                next_listing_id, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, $5, $6::jsonb,
+                   0, 0, 1, 1000, 0, 0, 0, 0, 0, 0, 0, 1, 255)"#,
+    )
+    .bind(vec![65u8; 32])
+    .bind(vec![66u8; 32]) // authority
+    .bind(xcav_mint)
+    .bind(treasury)
+    .bind(vec![67u8; 32]) // rent_collector
+    .bind(accepted)
+    .execute(pool)
+    .await
+    .expect("seed marketplace_config");
+}
+
+/// The columns the ADR-40 crank gates read off `marketplace_listing`, per row; every other
+/// column takes a valid constant (same approach as `ListingStateSeed`).
+#[allow(clippy::too_many_arguments)]
+struct CrankListingSeed {
+    pubkey: [u8; 32],
+    listing_id: i64,
+    asset_id: i64,
+    status: &'static str,
+    legal_deadline: i64,
+    legal_process_time: i64,
+    developer_lawyer_doc_status: &'static str,
+    spv_lawyer_doc_status: &'static str,
+    spv_lawyer: [u8; 32],
+    spv_election_round: i64,
+    spv_election_expiry: i64,
+    spv_election_candidate_count: i64,
+    collected: String,
+}
+
+async fn seed_crank_listing(pool: &PgPool, seed: &CrankListingSeed) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_listing
+               (pubkey, slot, lamports, listing_id, developer, asset_id, share_price,
+                listed_share_amount, sold_share_amount, reserved_share_amount,
+                tax_paid_by_developer, tax_bps, marketplace_fee_bps, investor_fee_bps,
+                max_ownership_bps, listing_expiry, claiming_time, claim_deadline,
+                legal_process_time, lawyer_voting_time, min_voting_quorum_bps,
+                position_count, legal_deadline, deposit, developer_lawyer,
+                developer_lawyer_costs, developer_lawyer_doc_status,
+                developer_lawyer_documents_hash, spv_lawyer, spv_lawyer_costs,
+                spv_lawyer_doc_status, spv_lawyer_documents_hash, second_attempt,
+                developer_engaged, spv_costs_due, spv_costs_payee, collected,
+                spv_election_expiry, spv_election_candidate_count, spv_election_round,
+                status, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, 55, 10, 10, 0,
+                   FALSE, 0, 0, 0, 10000, 0, 0, 0, $5, 0, 0,
+                   0, $6, 0, $7, 0, $8, $9, $10, 0,
+                   $11, $12, FALSE, FALSE, 0, $13, $14::jsonb,
+                   $15, $16, $17, $18, 254)"#,
+    )
+    .bind(seed.pubkey.as_slice())
+    .bind(seed.listing_id)
+    .bind(vec![13u8; 32]) // developer
+    .bind(seed.asset_id)
+    .bind(seed.legal_process_time)
+    .bind(seed.legal_deadline)
+    .bind(vec![14u8; 32]) // developer_lawyer
+    .bind(seed.developer_lawyer_doc_status)
+    .bind(vec![0u8; 32]) // developer_lawyer_documents_hash
+    .bind(seed.spv_lawyer.as_slice())
+    .bind(seed.spv_lawyer_doc_status)
+    .bind(vec![0u8; 32]) // spv_lawyer_documents_hash
+    .bind(vec![16u8; 32]) // spv_costs_payee
+    .bind(seed.collected.as_str())
+    .bind(seed.spv_election_expiry)
+    .bind(seed.spv_election_candidate_count)
+    .bind(seed.spv_election_round)
+    .bind(seed.status)
+    .execute(pool)
+    .await
+    .expect("seed marketplace_listing");
+}
+
+/// One `marketplace_property_asset` row (only the region matters to the crank gates).
+async fn seed_asset_region(pool: &PgPool, pubkey: &[u8], asset_id: i64, region_id: i32) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_property_asset
+               (pubkey, slot, lamports, asset_id, name, metadata_uri, share_mint,
+                region_id, location, share_amount, spv_created, finalized, holder_count, bump)
+           VALUES ($1, 100, 1000000, $2, 'Test House', 'https://md.example/7.json', $3,
+                   $4, $5, 1000, TRUE, FALSE, 3, 255)"#,
+    )
+    .bind(pubkey)
+    .bind(asset_id)
+    .bind(vec![8u8; 32])
+    .bind(region_id)
+    .bind(b"London".as_slice())
+    .execute(pool)
+    .await
+    .expect("seed marketplace_property_asset");
+}
+
+/// `claimableIncome` settles each stream against the holder's checkpoint at their current
+/// holding: index-paired entries, a short entry list reading as zero cursors, u128
+/// per_share values beyond u64::MAX staying exact, and base-unit amounts shipped as
+/// decimal strings.
+#[sqlx::test(migrations = "../../migrations")]
+async fn claimable_income_settles_streams_against_checkpoint_and_holding(pool: PgPool) {
+    let owner = vec![70u8; 32];
+    let mint_a = b58key(71);
+    let mint_b = b58key(72);
+    let big = (u64::MAX as u128) + 1_000;
+    seed_income_ledger(
+        &pool,
+        7,
+        &format!(
+            r#"[{{"mint": "{mint_a}", "per_share": "{big}", "dust": 0}},
+                {{"mint": "{mint_b}", "per_share": "500", "dust": 1}}]"#
+        ),
+    )
+    .await;
+    // One entry for two streams: stream B's missing entry reads as a zero cursor.
+    seed_income_checkpoint(
+        &pool,
+        7,
+        &owner,
+        &format!(r#"[{{"per_share": "{}", "pending": 42}}]"#, u64::MAX),
+    )
+    .await;
+    seed_share_holding(&pool, 7, &owner, 3).await;
+
+    let query = format!(
+        r#"{{ claimableIncome(owner: "{}", assetId: "7") {{
+                mint claimableBaseUnits pendingBaseUnits
+            }} }}"#,
+        bs58::encode(&owner).into_string()
+    );
+    let (data, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "claimableIncome": [
+                // (big - u64::MAX) * 3 + 42 = 3042; pending rides along verbatim.
+                { "mint": mint_a, "claimableBaseUnits": "3042", "pendingBaseUnits": "42" },
+                // (500 - 0) * 3 + 0: the missing entry accrued from the stream's start.
+                { "mint": mint_b, "claimableBaseUnits": "1500", "pendingBaseUnits": "0" },
+            ],
+        }),
+    );
+}
+
+/// No checkpoint row at all = "held since before every stream opened": full accrual from
+/// each stream's start (`sync_entries`' zeroed entries).
+#[sqlx::test(migrations = "../../migrations")]
+async fn claimable_income_full_accrual_without_checkpoint(pool: PgPool) {
+    let owner = vec![70u8; 32];
+    let mint_a = b58key(71);
+    seed_income_ledger(
+        &pool,
+        7,
+        &format!(r#"[{{"mint": "{mint_a}", "per_share": "700", "dust": 0}}]"#),
+    )
+    .await;
+    seed_share_holding(&pool, 7, &owner, 2).await;
+
+    let query = format!(
+        r#"{{ claimableIncome(owner: "{}", assetId: "7") {{
+                mint claimableBaseUnits pendingBaseUnits
+            }} }}"#,
+        bs58::encode(&owner).into_string()
+    );
+    let (data, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "claimableIncome": [
+                { "mint": mint_a, "claimableBaseUnits": "1400", "pendingBaseUnits": "0" },
+            ],
+        }),
+    );
+}
+
+/// No active holding row = zero shares (on-chain a closed holding reads the same way):
+/// only the banked pending stays claimable.
+#[sqlx::test(migrations = "../../migrations")]
+async fn claimable_income_zero_shares_keep_only_banked_pending(pool: PgPool) {
+    let owner = vec![70u8; 32];
+    let mint_a = b58key(71);
+    seed_income_ledger(
+        &pool,
+        7,
+        &format!(r#"[{{"mint": "{mint_a}", "per_share": "700", "dust": 0}}]"#),
+    )
+    .await;
+    seed_income_checkpoint(&pool, 7, &owner, r#"[{"per_share": "0", "pending": 9}]"#).await;
+
+    let query = format!(
+        r#"{{ claimableIncome(owner: "{}", assetId: "7") {{
+                mint claimableBaseUnits pendingBaseUnits
+            }} }}"#,
+        bs58::encode(&owner).into_string()
+    );
+    let (data, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "claimableIncome": [
+                { "mint": mint_a, "claimableBaseUnits": "9", "pendingBaseUnits": "9" },
+            ],
+        }),
+    );
+}
+
+/// No income ledger (and nothing else) for the asset: the empty list, not an error.
+#[sqlx::test(migrations = "../../migrations")]
+async fn claimable_income_empty_without_an_income_ledger(pool: PgPool) {
+    let owner = vec![70u8; 32];
+    let query = format!(
+        r#"{{ claimableIncome(owner: "{}", assetId: "7") {{
+                mint claimableBaseUnits pendingBaseUnits
+            }} }}"#,
+        bs58::encode(&owner).into_string()
+    );
+    let (data, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(data, juniper::graphql_value!({ "claimableIncome": [] }));
+}
+
+/// Nothing seeded at all: every crank gate is off, the flags false — one object, all null.
+#[sqlx::test(migrations = "../../migrations")]
+async fn pending_finalizations_on_an_empty_database_turns_every_gate_off(pool: PgPool) {
+    let (data, errors) = juniper::execute(
+        r#"{ pendingFinalizations(assetId: "7", listingId: "7") {
+                proposal { proposalId }
+                challenge { challengeId }
+                agentElection { round }
+                spvElection { round }
+                silentVerdictOverdue
+                executeDeal { regionId }
+            } }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "pendingFinalizations": {
+                "proposal": null,
+                "challenge": null,
+                "agentElection": null,
+                "spvElection": null,
+                "silentVerdictOverdue": false,
+                "executeDeal": null,
+            },
+        }),
+    );
+}
+
+/// The property-side gates end to end: an expired active proposal is due (id + rent payer),
+/// an unexpired challenge is not, and an expired election round with a tied top reports the
+/// crank with a `null` winner — over the CURRENT round's OPEN candidacies only (the stale
+/// round-1 row and the closed round-2 row stay out of both the fold and the candidates).
+#[sqlx::test(migrations = "../../migrations")]
+async fn pending_finalizations_proposal_due_challenge_waiting_election_tied(pool: PgPool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let past = now - 1_000_000;
+    let future = now + 1_000_000;
+
+    seed_letting(&pool, 7, 11, 12, 2, past, 2).await;
+    seed_proposal(&pool, 7, 11, past, &[21u8; 32]).await;
+    seed_challenge(&pool, 7, 12, future, &[22u8; 32], &[23u8; 32], &[24u8; 32]).await;
+    // Current round (2): two candidacies tied at the top, plus one closed row the fold
+    // must skip. Stale round 1: a strong row that must not leak into round 2.
+    seed_agent_candidacy(&pool, &[1u8; 32], 7, 2, 101, &[61u8; 32], 10, false).await;
+    seed_agent_candidacy(&pool, &[2u8; 32], 7, 2, 100, &[62u8; 32], 10, false).await;
+    seed_agent_candidacy(&pool, &[3u8; 32], 7, 2, 102, &[64u8; 32], 50, true).await;
+    seed_agent_candidacy(&pool, &[4u8; 32], 7, 1, 99, &[63u8; 32], 99, false).await;
+
+    let (data, errors) = juniper::execute(
+        r#"{ pendingFinalizations(assetId: "7", listingId: "7") {
+                proposal { proposalId rentPayer }
+                challenge { challengeId }
+                agentElection { winner round candidates }
+                spvElection { round }
+                silentVerdictOverdue
+                executeDeal { regionId }
+            } }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    let rent_payer = b58key(21);
+    let candidate_a = b58key(61);
+    let candidate_b = b58key(62);
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "pendingFinalizations": {
+                "proposal": { "proposalId": "11", "rentPayer": rent_payer },
+                "challenge": null,
+                "agentElection": {
+                    "winner": null, // tie at the top: the seat reopens
+                    "round": "2",
+                    // slot DESC settles the power tie in the candidates list.
+                    "candidates": [candidate_a, candidate_b],
+                },
+                "spvElection": null,
+                "silentVerdictOverdue": false,
+                "executeDeal": null,
+            },
+        }),
+    );
+}
+
+/// The challenge gate due: id, rent payer, challenger, and the struck agent; the election
+/// with a strictly-unique leader reports that winner, strongest first in the candidates.
+#[sqlx::test(migrations = "../../migrations")]
+async fn pending_finalizations_challenge_due_and_a_unique_election_winner(pool: PgPool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let past = now - 1_000_000;
+
+    seed_letting(&pool, 7, 0, 12, 2, past, 2).await;
+    seed_challenge(&pool, 7, 12, past, &[22u8; 32], &[23u8; 32], &[24u8; 32]).await;
+    seed_agent_candidacy(&pool, &[1u8; 32], 7, 2, 101, &[61u8; 32], 7, false).await;
+    seed_agent_candidacy(&pool, &[2u8; 32], 7, 2, 100, &[62u8; 32], 10, false).await;
+
+    let (data, errors) = juniper::execute(
+        r#"{ pendingFinalizations(assetId: "7", listingId: "7") {
+                proposal { proposalId }
+                challenge { challengeId rentPayer challenger struckAgent }
+                agentElection { winner round candidates }
+            } }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    let rent_payer = b58key(22);
+    let challenger = b58key(23);
+    let struck_agent = b58key(24);
+    let winner = b58key(62);
+    let runner_up = b58key(61);
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "pendingFinalizations": {
+                "proposal": null,
+                "challenge": {
+                    "challengeId": "12",
+                    "rentPayer": rent_payer,
+                    "challenger": challenger,
+                    "struckAgent": struck_agent,
+                },
+                "agentElection": {
+                    "winner": winner.clone(),
+                    "round": "2",
+                    "candidates": [winner.clone(), runner_up],
+                },
+            },
+        }),
+    );
+}
+
+/// The marketplace-side gates: the expired SPV election over the vacant seat reports its
+/// unique winner (summed `vote_power` read off the candidacy rows — no vote-row summing),
+/// and the silent-verdict final stretch flags while the developer's lawyer stays silent.
+#[sqlx::test(migrations = "../../migrations")]
+async fn pending_finalizations_spv_election_and_silent_verdict(pool: PgPool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let past = now - 1_000_000;
+
+    // SOLD_OUT, developer silent, SPV ruled, seat vacant, election expired: legal_deadline
+    // now+100 with legal_process_time 500 puts the final stretch's start at seed time, so
+    // the resolver's own (later) `now` sits inside the window.
+    seed_crank_listing(
+        &pool,
+        &CrankListingSeed {
+            pubkey: [80u8; 32],
+            listing_id: 7,
+            asset_id: 7,
+            status: "SOLD_OUT",
+            legal_deadline: now + 100,
+            legal_process_time: 500,
+            developer_lawyer_doc_status: "PENDING",
+            spv_lawyer_doc_status: "APPROVED",
+            spv_lawyer: [0u8; 32], // the vacant-seat sentinel
+            spv_election_round: 1,
+            spv_election_expiry: past,
+            spv_election_candidate_count: 2,
+            collected: "[]".to_string(),
+        },
+    )
+    .await;
+    seed_lawyer_candidacy(&pool, &[5u8; 32], 7, 1, 100, &[61u8; 32], 5).await;
+    seed_lawyer_candidacy(&pool, &[6u8; 32], 7, 1, 101, &[62u8; 32], 9).await;
+
+    let (data, errors) = juniper::execute(
+        r#"{ pendingFinalizations(assetId: "7", listingId: "7") {
+                agentElection { round }
+                spvElection { winner round candidates }
+                silentVerdictOverdue
+                executeDeal { regionId }
+            } }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    let winner = b58key(62);
+    let runner_up = b58key(61);
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "pendingFinalizations": {
+                "agentElection": null, // no letting row for this asset
+                "spvElection": {
+                    "winner": winner.clone(),
+                    "round": "1",
+                    "candidates": [winner.clone(), runner_up],
+                },
+                "silentVerdictOverdue": true,
+                "executeDeal": null, // SOLD_OUT, not LEGAL
+            },
+        }),
+    );
+}
+
+/// `executeDeal` in the LEGAL window: the parties, the region from the asset join, the
+/// config's XCAV mint / treasury / accepted mints, and the collected payment mints parsed
+/// out of the listing's raw JSON `collected` column.
+#[sqlx::test(migrations = "../../migrations")]
+async fn pending_finalizations_execute_deal_carries_config_and_collected_mints(pool: PgPool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let future = now + 1_000_000;
+    let mint_a = b58key(71);
+    let mint_b = b58key(72);
+
+    seed_crank_listing(
+        &pool,
+        &CrankListingSeed {
+            pubkey: [80u8; 32],
+            listing_id: 7,
+            asset_id: 7,
+            status: "LEGAL",
+            legal_deadline: future,
+            legal_process_time: 500,
+            developer_lawyer_doc_status: "APPROVED",
+            spv_lawyer_doc_status: "APPROVED",
+            spv_lawyer: [33u8; 32],
+            spv_election_round: 0,
+            spv_election_expiry: 0,
+            spv_election_candidate_count: 0,
+            collected: r#"[{"mint": "MINT_A", "funds": 5, "fee": 1, "tax": 1},
+                           {"mint": "MINT_B", "funds": 3, "fee": 0, "tax": 0}]"#
+                .replace("MINT_A", &mint_a)
+                .replace("MINT_B", &mint_b),
+        },
+    )
+    .await;
+    seed_asset_region(&pool, &[81u8; 32], 7, 3).await;
+    seed_marketplace_config(
+        &pool,
+        &[41u8; 32],
+        &[42u8; 32],
+        &format!(r#"["{mint_a}", "{mint_b}"]"#),
+    )
+    .await;
+
+    let (data, errors) = juniper::execute(
+        r#"{ pendingFinalizations(assetId: "7", listingId: "7") {
+                silentVerdictOverdue
+                executeDeal {
+                    regionId developer developerLawyer spvLawyer
+                    xcavMint treasury acceptedPaymentMints collectedMints
+                }
+            } }"#,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    let developer = b58key(13);
+    let developer_lawyer = b58key(14);
+    let spv_lawyer = b58key(33);
+    let xcav_mint = b58key(41);
+    let treasury = b58key(42);
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "pendingFinalizations": {
+                "silentVerdictOverdue": false,
+                "executeDeal": {
+                    "regionId": 3,
+                    "developer": developer,
+                    "developerLawyer": developer_lawyer,
+                    "spvLawyer": spv_lawyer,
+                    "xcavMint": xcav_mint,
+                    "treasury": treasury,
+                    "acceptedPaymentMints": [mint_a.clone(), mint_b.clone()],
+                    "collectedMints": [mint_a, mint_b],
+                },
+            },
+        }),
+    );
+}

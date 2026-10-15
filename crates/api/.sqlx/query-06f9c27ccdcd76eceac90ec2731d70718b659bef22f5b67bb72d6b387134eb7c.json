@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT xcav_mint, treasury, accepted_payment_mints\n        FROM marketplace_config\n        ORDER BY slot DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "xcav_mint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "treasury",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "accepted_payment_mints",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "06f9c27ccdcd76eceac90ec2731d70718b659bef22f5b67bb72d6b387134eb7c"
+}

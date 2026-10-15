@@ -1892,3 +1892,81 @@ PENDING_ASSETS excluded), the empty list (0), and the absent argument (12);
 `cargo sqlx prepare --check` (both crates), `scripts/agent/verify-devnet.sh` — all green.
 App side ships after deploy: the deployed API must know `feedStates` before the app's
 feed query adopts it.
+
+## API: computed `claimableIncome` / `pendingFinalizations` reads + Indexer: `income_distributed` webhook event (ADR-40) — 2026-10-14
+
+**Why**: the mobile app computes per-holder claimable income and the six finalization-
+crank gates client-side (`XcavateMarketplaceIndexerModel.cs`), re-deriving chain rules
+over several round-trips with the wall clock read per query — the same client-side
+derivation problem ADR-39 removed from the feed. And the profile API needs a trigger
+when rental income lands in a property's vault (per-holder income notifications); no
+webhook producer covered `distribute_income`.
+
+**What**: two computed root fields in a new cross-program `programs::derived` module.
+`claimableIncome(owner, assetId)`: one `{ mint, claimableBaseUnits, pendingBaseUnits }`
+per income stream, settling the ledger against the holder's checkpoint at their current
+holding — `(per_share delta) * shares + pending`, entries paired by index, missing
+checkpoint/entry = zero cursors (full accrual), negative delta clamped to 0, SCALE = 1
+(no divisor, verified against `realxmarket-solana` `income.rs` `bank`/`sync_entries`),
+zero shares = banked pending only; amounts are decimal strings (per_share is u128 on-
+chain, stored as a decimal string in the JSONB columns). `pendingFinalizations(assetId,
+listingId)`: one object, a nullable field per crank (proposal / challenge /
+agentElection / spvElection / executeDeal) + `silentVerdictOverdue`, each non-null field
+carrying exactly the inputs its on-chain instruction derives accounts from; the gates
+are the C# reference ported 1:1 (inclusive expiries, `legal_deadline -
+legal_process_time/5 <= now <= legal_deadline` truncating division, `now <=
+legal_deadline` for execute_deal, the all-zero vacant-seat sentinel for the SPV gate,
+strict-unique-max over the current round's OPEN candidacies' summed `vote_power` — tie =
+`winner: null` with the crank still due; region from the `marketplace_property_asset`
+join, config mints/treasury from `marketplace_config`, collected mints parsed from the
+listing's raw JSON `collected`). One wall-clock reading per request (ADR-39 precedent);
+the gates live in a pure `evaluate_pending_finalizations` fed by SQL snapshots, so
+boundaries are unit-tested with a frozen clock. Webhook: property `distribute_income`
+records `income_distributed` (tx-scoped event id; payload = `asset_id`, `mint`,
+`amount` (u64 base units), `agent`, `letting`, `property`, `income` PDAs + the standard
+`slot`/`tx_signature`/`block_time`/`program`), routed by the new optional
+`INCOME_DISTRIBUTED_WEBHOOK_URL` — same outbox, same failure posture (delivery failures
+never touch indexing; unset URL = rows accumulate undelivered). No migration; the api
+crate's `.sqlx` was regenerated (eleven new query texts). Wiring per the ADR-38
+precedent: `.env.example`, `docker-compose.yml`, `deploy.yml` (env + dotenv), README /
+RUNBOOK / docs-deployment rows.
+
+**Verification**: 17 pure-core unit tests (every gate's on/off boundary with a frozen
+clock, the tie rule incl. lone-zero-power candidacy, the negative-delta clamp, u128 >
+u64::MAX per_share, malformed-JSON leniency); 10 DB-seeded GraphQL tests (checkpoint /
+no-checkpoint / no-holding / no-ledger claimables; proposal/challenge/election gates end
+to end incl. a tied top, a stale-round row and a closed candidacy staying out of the
+fold; SPV election + silent verdict through the seeded listing; execute_deal's config +
+collected-mints payload; the empty-database all-null case); 2 mapper tests (event
+shape + a loud error on a truncated account list); `cargo fmt --check`, `cargo clippy
+--workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build --workspace
+--locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check` (both
+crates), `scripts/lint-migrations.sh`, `scripts/agent/verify-devnet.sh` — all green.
+
+## Indexer: `shares_transferred` webhook event for direct share sends (ADR-41) — 2026-10-15
+
+**Why**: the profile API's push fanout needs a trigger when a wallet directly sends
+property shares to another wallet (the receiver gets a "you received shares" push). The
+ADR-36 `property_shares_transferred` event already covers `send_property_shares`, but it
+is the bucket-access swap contract (all three secondary-market transfers, one consumer);
+the notification endpoint needs its own route and a notification-shaped payload.
+
+**What**: the marketplace `send_property_shares` mapping records a second durable
+webhook event, `shares_transferred` (tx-scoped event id), alongside the unchanged
+ADR-36 one — payload `{"event": "shares_transferred", "asset_id", "amount", "sender",
+"receiver", "slot", "tx_signature", "block_time", "program": "marketplace"}` (sender =
+account 0, receiver = account 3, amount = the u32 arg; indices re-derived from
+`idls/marketplace.json`). Routed by the new optional `SHARES_RECEIVED_WEBHOOK_URL` — the
+natural `SHARES_TRANSFERRED_WEBHOOK_URL` spelling is already the ADR-36 route, so the
+route is named for what the endpoint does. Same outbox, same failure posture: disabled
+by default, rows accumulate undelivered (never failing indexing) while unset. No
+migration; `webhook_events.event_type` is free-text. Wiring per the ADR-38/40 precedent:
+`.env.example`, `docker-compose.yml`, `deploy.yml` (env + dotenv), README / RUNBOOK /
+docs-deployment rows.
+
+**Verification**: 3 mapper tests (the ADR-36 event unchanged as the first of two events,
+the new event's full payload shape, a loud error on a truncated account list); `cargo
+fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true
+cargo build --workspace --locked`, `cargo test --workspace --locked`, `cargo sqlx
+prepare --check` (both crates — no query changes), `scripts/lint-migrations.sh`,
+`scripts/agent/verify-devnet.sh` — all green.

@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT asset_id, status, legal_deadline, legal_process_time, developer,\n               developer_lawyer, developer_lawyer_doc_status, spv_lawyer,\n               spv_lawyer_doc_status, spv_election_round, spv_election_expiry,\n               spv_election_candidate_count, collected\n        FROM marketplace_listing\n        WHERE listing_id = $1 AND closed_at_slot IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "asset_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "legal_deadline",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "legal_process_time",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "developer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "developer_lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "developer_lawyer_doc_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "spv_lawyer",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "spv_lawyer_doc_status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "spv_election_round",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "spv_election_expiry",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "spv_election_candidate_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "collected",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "29befeed264f735449062d152eac26682e3289393dab95ced3e3df8ac3d34210"
+}
