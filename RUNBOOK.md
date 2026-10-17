@@ -335,6 +335,7 @@ table — one optional env var per event type, each independently switchable:
 | `property_holder_changed` | `HOLDER_CHANGED_WEBHOOK_URL` | marketplace `reserve_shares` / `buy_property_shares` (added) and `unreserve_shares` / `release_reservation` / `close_cancelled_position` / `withdraw_expired` / `withdraw_cancelled` / `withdraw_legal_process_expired` (removed) | the transaction + instruction path |
 | `income_distributed` | `INCOME_DISTRIBUTED_WEBHOOK_URL` | property `distribute_income` (the letting agent paid rental income into the property's vault) | the transaction + instruction path |
 | `shares_transferred` | `SHARES_RECEIVED_WEBHOOK_URL` | marketplace `send_property_shares` (a wallet directly sent shares to another wallet; recorded ALONGSIDE the ADR-36 `property_shares_transferred` event) | the transaction + instruction path |
+| `offers_namespace_created` | `OFFERS_NAMESPACE_CREATED_WEBHOOK_URL` | marketplace `claim_shares` (first claim per listing) and `relist_shares` (transaction-scoped) | the listing PDA for `claim_shares`; the transaction + instruction path for `relist_shares` |
 
 **Enable it.** Set any of the `*_WEBHOOK_URL` variables to an http(s) endpoint the
 indexer can reach from the compose network (the operator's own endpoint — the ADR-27
@@ -437,6 +438,17 @@ repeatable events).
       // sender/receiver are that event's "from"/"to". Routed by
       // SHARES_RECEIVED_WEBHOOK_URL (the SHARES_TRANSFERRED_WEBHOOK_URL spelling is
       // already the ADR-36 route).
+
+    { "event": "offers_namespace_created",
+      "listing_id": 12, "listing": "<base58 Listing PDA>",
+      "property": "<base58 PropertyAsset PDA>", "asset_id": 12,
+      "cluster": "devnet",
+      "program": "marketplace", ... }
+      // note: ADR-42. Fires on `claim_shares` (keyed by listing PDA) and `relist_shares`
+      // (keyed by transaction + instruction path). The profile API endpoint creates the
+      // "<property> offers" namespace idempotently. Routed by
+      // OFFERS_NAMESPACE_CREATED_WEBHOOK_URL and authenticated with INDEXER_WEBHOOK_SECRET
+      // (header or `?secret=` query parameter).
 
 **Not firing / not delivered.** Check, in order:
 

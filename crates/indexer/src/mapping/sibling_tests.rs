@@ -888,6 +888,7 @@ mod marketplace {
         assert_eq!(p["event"], "property_asset_registered");
         assert_eq!(p["pubkey"], property_b58);
         assert_eq!(p["listing_id"], serde_json::json!(1));
+        assert_eq!(p["asset_id"], serde_json::json!(1));
         assert_eq!(p["name"], "42 Main Street");
         assert_eq!(p["metadata_uri"], "https://metadata.example/42-main");
         assert_eq!(p["share_mint"], share_mint_b58);
@@ -907,21 +908,81 @@ mod marketplace {
             8,
         );
         assert_eq!(m.instruction.ix_name, "claim_shares");
-        assert_eq!(m.webhook_events.len(), 1, "exactly one webhook event");
-        let ev = &m.webhook_events[0];
+        assert_eq!(
+            m.webhook_events.len(),
+            2,
+            "claim also triggers offers namespace creation"
+        );
+
+        let claim_ev = m
+            .webhook_events
+            .iter()
+            .find(|e| e.event_type == "property_claim_started")
+            .expect("claim_started event must be present");
         let listing_b58 = pk(5).to_string(); // account index 4
-        assert_eq!(ev.event_type, "property_claim_started");
-        assert_eq!(ev.event_id, format!("property_claim_started:{listing_b58}"));
-        assert_eq!(ev.slot, SLOT as i64);
-        assert_eq!(ev.tx_signature, sig().to_string());
-        assert_eq!(ev.block_time, block_time());
-        let p = &ev.payload;
+        assert_eq!(
+            claim_ev.event_id,
+            format!("property_claim_started:{listing_b58}")
+        );
+        assert_eq!(claim_ev.slot, SLOT as i64);
+        assert_eq!(claim_ev.tx_signature, sig().to_string());
+        assert_eq!(claim_ev.block_time, block_time());
+        let p = &claim_ev.payload;
         assert_eq!(p["event"], "property_claim_started");
         assert_eq!(p["listing"], listing_b58);
         assert_eq!(p["property"], pk(6).to_string()); // account index 5
         assert_eq!(p["listing_id"], serde_json::json!(7));
         assert_eq!(p["investor"], pk(1).to_string()); // account index 0
         assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["program"], "marketplace");
+
+        let offers_ev = m
+            .webhook_events
+            .iter()
+            .find(|e| e.event_type == "offers_namespace_created")
+            .expect("offers_namespace_created event must be present");
+        assert_eq!(
+            offers_ev.event_id,
+            format!("offers_namespace_created:{listing_b58}")
+        );
+        assert_eq!(offers_ev.payload["event"], "offers_namespace_created");
+        assert_eq!(offers_ev.payload["listing_id"], serde_json::json!(7));
+        assert_eq!(offers_ev.payload["listing"], listing_b58);
+        assert_eq!(offers_ev.payload["property"], pk(6).to_string());
+        assert_eq!(offers_ev.payload["asset_id"], serde_json::json!(7));
+        assert_eq!(offers_ev.payload["cluster"], "devnet");
+        assert_eq!(offers_ev.payload["program"], "marketplace");
+    }
+
+    #[test]
+    fn relist_shares_emits_the_offers_namespace_created_event() {
+        // A seller relists shares on the secondary market. The event is transaction-scoped
+        // so a later delist + relist of the same share listing is not dropped.
+        let m = map(
+            MarketplaceInstruction::RelistShares(RelistShares {
+                asset_id: 9,
+                amount: 5,
+                share_price: 1_000_000,
+            }),
+            9,
+        );
+        assert_eq!(m.instruction.ix_name, "relist_shares");
+        assert_eq!(m.webhook_events.len(), 1);
+        let ev = &m.webhook_events[0];
+        let listing_b58 = pk(5).to_string(); // account index 4
+        let share_listing_b58 = pk(7).to_string(); // account index 6
+        assert_eq!(ev.event_type, "offers_namespace_created");
+        assert_eq!(ev.event_id, format!("offers_namespace_created:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(p["event"], "offers_namespace_created");
+        assert_eq!(p["asset_id"], serde_json::json!(9));
+        assert_eq!(p["listing_id"], serde_json::json!(9));
+        assert_eq!(p["listing"], listing_b58);
+        assert_eq!(p["share_listing"], share_listing_b58);
+        assert_eq!(p["seller"], pk(1).to_string()); // account index 0
+        assert_eq!(p["amount"], serde_json::json!(5));
+        assert_eq!(p["share_price"], serde_json::json!(1_000_000));
+        assert_eq!(p["cluster"], "devnet");
         assert_eq!(p["program"], "marketplace");
     }
 

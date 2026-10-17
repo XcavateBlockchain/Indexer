@@ -73,6 +73,9 @@ pub struct Config {
     /// [`crate::programs::PROGRAMS`]. Each program's address and backfill floor (its deploy
     /// slot) are compiled in -- see the registry for why they are not env-overridable.
     pub programs: Vec<&'static ProgramSpec>,
+    /// `CLUSTER`, default `"devnet"`. Passed through to webhook payloads so the profile API
+    /// can place the created namespace in the right cluster.
+    pub cluster: String,
     /// `METRICS_ADDR`, default [`DEFAULT_METRICS_ADDR`].
     pub metrics_addr: SocketAddr,
     /// `RECONCILE_INTERVAL` (seconds), default [`DEFAULT_RECONCILE_INTERVAL_SECS`].
@@ -223,6 +226,11 @@ impl Config {
             _ => programs::PROGRAMS.iter().collect(),
         };
 
+        let cluster = std::env::var("CLUSTER")
+            .ok()
+            .filter(|c| !c.trim().is_empty())
+            .unwrap_or_else(|| "devnet".to_string());
+
         let metrics_addr_str =
             std::env::var("METRICS_ADDR").unwrap_or_else(|_| DEFAULT_METRICS_ADDR.to_string());
         let metrics_addr = metrics_addr_str.parse::<SocketAddr>().with_context(|| {
@@ -335,6 +343,7 @@ impl Config {
             rpc_fallback_url: std::env::var("RPC_FALLBACK_URL")
                 .unwrap_or_else(|_| DEFAULT_RPC_FALLBACK_URL.to_string()),
             programs,
+            cluster,
             metrics_addr,
             reconcile_interval: Duration::from_secs(reconcile_interval_secs),
             metadata_fetch_interval: Duration::from_secs(metadata_fetch_interval_secs),
@@ -448,6 +457,10 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             "SHARES_RECEIVED_WEBHOOK_URL",
             event_type::SHARES_TRANSFERRED,
         ),
+        (
+            "OFFERS_NAMESPACE_CREATED_WEBHOOK_URL",
+            event_type::OFFERS_NAMESPACE_CREATED,
+        ),
     ]
     .into_iter()
     .filter_map(|(var, event_type)| {
@@ -559,6 +572,7 @@ impl fmt::Debug for Config {
                 "programs",
                 &self.programs.iter().map(|p| p.name).collect::<Vec<_>>(),
             )
+            .field("cluster", &self.cluster)
             .field("metrics_addr", &self.metrics_addr)
             .field("reconcile_interval", &self.reconcile_interval)
             .field("metadata_fetch_interval", &self.metadata_fetch_interval)

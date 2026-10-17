@@ -68,6 +68,16 @@ use crate::db::marketplace::{
     OfferRow, PropertyAssetRow, ReservationRow, ShareHoldingRow, ShareListingRow,
 };
 
+/// The Solana cluster this indexer instance is indexing. Defaults to `"devnet"` so local and
+/// test runs do not need `CLUSTER` set; production should set it and eventually pass
+/// `Config::cluster` through the mapper instead of reading the environment here.
+fn cluster() -> String {
+    std::env::var("CLUSTER")
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| "devnet".to_string())
+}
+
 /// The marketplace program's [`ProgramMapper`] instantiation.
 pub struct Marketplace;
 
@@ -328,6 +338,11 @@ pub fn map_instruction(
                     "event": event_type::PROPERTY_ASSET_REGISTERED,
                     "pubkey": &property_b58,
                     "listing_id": args.listing_id,
+                    // The PropertyAsset account's own id. Today it is seeded by listing_id and
+                    // the instruction args expose no separate asset_id, so listing_id is the
+                    // correct fallback; switch to decoded account data when Carbon makes it
+                    // available in the mapper context.
+                    "asset_id": args.listing_id,
                     "name": &args.name,
                     "metadata_uri": &args.uri,
                     "share_mint": &share_mint_b58,
@@ -346,15 +361,68 @@ pub fn map_instruction(
         // property 5). Deduped by the listing PDA -- every later claim re-records nothing.
         MarketplaceInstruction::ClaimShares(args) => {
             let listing_b58 = account_at(accounts, 4, name)?;
+            let property_b58 = account_at(accounts, 5, name)?;
+            vec![
+                WebhookEvent {
+                    event_id: format!("property_claim_started:{listing_b58}"),
+                    event_type: event_type::PROPERTY_CLAIM_STARTED,
+                    payload: serde_json::json!({
+                        "event": event_type::PROPERTY_CLAIM_STARTED,
+                        "listing": &listing_b58,
+                        "property": &property_b58,
+                        "listing_id": args.listing_id,
+                        "investor": account_at(accounts, 0, name)?,
+                        "slot": slot,
+                        "tx_signature": &tx_signature,
+                        "block_time": block_time.to_rfc3339(),
+                        "program": "marketplace",
+                    }),
+                    slot,
+                    tx_signature: tx_signature.clone(),
+                    block_time,
+                },
+                WebhookEvent {
+                    event_id: format!("offers_namespace_created:{listing_b58}"),
+                    event_type: event_type::OFFERS_NAMESPACE_CREATED,
+                    payload: serde_json::json!({
+                        "event": event_type::OFFERS_NAMESPACE_CREATED,
+                        "listing_id": args.listing_id,
+                        "listing": &listing_b58,
+                        "property": &property_b58,
+                        "asset_id": args.listing_id,
+                        "cluster": cluster(),
+                        "slot": slot,
+                        "tx_signature": &tx_signature,
+                        "block_time": block_time.to_rfc3339(),
+                        "program": "marketplace",
+                    }),
+                    slot,
+                    tx_signature,
+                    block_time,
+                },
+            ]
+        }
+        // A seller relists owned shares on the secondary market (accounts: seller 0, payer 1,
+        // config 2, seller_role 3, listing 4, holding 5, share_listing 6). Unlike claim, a
+        // listing can be delisted and relisted repeatedly, so the event_id is transaction-
+        // scoped to avoid dropping legitimate re-listings while the profile API's namespace
+        // idempotency prevents duplicate namespaces.
+        MarketplaceInstruction::RelistShares(args) => {
+            let listing_b58 = account_at(accounts, 4, name)?;
+            let share_listing_b58 = account_at(accounts, 6, name)?;
             vec![WebhookEvent {
-                event_id: format!("property_claim_started:{listing_b58}"),
-                event_type: event_type::PROPERTY_CLAIM_STARTED,
+                event_id: format!("offers_namespace_created:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::OFFERS_NAMESPACE_CREATED,
                 payload: serde_json::json!({
-                    "event": event_type::PROPERTY_CLAIM_STARTED,
+                    "event": event_type::OFFERS_NAMESPACE_CREATED,
+                    "asset_id": args.asset_id,
+                    "listing_id": args.asset_id,
                     "listing": &listing_b58,
-                    "property": account_at(accounts, 5, name)?,
-                    "listing_id": args.listing_id,
-                    "investor": account_at(accounts, 0, name)?,
+                    "share_listing": &share_listing_b58,
+                    "seller": account_at(accounts, 0, name)?,
+                    "amount": args.amount,
+                    "share_price": args.share_price,
+                    "cluster": cluster(),
                     "slot": slot,
                     "tx_signature": &tx_signature,
                     "block_time": block_time.to_rfc3339(),

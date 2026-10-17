@@ -76,6 +76,7 @@ edits on the server do not survive and are not a supported way to configure anyt
 | `SPV_CASE_CLAIMED_WEBHOOK_URL` / `AGENT_ELECTION_OPENED_WEBHOOK_URL` / `PROPOSAL_CREATED_WEBHOOK_URL` / `PROPOSAL_FINALIZED_WEBHOOK_URL` / `CHALLENGE_CREATED_WEBHOOK_URL` / `CHALLENGE_FINALIZED_WEBHOOK_URL` / `HOLDER_CHANGED_WEBHOOK_URL` | Optional, each independently: the ADR-37 governance-voting webhook routes (SPV candidacy / agent election candidacy / proposal created/finalized / challenge created/finalized) and the ADR-38 primary-market holder-membership route. Unset = that event type accumulates undelivered and drains when set. |
 | `INCOME_DISTRIBUTED_WEBHOOK_URL` | Optional: the ADR-40 rental-income webhook route (property `distribute_income` — the letting agent paid income into a property's vault; the payload names the mint and the base-unit amount). Unset = the event type accumulates undelivered and drains when set. |
 | `SHARES_RECEIVED_WEBHOOK_URL` | Optional: the ADR-41 direct-share-send webhook route (marketplace `send_property_shares`; the payload names sender, receiver, and the share amount). Unset = the event type accumulates undelivered and drains when set. |
+| `OFFERS_NAMESPACE_CREATED_WEBHOOK_URL` | Optional: the ADR-42 offers-namespace webhook route (`claim_shares` / `relist_shares`). Point at `https://profile-api.xcavate.io/webhooks/offers_namespace_created_devnet?secret=<INDEXER_WEBHOOK_SECRET>`. Unset = the event type accumulates undelivered and drains when set. |
 | `NOTIFICATIONS_API_URL` | Optional, all-or-nothing with `NOTIFICATIONS_API_KEY`: base URL of the deployed notifications API (ADR-35) for sold-out claim push notifications. Unset = the delivery loop never spawns (events still accumulate durably in `sold_out_notifications`). |
 | `NOTIFICATIONS_API_KEY` | Optional, all-or-nothing with `NOTIFICATIONS_API_URL`: API key from the notifications API's Django admin (`/admin/` → API keys). |
 
@@ -101,6 +102,7 @@ is already taken on the server (`Bind for 0.0.0.0:3010 failed: port is already a
 | `IMAGE_MIRROR_INTERVAL` | `30` (seconds) | Image-mirror cycle interval |
 | `RUST_LOG` | compose's per-service default | Log verbosity for both Rust services |
 | `CORS_ALLOWED_ORIGINS` | unset = allow all | Comma-separated browser origins allowed to call `/graphql` |
+| `CLUSTER` | `devnet` | Solana cluster the indexer is indexing; passed through to webhook payloads (e.g. ADR-42 `offers_namespace_created`). |
 
 Ports must be a bare number in `1-65535`; the deploy fails fast with a clear error
 otherwise.
