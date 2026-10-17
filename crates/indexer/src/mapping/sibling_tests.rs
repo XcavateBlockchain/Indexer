@@ -888,6 +888,7 @@ mod marketplace {
         assert_eq!(p["event"], "property_asset_registered");
         assert_eq!(p["pubkey"], property_b58);
         assert_eq!(p["listing_id"], serde_json::json!(1));
+        assert_eq!(p["asset_id"], serde_json::json!(1));
         assert_eq!(p["name"], "42 Main Street");
         assert_eq!(p["metadata_uri"], "https://metadata.example/42-main");
         assert_eq!(p["share_mint"], share_mint_b58);

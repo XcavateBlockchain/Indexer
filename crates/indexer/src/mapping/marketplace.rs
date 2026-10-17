@@ -328,6 +328,11 @@ pub fn map_instruction(
                     "event": event_type::PROPERTY_ASSET_REGISTERED,
                     "pubkey": &property_b58,
                     "listing_id": args.listing_id,
+                    // The PropertyAsset account's own id. Today it is seeded by listing_id and
+                    // the instruction args expose no separate asset_id, so listing_id is the
+                    // correct fallback; switch to decoded account data when Carbon makes it
+                    // available in the mapper context.
+                    "asset_id": args.listing_id,
                     "name": &args.name,
                     "metadata_uri": &args.uri,
                     "share_mint": &share_mint_b58,
