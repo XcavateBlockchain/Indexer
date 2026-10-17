@@ -1484,3 +1484,39 @@ list fails the mapping loudly before either is recorded — no silent drops.
 **Decision.** Remove the signed namespace-creation call from the mobile app. The indexer now emits a new `offers_namespace_created` webhook event for both `claim_shares` and `relist_shares`. The `claim_shares` event is keyed by the listing PDA (the property namespace already exists once the asset is registered); the `relist_shares` event is transaction-scoped because the same share listing can be delisted and relisted repeatedly. The profile API exposes a shared-secret endpoint, `POST /webhooks/offers_namespace_created_devnet`, gated by `INDEXER_WEBHOOK_SECRET` (header or query string). The endpoint looks up the property namespace created by `init_property_asset_devnet`, reads its stored `asset_id`, and idempotently creates the offers namespace via the existing `FindOrCreateOffersNamespaceAsync` helper. It returns 404 when the property namespace has not arrived yet so the indexer's retry loop redelivers, and 200 `duplicate`/`ignored` on redelivery or when the namespace already exists. The indexer adds `asset_id` to the existing `property_asset_registered` payload and carries a new `CLUSTER` configuration (default `devnet`) through to the new event's payload.
 
 **Consequences.** The mobile claim flow no longer shows a second signing prompt. The profile API reuses the same namespace-creation logic for both the legacy signed mutation and the new unsigned webhook, so the namespace shape and idempotency key stay identical. The indexer writes one additional `webhook_events` row per eligible `claim_shares`/`relist_shares`; the outbox's `event_type` routing already supports this with no delivery-loop changes. A new `OFFERS_NAMESPACE_CREATED_WEBHOOK_URL` environment variable routes the event to the profile API endpoint. The `CLUSTER` variable is now part of the indexer configuration and appears in `.env.example`.
+
+## ADR-43: `listings` gains the lawyer-directory filters — `assignedLawyer` and `assignableTo`
+
+**Context.** The mobile app's lawyer directory has two listing-shaped surfaces. "Under
+Instruction" shows a lawyer the listings they are already engaged on — a lawyer occupies a
+listing's `developer_lawyer` and/or `spv_lawyer` seat (BYTEA mirror columns; the all-zero
+pubkey means the seat is VACANT, the ADR-40 sentinel). "Newly listed" is the vacancy feed
+a lawyer picks work up from: listings that have SOLD_OUT and entered the legal phase with
+at least one seat still vacant, excluding the asking lawyer's own engagements. Both are
+server-side filter jobs: over-fetching the whole `marketplace_listing` table to filter
+client-side breaks `first`/`offset` pagination — the exact problem ADR-39 solved for the
+feed's state checkboxes.
+
+**Decision.** `listings` takes two additional, optional base58-pubkey arguments, parsed
+with the same loud-error style as `developer`. `assignedLawyer` matches a lawyer in EITHER
+seat (`developer_lawyer = $n OR spv_lawyer = $n`) and keeps the default `slot DESC,
+pubkey ASC` ordering. `assignableTo` is the vacancy feed: `status = 'SOLD_OUT'`, the
+legal window still open (`legal_deadline = 0` — unset — or in the future, against the
+same bound wall clock as `feedStates`), at least one seat equal to the all-zero sentinel,
+and the asking lawyer in NEITHER seat. Its ordering switches to SOLD-OUT recency: a LEFT
+JOIN to `sold_out_notifications` (0018, one row per listing, so the join never multiplies
+rows) orders by the sold-out record's coordinate slot DESC NULLS LAST — a listing whose
+sold-out upsert was never recorded sorts behind every recorded one — with the listing
+mirror slot and pubkey as tiebreaks. The page query carries both orderings behind a
+`CASE` on whether the argument is present, so clients not passing `assignableTo` see a
+byte-identical default ordering; the count query carries the predicates without the join
+(ordering-only), so page and count cannot disagree. Both arguments are absent = off and
+compose by AND with every existing filter, `first`/`offset` included.
+
+**Consequences.** The app renders both lawyer surfaces with one round-trip per page and a
+correct `totalCount`, no over-fetching. The vacancy feed's notion of "when did this sell
+out" is the durable notification record's provenance slot, not the listing's mirror slot,
+so backfill re-walks cannot reshuffle it. No migration — the predicates read existing
+columns and the 0018 event table; the two query texts changed, so `.sqlx` was
+regenerated. Clients on the old schema are unaffected until they adopt the arguments (the
+app ships after this deploys, the ADR-39 precedent).
