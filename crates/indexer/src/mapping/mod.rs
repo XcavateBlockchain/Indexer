@@ -110,6 +110,10 @@ pub mod event_type {
     /// recorded alongside it so the notification endpoint gets its own route without
     /// touching the bucket-access consumer.
     pub const SHARES_TRANSFERRED: &str = "shares_transferred";
+    /// marketplace `claim_shares` (first claim) or `relist_shares` -- a property became
+    /// eligible for secondary-market offers and its "<property> offers" namespace should
+    /// be created by the profile API.
+    pub const OFFERS_NAMESPACE_CREATED: &str = "offers_namespace_created";
 }
 
 /// One durable, idempotent webhook notification the mapper wants recorded (ADR-28/ADR-36).
