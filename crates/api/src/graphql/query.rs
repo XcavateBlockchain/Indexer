@@ -590,6 +590,11 @@ impl QueryRoot {
     /// marketplace page's state checkboxes. `statuses` is the plain multi-status match from
     /// the first cut of ADR-39, kept for the clients built against it; an empty list of
     /// either matches nothing, an absent argument switches that filter off.
+    /// `assignedLawyer` / `assignableTo` (ADR-43) are the lawyer-directory filters:
+    /// `assignedLawyer` matches a lawyer in EITHER seat (the "Under Instruction" list);
+    /// `assignableTo` is the "Newly listed" vacancy feed — SOLD_OUT rows with the legal
+    /// window still open and at least one seat vacant, excluding the asking lawyer's own
+    /// listings, ordered by sold-out recency instead of the default slot ordering.
     #[allow(clippy::too_many_arguments)]
     async fn listings(
         context: &GraphQLContext,
@@ -599,6 +604,8 @@ impl QueryRoot {
         statuses: Option<Vec<ListingStatus>>,
         feed_states: Option<Vec<ListingFeedState>>,
         active: Option<bool>,
+        assigned_lawyer: Option<String>,
+        assignable_to: Option<String>,
         first: Option<i32>,
         offset: Option<i32>,
     ) -> FieldResult<programs::marketplace::ListingConnection> {
@@ -610,6 +617,8 @@ impl QueryRoot {
             statuses,
             feed_states,
             active,
+            assigned_lawyer,
+            assignable_to,
             first,
             offset,
         )

@@ -1970,3 +1970,36 @@ fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `SQLX_OFF
 cargo build --workspace --locked`, `cargo test --workspace --locked`, `cargo sqlx
 prepare --check` (both crates — no query changes), `scripts/lint-migrations.sh`,
 `scripts/agent/verify-devnet.sh` — all green.
+
+## API: `listings(assignedLawyer:, assignableTo:)` — lawyer-directory filters (ADR-43) — 2026-10-17
+
+**Why**: the mobile app's lawyer directory needs two server-filtered listing surfaces:
+"Under Instruction" (the listings a lawyer already sits on, in either seat) and "Newly
+listed" (the vacancy feed — sold-out listings still inside the legal window with a seat
+vacant, minus the asking lawyer's own engagements). Client-side filtering would over-fetch
+the whole `marketplace_listing` table and break `first`/`offset` pagination (the ADR-39
+problem).
+
+**What**: two additive optional base58-pubkey arguments on `listings` (same loud parse
+errors as `developer`). `assignedLawyer` = the lawyer in EITHER seat
+(`developer_lawyer`/`spv_lawyer`), default `slot DESC, pubkey ASC` ordering kept.
+`assignableTo` = `status = 'SOLD_OUT'` AND (`legal_deadline = 0` OR in the future, against
+the one bound wall clock — the ADR-39 precedent) AND at least one seat = the all-zero
+VACANT sentinel AND the asking lawyer in NEITHER seat; ordering switches to sold-out
+recency via `LEFT JOIN sold_out_notifications` (0018, one row per listing, never
+row-multiplying) — notification slot DESC NULLS LAST (unrecorded sold-outs last), then
+listing slot/pubkey tiebreaks — behind a `CASE` so the default ordering is byte-identical
+without the argument. Byte-identical predicates on the count query (no join:
+ordering-only). No migration; `cargo sqlx prepare` regenerated the two `.sqlx` query
+files.
+
+**Verification**: 4 new DB-seeded GraphQL tests
+(`listings_filter_by_assigned_lawyer_matches_both_slots` — developer seat + SPV seat in,
+all-vacant out; `listings_filter_by_assignable_to_returns_vacant_sold_out_only` —
+both-seats-filled, not-sold-out and lapsed-deadline rows all out;
+`listings_assignable_to_excludes_lawyers_own_listings`;
+`listings_assignable_to_orders_by_sold_out_slot_desc` — incl. the no-notification NULLS
+LAST case and the default ordering untouched without the argument); `cargo fmt --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build
+--workspace --locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check`
+(both crates), `scripts/lint-migrations.sh`, `scripts/agent/verify-devnet.sh` — all green.

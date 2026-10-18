@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM marketplace_listing\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR developer = $2)\n          AND ($3::text IS NULL OR status = $3)\n          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)\n          -- ADR-39: byte-identical feed-state arms to the page query above (no table\n          -- alias here) so the count can never disagree with the page.\n          AND ($5::text[] IS NULL OR (\n                 ('FOR_SALE' = ANY($5) AND status = 'LISTED'\n                      AND listing_expiry > $6\n                      AND (listed_share_amount - sold_share_amount - reserved_share_amount) > 0)\n              OR ('WAITING_FOR_CLAIM' = ANY($5) AND status = 'LISTED'\n                      AND (listed_share_amount - sold_share_amount - reserved_share_amount) = 0\n                      AND (claim_deadline = 0 OR claim_deadline > $6))\n              OR ('SOLD_OUT' = ANY($5) AND status IN ('SOLD_OUT', 'LEGAL'))\n              OR ('EXPIRED' = ANY($5) AND (status = 'EXPIRED'\n                      OR (status = 'LISTED'\n                          AND (listed_share_amount - sold_share_amount - reserved_share_amount) > 0\n                          AND listing_expiry <= $6)\n                      OR (status = 'LISTED'\n                          AND (listed_share_amount - sold_share_amount - reserved_share_amount) = 0\n                          AND claim_deadline > 0 AND claim_deadline <= $6)))\n              OR ('FINALIZED' = ANY($5) AND status = 'FINALIZED')\n              OR ('CANCELLED_OR_REFUNDING' = ANY($5) AND status IN ('CANCELLED', 'REFUNDING'))))\n          AND ($7::text[] IS NULL OR status = ANY($7))\n          -- ADR-43: byte-identical lawyer predicates to the page query above (no table\n          -- alias, no `sold_out_notifications` join — that join only feeds ORDER BY) so\n          -- the count can never disagree with the page.\n          AND ($8::bytea IS NULL OR (developer_lawyer = $8 OR spv_lawyer = $8))\n          AND ($9::bytea IS NULL OR (\n                 status = 'SOLD_OUT'\n                 AND (legal_deadline = 0 OR legal_deadline > $6)\n                 AND (developer_lawyer = $10 OR spv_lawyer = $10)\n                 AND developer_lawyer <> $9\n                 AND spv_lawyer <> $9))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Text",
+        "Bool",
+        "TextArray",
+        "Int8",
+        "TextArray",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7178d1877f68b12a057255ac3dfdfef5e110798d062b84c3f8b98846d23b4cf8"
+}
