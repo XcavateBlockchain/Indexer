@@ -2003,3 +2003,40 @@ LAST case and the default ordering untouched without the argument); `cargo fmt -
 `cargo clippy --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build
 --workspace --locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check`
 (both crates), `scripts/lint-migrations.sh`, `scripts/agent/verify-devnet.sh` — all green.
+
+## API: `listings(assignableTo:)` widened to all live claimable listings (ADR-44) — 2026-10-22
+
+**Why**: the lawyer page's "Newly listed" feed showed only SOLD_OUT rows, but every
+*live* listing is claimable work — on chain, lawyer engagement (and so seat-filling)
+only begins at SoldOut (ADR-40), so LISTED listings still carry two vacant seats and
+the sold-out-only feed read as near-empty against a dozen live vacancies.
+
+**What**: one predicate line per query — `status = 'SOLD_OUT'` becomes
+`status IN ('LISTED', 'SOLD_OUT')` in both the page and count queries of `listings`
+(`crates/api/src/graphql/programs/marketplace.rs`), keeping every other arm byte-identical
+(legal window open against the one bound wall clock, ≥1 seat at the all-zero VACANT
+sentinel, asking lawyer in NEITHER seat). Terminal/settled statuses (LEGAL, FINALIZED,
+EXPIRED, CANCELLED, REFUNDING) and PENDING_ASSETS stay excluded by the status list.
+Ordering untouched: sold-out recency (`sold_out_notifications.slot` DESC NULLS LAST),
+then listing recency (`l.slot DESC, l.pubkey ASC`) — LISTED rows join the NULLS-LAST
+group. Migration **0019** (`migrations/0019_sold_out_notifications_listing_index.sql`)
+adds the plain B-tree `sold_out_notifications_listing_idx` on `(listing_id)` — the join
+that previously only fed ORDER BY for sold-out rows now probes every live row under the
+api pool's 5s statement_timeout, and 0018's partial `event_id` index does not cover it.
+The `assignableTo` doc text in `crates/api/src/graphql/query.rs` and the adjacent
+`-- ADR-43:` SQL comments were updated to ADR-44. `cargo sqlx prepare` regenerated the
+two `.sqlx` query files (page + count hashes changed).
+
+**Verification**: TDD — both reworked tests were confirmed RED against the old SQL, then
+GREEN. `listings_filter_by_assignable_to_returns_live_vacant_rows` (renamed from
+`listings_filter_by_assignable_to_returns_vacant_sold_out_only`; LISTED row now included
+at the top of the no-notification ordering, and NEW seeds pin LEGAL/FINALIZED/EXPIRED/
+CANCELLED/REFUNDING/PENDING_ASSETS out);
+`listings_assignable_to_orders_by_sold_out_slot_desc` extended with a higher-slot LISTED
+row that sorts behind the notification-recorded sold-outs (and appears in the default
+ordering too); `listings_assignable_to_excludes_lawyers_own_listings` and
+`listings_filter_by_assigned_lawyer_matches_both_slots` unchanged and green.
+`bash scripts/lint-migrations.sh`, `cargo fmt && cargo fmt --check`, `cargo clippy
+--workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build --workspace
+--locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check` (both crates),
+`scripts/agent/verify-devnet.sh` — all green.

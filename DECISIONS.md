@@ -1520,3 +1520,45 @@ so backfill re-walks cannot reshuffle it. No migration — the predicates read e
 columns and the 0018 event table; the two query texts changed, so `.sqlx` was
 regenerated. Clients on the old schema are unaffected until they adopt the arguments (the
 app ships after this deploys, the ADR-39 precedent).
+
+## ADR-44: `listings(assignableTo:)` widened to all live claimable listings
+
+
+**Context.** ADR-43's "Newly listed" feed on the mobile lawyer page served only
+SOLD_OUT rows, but the page's job is to show a lawyer every property they can still
+claim work on — not merely the ones whose sale round just ended. On chain the two are
+not the same set: a lawyer's `developer_lawyer`/`spv_lawyer` seats are only ever
+*filled* by engagement transactions, which exist solely in the sold-out legal phase
+(ADR-40), so every live listing — LISTED with shares still selling, or SOLD_OUT inside
+the legal window — still has both seats at the all-zero sentinel and is equally
+claimable. A devnet feed of freshly sold-out listings alone read as near-empty while a
+dozen live vacancies sat invisible, and the lawyer page looked broken.
+
+**Decision.** Widen the `assignableTo` predicate in both the page and count queries of
+the `listings` resolver (`crates/api/src/graphql/programs/marketplace.rs`) from
+`status = 'SOLD_OUT'` to `status IN ('LISTED', 'SOLD_OUT')`, keeping every other arm
+byte-identical (the house invariant): the legal window still open (`legal_deadline = 0`
+— unset, always true for LISTED rows — or in the future, against the same bound wall
+clock as `feedStates`), at least one seat equal to the all-zero VACANT sentinel, and
+the asking lawyer in NEITHER seat. Terminal/settled statuses (LEGAL, FINALIZED,
+EXPIRED, CANCELLED, REFUNDING) and PENDING_ASSETS stay excluded by the status list. The
+ORDER BY is deliberately unchanged — sold-out recency (`sold_out_notifications.slot`
+DESC NULLS LAST), then listing recency (`l.slot DESC, l.pubkey ASC`) — so freshly
+sold-out vacancies still headline the page and the widened tail of live listings keeps
+the "Newly listed" reading; the LISTED rows join the NULLS-LAST group by their mirror
+slot. Migration 0019 adds the missing `sold_out_notifications (listing_id)` B-tree
+index: 0018 indexed only the delivery loop's partial `event_id` work set, and the
+ORDER BY's LEFT JOIN now probes the table for every live row the widened feed returns
+under the api pool's 5 s `statement_timeout`. No other wiring, arguments, or defaults
+change.
+
+**Consequences.** Backward-compatible: same argument list and optionality, same default
+ordering without the argument, and deployed clients see only a wider result set (the
+ADR-39/43 "ship after deploy" precedent). Indexes are additive and the migration ships
+in the same PR (migrations auto-apply at indexer startup). The two query texts changed,
+so `.sqlx` was regenerated. Tests: `listings_filter_by_assignable_to_returns_live_vacant_rows`
+(rework of `listings_filter_by_assignable_to_returns_vacant_sold_out_only` — LISTED rows
+in, both-seats-filled and lapsed-deadline out, plus explicit seeds for every
+terminal/settled status and PENDING_ASSETS staying out) and
+`listings_assignable_to_orders_by_sold_out_slot_desc` (extended with a higher-slot LISTED
+row sorting behind the notification-recorded sold-outs).

@@ -666,11 +666,14 @@ async fn listings_filter_by_assigned_lawyer_matches_both_slots(pool: PgPool) {
     assert_eq!(total, 2);
 }
 
-/// The `assignableTo` vacancy feed: SOLD_OUT rows with the legal window still open
-/// (`legal_deadline` unset or in the future) and at least one seat vacant. Both seats
-/// filled, not-yet-sold-out, and lapsed-deadline rows all stay out.
+/// The `assignableTo` vacancy feed (ADR-44): live rows — LISTED, or SOLD_OUT with the
+/// legal window still open (`legal_deadline` unset or in the future) — with at least one
+/// seat vacant, so a lawyer can still claim them. Both-seats-filled and lapsed-deadline
+/// rows stay out, and so do the terminal/settled statuses (LEGAL, FINALIZED, EXPIRED,
+/// CANCELLED, REFUNDING) and PENDING_ASSETS — a listing that is no longer live, or has not
+/// started selling yet, is not claimable work whatever the seats say.
 #[sqlx::test(migrations = "../../migrations")]
-async fn listings_filter_by_assignable_to_returns_vacant_sold_out_only(pool: PgPool) {
+async fn listings_filter_by_assignable_to_returns_live_vacant_rows(pool: PgPool) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -713,7 +716,7 @@ async fn listings_filter_by_assignable_to_returns_vacant_sold_out_only(pool: PgP
             pubkey: [13; 32],
             listing_id: 13,
             slot: 113,
-            status: "LISTED", // not sold out yet
+            status: "LISTED", // live, not sold out yet — INCLUDED since ADR-44
             legal_deadline: 0,
             developer_lawyer: vacant,
             spv_lawyer: vacant,
@@ -724,6 +727,63 @@ async fn listings_filter_by_assignable_to_returns_vacant_sold_out_only(pool: PgP
             slot: 114,
             status: "SOLD_OUT",
             legal_deadline: past, // legal window lapsed
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+        // Terminal/settled and not-yet-live statuses: vacant seats and an open legal
+        // window change nothing — the status list excludes them (ADR-44 widened the feed
+        // to LISTED + SOLD_OUT only, never past-sale or pre-listing states).
+        LawyerListingSeed {
+            pubkey: [15; 32],
+            listing_id: 15,
+            slot: 115,
+            status: "LEGAL",
+            legal_deadline: future,
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+        LawyerListingSeed {
+            pubkey: [16; 32],
+            listing_id: 16,
+            slot: 116,
+            status: "FINALIZED",
+            legal_deadline: 0,
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+        LawyerListingSeed {
+            pubkey: [17; 32],
+            listing_id: 17,
+            slot: 117,
+            status: "EXPIRED",
+            legal_deadline: 0,
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+        LawyerListingSeed {
+            pubkey: [18; 32],
+            listing_id: 18,
+            slot: 118,
+            status: "CANCELLED",
+            legal_deadline: 0,
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+        LawyerListingSeed {
+            pubkey: [19; 32],
+            listing_id: 19,
+            slot: 119,
+            status: "REFUNDING",
+            legal_deadline: 0,
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+        LawyerListingSeed {
+            pubkey: [20; 32],
+            listing_id: 20,
+            slot: 120,
+            status: "PENDING_ASSETS",
+            legal_deadline: 0,
             developer_lawyer: vacant,
             spv_lawyer: vacant,
         },
@@ -741,9 +801,17 @@ async fn listings_filter_by_assignable_to_returns_vacant_sold_out_only(pool: PgP
     )
     .await;
     // No notification rows seeded: sold-out recency is all NULLS LAST, so the listing
-    // slot tiebreak orders 11 ahead of 10.
-    assert_eq!(ids, ["11", "10"]);
-    assert_eq!(total, 2);
+    // slot tiebreak orders the live rows 13, 11, 10 — the ADR-44 widening puts the LISTED
+    // row 13 in, at the top.
+    assert_eq!(ids, ["13", "11", "10"]);
+    assert_eq!(total, 3);
+    // Belt and braces: no terminal/settled or PENDING_ASSETS row leaked into the page.
+    for excluded in ["12", "14", "15", "16", "17", "18", "19", "20"] {
+        assert!(
+            !ids.contains(&excluded.to_owned()),
+            "id {excluded} leaked in"
+        );
+    }
 }
 
 /// A lawyer never sees their OWN listings in the vacancy feed: a seat they already occupy
@@ -790,7 +858,8 @@ async fn listings_assignable_to_excludes_lawyers_own_listings(pool: PgPool) {
 
 /// With `assignableTo` the ordering switches to SOLD-OUT RECENCY: the
 /// `sold_out_notifications` coordinate slot DESC, NULLS LAST (a listing whose sold-out
-/// event was never recorded sorts behind every recorded one), then the listing mirror
+/// event was never recorded sorts behind every recorded one — and behind it any ADR-44
+/// live LISTED row, which has no notification at all), then the listing mirror
 /// slot and pubkey as tiebreaks. The default ordering is untouched without the argument.
 #[sqlx::test(migrations = "../../migrations")]
 async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
@@ -812,6 +881,22 @@ async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
     seed_lawyer_listing(&pool, &seed(42, 32, 400)).await; // never recorded sold-out
     seed_sold_out_notification(&pool, &[40u8; 32], 30, 100).await;
     seed_sold_out_notification(&pool, &[41u8; 32], 31, 200).await;
+    // ADR-44: a live LISTED row belongs in the feed too. With no sold-out notification
+    // row it joins the NULLS-LAST group, ordered by its listing slot among the other
+    // unrecorded rows — even when its mirror slot is the HIGHEST of the whole page.
+    seed_lawyer_listing(
+        &pool,
+        &LawyerListingSeed {
+            pubkey: [43; 32],
+            listing_id: 33,
+            slot: 500,
+            status: "LISTED",
+            legal_deadline: 0,
+            developer_lawyer: vacant,
+            spv_lawyer: other,
+        },
+    )
+    .await;
 
     let (ids, total) = run_listings_query(
         &pool,
@@ -821,17 +906,20 @@ async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
         ),
     )
     .await;
-    assert_eq!(ids, ["31", "30", "32"]);
-    assert_eq!(total, 3);
+    // Recorded sold-outs by notification slot (31@200, 30@100), then the NULLS-LAST group
+    // by listing slot: the LISTED 33 (500) ahead of the never-recorded 32 (400).
+    assert_eq!(ids, ["31", "30", "33", "32"]);
+    assert_eq!(total, 4);
 
-    // No argument: the default `slot DESC, pubkey ASC` ordering, notification-free.
+    // No argument: the default `slot DESC, pubkey ASC` ordering, notification-free — the
+    // LISTED row rides along (no status filter), at the top on its higher mirror slot.
     let (ids, total) = run_listings_query(
         &pool,
         r#"{ listings(first: 10) { totalCount nodes { listingId } } }"#,
     )
     .await;
-    assert_eq!(ids, ["32", "30", "31"]);
-    assert_eq!(total, 3);
+    assert_eq!(ids, ["33", "32", "30", "31"]);
+    assert_eq!(total, 4);
 }
 
 // ============================================================================================
