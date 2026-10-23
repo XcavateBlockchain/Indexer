@@ -1183,9 +1183,10 @@ pub async fn listings(
     // count cannot disagree on a deadline crossing between them.
     let feed_states: Option<Vec<String>> =
         feed_states.map(|v| v.into_iter().map(|s| s.as_db_str().to_owned()).collect());
-    // ADR-43: the lawyer-directory filters, both parsed with the same loud-error style as
-    // `developer`. `assigned_lawyer` matches either seat ("Under Instruction");
-    // `assignable_to` is the vacancy feed ("Newly listed") — see the SQL below.
+    // ADR-43 (widened by ADR-44): the lawyer-directory filters, both parsed with the same
+    // loud-error style as `developer`. `assigned_lawyer` matches either seat ("Under
+    // Instruction"); `assignable_to` is the vacancy feed ("Newly listed") — see the SQL
+    // below.
     let assigned_lawyer = assigned_lawyer
         .as_deref()
         .map(|s| parse_b58("assignedLawyer", s))
@@ -1240,9 +1241,10 @@ pub async fn listings(
                pa.holder_count AS "pa_holder_count?"
         FROM marketplace_listing AS l
         LEFT JOIN marketplace_property_asset AS pa ON pa.asset_id = l.asset_id
-        -- ADR-43: the `assignableTo` vacancy feed orders by SOLD-OUT recency — the durable
-        -- sold-out record's coordinate slot (0018), not the listing's own mirror slot. One
-        -- row per listing in `sold_out_notifications`, so the join never multiplies rows.
+        -- ADR-43 (index support ADR-44): the `assignableTo` vacancy feed orders by
+        -- SOLD-OUT recency — the durable sold-out record's coordinate slot (0018), not the
+        -- listing's own mirror slot. One row per listing in `sold_out_notifications`, so
+        -- the join never multiplies rows, and 0019's listing index backs the probe.
         LEFT JOIN sold_out_notifications AS sn ON sn.listing_id = l.listing_id
         WHERE ($1::bigint IS NULL OR l.listing_id = $1)
           AND ($2::bytea IS NULL OR l.developer = $2)
@@ -1272,18 +1274,24 @@ pub async fn listings(
           AND ($9::text[] IS NULL OR l.status = ANY($9))
           -- ADR-43: `assignedLawyer` — the lawyer sits in EITHER seat ("Under Instruction").
           AND ($10::bytea IS NULL OR (l.developer_lawyer = $10 OR l.spv_lawyer = $10))
-          -- ADR-43: `assignableTo` — the vacancy feed ("Newly listed"): sold out, the legal
-          -- window still open (0 = unset, same bound wall clock as feedStates), at least one
-          -- seat VACANT (the all-zero sentinel $12), and the asking lawyer in NEITHER seat —
-          -- a lawyer never sees their own listings here.
+          -- ADR-44 (widening ADR-43): `assignableTo` — the vacancy feed ("Newly listed"):
+          -- live listings — LISTED, or SOLD_OUT with the legal window still open (0 = unset,
+          -- same bound wall clock as feedStates) — with at least one seat VACANT (the
+          -- all-zero sentinel $12), and the asking lawyer in NEITHER seat — a lawyer never
+          -- sees their own listings here. Terminal/settled statuses (LEGAL, FINALIZED,
+          -- EXPIRED, CANCELLED, REFUNDING) and PENDING_ASSETS stay excluded by the status
+          -- list: engagement only opens at SoldOut, but the seats stay fillable while the
+          -- listing is live, which is exactly what makes LISTED rows claimable too.
           AND ($11::bytea IS NULL OR (
-                 l.status = 'SOLD_OUT'
+                 l.status IN ('LISTED', 'SOLD_OUT')
                  AND (l.legal_deadline = 0 OR l.legal_deadline > $8)
                  AND (l.developer_lawyer = $12 OR l.spv_lawyer = $12)
                  AND l.developer_lawyer <> $11
                  AND l.spv_lawyer <> $11))
-        -- ADR-43: with `assignableTo`, sold-out recency (notification slot DESC, unrecorded
-        -- sold-outs last); otherwise the CASE is all-NULL and the default ordering stands.
+        -- ADR-43 (with ADR-44's LISTED rows joining the NULLS-LAST group): with
+        -- `assignableTo`, sold-out recency (notification slot DESC, everything with no
+        -- recorded sold-out — including every live LISTED row — last, by listing slot);
+        -- otherwise the CASE is all-NULL and the default ordering stands.
         ORDER BY CASE WHEN $11::bytea IS NULL THEN NULL ELSE sn.slot END DESC NULLS LAST,
                  l.slot DESC, l.pubkey ASC
         LIMIT $5 OFFSET $6
@@ -1335,8 +1343,10 @@ pub async fn listings(
           -- alias, no `sold_out_notifications` join — that join only feeds ORDER BY) so
           -- the count can never disagree with the page.
           AND ($8::bytea IS NULL OR (developer_lawyer = $8 OR spv_lawyer = $8))
+          -- ADR-44 (widening ADR-43): the same live-and-fillable predicate as the page
+          -- query above — LISTED, or SOLD_OUT with the legal window still open.
           AND ($9::bytea IS NULL OR (
-                 status = 'SOLD_OUT'
+                 status IN ('LISTED', 'SOLD_OUT')
                  AND (legal_deadline = 0 OR legal_deadline > $6)
                  AND (developer_lawyer = $10 OR spv_lawyer = $10)
                  AND developer_lawyer <> $9

@@ -1,0 +1,22 @@
+-- Supporting index for the `listings(assignableTo:)` vacancy feed's ORDER BY (ADR-44).
+--
+-- ADR-43 introduced the "Newly listed" feed and ordered it by SOLD-OUT recency with a
+-- `LEFT JOIN sold_out_notifications ON sn.listing_id = l.listing_id` (one row per listing,
+-- so the join never multiplies rows). 0018 shipped the table but indexed only the delivery
+-- loop's work set -- `sold_out_notifications_pending_idx` on `event_id` WHERE
+-- `delivered_at IS NULL`. Nothing backs the API join: every sold-out notification row the
+-- delivery loop has already finished still has to be probed by the feed's ORDER BY, and the
+-- join degrades toward sequential probing as the delivered backlog grows.
+--
+-- WHY NOW / WHY AN INDEX AT ALL: the api pool sets `statement_timeout = '5s'` on every
+-- connection (`crates/api/src/db.rs`), so an unindexed scan that outgrows 5s is a production
+-- 500, not a slow query -- the write-migration skill's rule that every column a new/changed
+-- resolver filters or orders by gets an index. ADR-44 widens the feed to every live
+-- claimable listing, so the join now runs for the whole live-table scan and needs the
+-- lookup path; the delivery-loop partial index stays untouched (the table itself is
+-- unchanged, and applied migrations are immutable). Plain B-tree on `listing_id`, NOT a
+-- partial index: the ORDER BY needs the full history -- delivered and undelivered rows are
+-- both feed candidates -- so any `delivered_at` predicate would exclude exactly the rows
+-- the feed sorts by.
+
+CREATE INDEX sold_out_notifications_listing_idx ON sold_out_notifications (listing_id);
