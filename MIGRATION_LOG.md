@@ -2040,3 +2040,45 @@ ordering too); `listings_assignable_to_excludes_lawyers_own_listings` and
 --workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build --workspace
 --locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check` (both crates),
 `scripts/agent/verify-devnet.sh` — all green.
+
+## API: `listings(assignableTo:)` refined to the open-SPV-job feed (ADR-45) — 2026-10-23
+
+**Why**: the product owner redefined "Newly listed" as the work a lawyer can actually
+self-claim — the SPV-lawyer job. ADR-44's either-seat vacancy showed rows whose only
+vacant seat is the developer's (only the developer's `assign_developer_lawyer` fills
+it) and rows whose asset SPV was never created (rejected on chain by
+`claim_spv_case`/`SpvNotCreated` the moment anyone engages). Both read as claimable
+work that cannot be claimed.
+
+**What**: two arm-level edits to the `assignableTo` predicate, byte-identical in the
+page and count queries modulo the `l.`/`marketplace_listing` aliasing (house
+invariant): `(developer_lawyer = $vacant OR spv_lawyer = $vacant)` becomes the SPV-seat
+test `spv_lawyer = $vacant`, and both statements gain the EXISTS gate
+`EXISTS (SELECT 1 FROM marketplace_property_asset AS spa WHERE spa.asset_id = <outer>.asset_id AND spa.spv_created)`
+— the `claim_spv_case` gate. Status pair, legal-window arm, both not-the-asking-lawyer
+exclusions (the dev-seat one mirroring the chain's `ConflictOfInterest`), the `CASE`-
+gated sold-out-recency ORDER BY, arguments and defaults are all unchanged. **No
+migration**: both new probes ride existing indexes — the EXISTS correlates on
+`marketplace_property_asset.asset_id`, indexed by 0009's `idx_mkt_property_asset_id`,
+and the ORDER BY join keeps running on 0019's `sold_out_notifications_listing_idx`.
+Doc surfaces updated in place: the ADR-45 predicate comments (page + count), the
+resolver intro, the LEFT-JOIN/ORDER-BY comments and the `assignableTo` field doc in
+`crates/api/src/graphql/query.rs`. `cargo sqlx prepare` regenerated the two `.sqlx`
+query files.
+
+**Verification**: TDD — the reworked `listings_filter_by_assignable_to_returns_open_spv_rows`
+(renamed from `..._returns_live_vacant_rows`) went RED against the ADR-44 SQL
+(`["22", "21", "13", "11", "10"]` returned, pinning the dev-seat-only and both
+SPV-uncreated classes in) before going GREEN; it now seeds property assets and pins
+dev-seat-only-vacancy, `spv_created=false` and missing-asset-row all OUT alongside the
+existing terminal/PENDING_ASSETS exclusions.
+`listings_assignable_to_orders_by_sold_out_slot_desc` reseeded so all four rows stay
+feed-eligible under ADR-45 (dev seats filled, SPV seats vacant, SPVs created) —
+ordering assertions unchanged; `listings_assignable_to_excludes_lawyers_own_listings`
+gained the listing's SPV-created asset (pins the seat exclusion, not the EXISTS gate);
+`listings_filter_by_assigned_lawyer_matches_both_slots` untouched. `bash
+scripts/lint-migrations.sh`, `cargo fmt && cargo fmt --check`, `cargo clippy
+--workspace --all-targets -- -D warnings`, `SQLX_OFFLINE=true cargo build --workspace
+--locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check` (api) — all
+green. No migration, so `verify-devnet.sh` (the from-zero migration gate) was not
+re-run.
