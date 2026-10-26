@@ -1183,10 +1183,10 @@ pub async fn listings(
     // count cannot disagree on a deadline crossing between them.
     let feed_states: Option<Vec<String>> =
         feed_states.map(|v| v.into_iter().map(|s| s.as_db_str().to_owned()).collect());
-    // ADR-43 (widened by ADR-44): the lawyer-directory filters, both parsed with the same
-    // loud-error style as `developer`. `assigned_lawyer` matches either seat ("Under
-    // Instruction"); `assignable_to` is the vacancy feed ("Newly listed") — see the SQL
-    // below.
+    // ADR-43 (widened by ADR-44, refined by ADR-45): the lawyer-directory filters, both
+    // parsed with the same loud-error style as `developer`. `assigned_lawyer` matches
+    // either seat ("Under Instruction"); `assignable_to` is the vacancy feed ("Newly
+    // listed": live listings whose SPV job is still open) — see the SQL below.
     let assigned_lawyer = assigned_lawyer
         .as_deref()
         .map(|s| parse_b58("assignedLawyer", s))
@@ -1274,20 +1274,29 @@ pub async fn listings(
           AND ($9::text[] IS NULL OR l.status = ANY($9))
           -- ADR-43: `assignedLawyer` — the lawyer sits in EITHER seat ("Under Instruction").
           AND ($10::bytea IS NULL OR (l.developer_lawyer = $10 OR l.spv_lawyer = $10))
-          -- ADR-44 (widening ADR-43): `assignableTo` — the vacancy feed ("Newly listed"):
-          -- live listings — LISTED, or SOLD_OUT with the legal window still open (0 = unset,
-          -- same bound wall clock as feedStates) — with at least one seat VACANT (the
-          -- all-zero sentinel $12), and the asking lawyer in NEITHER seat — a lawyer never
-          -- sees their own listings here. Terminal/settled statuses (LEGAL, FINALIZED,
-          -- EXPIRED, CANCELLED, REFUNDING) and PENDING_ASSETS stay excluded by the status
-          -- list: engagement only opens at SoldOut, but the seats stay fillable while the
-          -- listing is live, which is exactly what makes LISTED rows claimable too.
+          -- ADR-45 (refining ADR-43/44): `assignableTo` — the vacancy feed ("Newly
+          -- listed"): live listings — LISTED, or SOLD_OUT with the legal window still
+          -- open (0 = unset, same bound wall clock as feedStates) — whose SPV exists
+          -- (`property_asset.spv_created`, the `claim_spv_case` gate behind the on-chain
+          -- `SpvNotCreated` rejection) and whose SPV-lawyer seat is still VACANT (the
+          -- all-zero sentinel $12). Only the SPV can take the SPV seat, so SPV vacancy is
+          -- the self-claimable job; the developer seat is filled by the developer's
+          -- `assign_developer_lawyer`, so either-seat vacancy (ADR-44) over-included
+          -- non-claimable rows. The two not-the-asking-lawyer exclusions stay — the
+          -- developer-seat one mirrors the chain's `ConflictOfInterest` rejection, the
+          -- SPV-seat one keeps the degenerate asking==sentinel case empty. Terminal/
+          -- settled statuses (LEGAL, FINALIZED, EXPIRED, CANCELLED, REFUNDING) and
+          -- PENDING_ASSETS stay excluded by the status list. The EXISTS probes the asset
+          -- over its indexed `asset_id`, byte-identically in both statements.
           AND ($11::bytea IS NULL OR (
                  l.status IN ('LISTED', 'SOLD_OUT')
                  AND (l.legal_deadline = 0 OR l.legal_deadline > $8)
-                 AND (l.developer_lawyer = $12 OR l.spv_lawyer = $12)
+                 AND l.spv_lawyer = $12
                  AND l.developer_lawyer <> $11
-                 AND l.spv_lawyer <> $11))
+                 AND l.spv_lawyer <> $11
+                 AND EXISTS (SELECT 1 FROM marketplace_property_asset AS spa
+                              WHERE spa.asset_id = l.asset_id
+                                AND spa.spv_created)))
         -- ADR-43 (with ADR-44's LISTED rows joining the NULLS-LAST group): with
         -- `assignableTo`, sold-out recency (notification slot DESC, everything with no
         -- recorded sold-out — including every live LISTED row — last, by listing slot);
@@ -1343,14 +1352,20 @@ pub async fn listings(
           -- alias, no `sold_out_notifications` join — that join only feeds ORDER BY) so
           -- the count can never disagree with the page.
           AND ($8::bytea IS NULL OR (developer_lawyer = $8 OR spv_lawyer = $8))
-          -- ADR-44 (widening ADR-43): the same live-and-fillable predicate as the page
-          -- query above — LISTED, or SOLD_OUT with the legal window still open.
+          -- ADR-45 (refining ADR-43/44): the same live-and-SPV-open predicate as the page
+          -- query above — LISTED, or SOLD_OUT with the legal window still open, an open
+          -- SPV seat, and the SPV created (the EXISTS here is identical modulo the
+          -- `l.`/`marketplace_listing` outer aliasing; the asset lookup is indexed by
+          -- 0009's `idx_mkt_property_asset_id`).
           AND ($9::bytea IS NULL OR (
                  status IN ('LISTED', 'SOLD_OUT')
                  AND (legal_deadline = 0 OR legal_deadline > $6)
-                 AND (developer_lawyer = $10 OR spv_lawyer = $10)
+                 AND spv_lawyer = $10
                  AND developer_lawyer <> $9
-                 AND spv_lawyer <> $9))
+                 AND spv_lawyer <> $9
+                 AND EXISTS (SELECT 1 FROM marketplace_property_asset AS spa
+                              WHERE spa.asset_id = marketplace_listing.asset_id
+                                AND spa.spv_created)))
         "#,
         listing_id,
         developer.as_deref(),

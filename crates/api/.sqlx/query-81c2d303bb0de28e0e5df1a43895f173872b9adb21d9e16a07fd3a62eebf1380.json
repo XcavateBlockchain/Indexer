@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) FROM marketplace_listing\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR developer = $2)\n          AND ($3::text IS NULL OR status = $3)\n          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)\n          -- ADR-39: byte-identical feed-state arms to the page query above (no table\n          -- alias here) so the count can never disagree with the page.\n          AND ($5::text[] IS NULL OR (\n                 ('FOR_SALE' = ANY($5) AND status = 'LISTED'\n                      AND listing_expiry > $6\n                      AND (listed_share_amount - sold_share_amount - reserved_share_amount) > 0)\n              OR ('WAITING_FOR_CLAIM' = ANY($5) AND status = 'LISTED'\n                      AND (listed_share_amount - sold_share_amount - reserved_share_amount) = 0\n                      AND (claim_deadline = 0 OR claim_deadline > $6))\n              OR ('SOLD_OUT' = ANY($5) AND status IN ('SOLD_OUT', 'LEGAL'))\n              OR ('EXPIRED' = ANY($5) AND (status = 'EXPIRED'\n                      OR (status = 'LISTED'\n                          AND (listed_share_amount - sold_share_amount - reserved_share_amount) > 0\n                          AND listing_expiry <= $6)\n                      OR (status = 'LISTED'\n                          AND (listed_share_amount - sold_share_amount - reserved_share_amount) = 0\n                          AND claim_deadline > 0 AND claim_deadline <= $6)))\n              OR ('FINALIZED' = ANY($5) AND status = 'FINALIZED')\n              OR ('CANCELLED_OR_REFUNDING' = ANY($5) AND status IN ('CANCELLED', 'REFUNDING'))))\n          AND ($7::text[] IS NULL OR status = ANY($7))\n          -- ADR-43: byte-identical lawyer predicates to the page query above (no table\n          -- alias, no `sold_out_notifications` join — that join only feeds ORDER BY) so\n          -- the count can never disagree with the page.\n          AND ($8::bytea IS NULL OR (developer_lawyer = $8 OR spv_lawyer = $8))\n          -- ADR-45 (refining ADR-43/44): the same live-and-SPV-open predicate as the page\n          -- query above — LISTED, or SOLD_OUT with the legal window still open, an open\n          -- SPV seat, and the SPV created (the EXISTS here is identical modulo the\n          -- `l.`/`marketplace_listing` outer aliasing; the asset lookup is indexed by\n          -- 0009's `idx_mkt_property_asset_id`).\n          AND ($9::bytea IS NULL OR (\n                 status IN ('LISTED', 'SOLD_OUT')\n                 AND (legal_deadline = 0 OR legal_deadline > $6)\n                 AND spv_lawyer = $10\n                 AND developer_lawyer <> $9\n                 AND spv_lawyer <> $9\n                 AND EXISTS (SELECT 1 FROM marketplace_property_asset AS spa\n                              WHERE spa.asset_id = marketplace_listing.asset_id\n                                AND spa.spv_created)))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Text",
+        "Bool",
+        "TextArray",
+        "Int8",
+        "TextArray",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "81c2d303bb0de28e0e5df1a43895f173872b9adb21d9e16a07fd3a62eebf1380"
+}

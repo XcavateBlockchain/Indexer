@@ -185,7 +185,9 @@ async fn seed_listing_state(pool: &PgPool, seed: &ListingStateSeed) {
 /// The columns the ADR-43 lawyer-directory filters read, per row: the two lawyer seats
 /// (the all-zero vacant-seat sentinel = unassigned), the raw chain status and
 /// `legal_deadline` (0 = unset). `listed`/`sold` seed as 10/10 so the row is a plausible
-/// SOLD_OUT; every other column takes a valid default, `asset_id` dangles (LEFT JOIN).
+/// SOLD_OUT; every other column takes a valid default. The `asset_id` = `listing_id` row
+/// is absent unless a `seed_spv_asset` row accompanies it — which since ADR-45 the
+/// `assignableTo` feed requires (`spv_created`), while every other filter ignores it.
 struct LawyerListingSeed {
     pubkey: [u8; 32],
     listing_id: i64,
@@ -253,6 +255,29 @@ async fn seed_sold_out_notification(
     .execute(pool)
     .await
     .expect("seed sold_out_notifications");
+}
+
+/// One bare `marketplace_property_asset` row with the given `asset_id` and `spv_created`
+/// flag — ADR-45's `assignableTo` gate reads exactly that flag (the on-chain
+/// `claim_spv_case` gate behind the `SpvNotCreated` rejection). `seed_lawyer_listing`
+/// points every listing's `asset_id` at its `listing_id`, so callers pass that; the rest
+/// of the columns take the same valid defaults `seed_asset_region` uses.
+async fn seed_spv_asset(pool: &PgPool, asset_id: i64, spv_created: bool) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_property_asset
+               (pubkey, slot, lamports, asset_id, name, metadata_uri, share_mint,
+                region_id, location, share_amount, spv_created, finalized, holder_count, bump)
+           VALUES ($1, 100, 1000000, $2, 'Test House', 'https://md.example/asset.json', $3,
+                   1, $4, 1000, $5, FALSE, 3, 255)"#,
+    )
+    .bind([128 + asset_id as u8; 32]) // distinct from the listing pubkeys in these tests
+    .bind(asset_id)
+    .bind(vec![8u8; 32])
+    .bind(b"London".as_slice())
+    .bind(spv_created)
+    .execute(pool)
+    .await
+    .expect("seed marketplace_property_asset");
 }
 
 /// ADR-31: the mirrored 720x720 JPEGs are served as `metadata.propertyImageThumbnails`,
@@ -565,9 +590,11 @@ async fn listings_filter_by_feed_state_partitions_every_listing(pool: PgPool) {
 }
 
 // ============================================================================================
-// ADR-43: the lawyer-directory filters — `assignedLawyer` (the "Under Instruction" list) and
-// `assignableTo` (the "Newly listed" vacancy feed). Both take a base58 pubkey and compose by
-// AND with every existing filter; absent = filter off.
+// ADR-43 (widened by ADR-44, refined by ADR-45): the lawyer-directory filters —
+// `assignedLawyer` (the "Under Instruction" list) and `assignableTo` (the "Newly listed"
+// vacancy feed: live listings whose SPV has been created and whose SPV-lawyer seat is
+// still vacant). Both take a base58 pubkey and compose by AND with every existing filter;
+// absent = filter off.
 // ============================================================================================
 
 /// Decode the `listings { totalCount, nodes { listingId } }` response shape the lawyer
@@ -666,14 +693,16 @@ async fn listings_filter_by_assigned_lawyer_matches_both_slots(pool: PgPool) {
     assert_eq!(total, 2);
 }
 
-/// The `assignableTo` vacancy feed (ADR-44): live rows — LISTED, or SOLD_OUT with the
-/// legal window still open (`legal_deadline` unset or in the future) — with at least one
-/// seat vacant, so a lawyer can still claim them. Both-seats-filled and lapsed-deadline
-/// rows stay out, and so do the terminal/settled statuses (LEGAL, FINALIZED, EXPIRED,
-/// CANCELLED, REFUNDING) and PENDING_ASSETS — a listing that is no longer live, or has not
-/// started selling yet, is not claimable work whatever the seats say.
+/// The `assignableTo` vacancy feed (ADR-45): live rows — LISTED, or SOLD_OUT with the
+/// legal window still open (`legal_deadline` unset or in the future) — whose SPV EXISTS
+/// (`property_asset.spv_created`, the on-chain `claim_spv_case` / `SpvNotCreated` gate)
+/// and whose SPV-lawyer seat is still vacant. A vacant DEV seat is not self-claimable
+/// (only the developer's `assign_developer_lawyer` fills it), so either-seat vacancy is
+/// gone; SPV-uncreated rows (flag false, or the asset row missing entirely) and
+/// lapsed-deadline rows stay out, as do the terminal/settled statuses (LEGAL, FINALIZED,
+/// EXPIRED, CANCELLED, REFUNDING) and PENDING_ASSETS.
 #[sqlx::test(migrations = "../../migrations")]
-async fn listings_filter_by_assignable_to_returns_live_vacant_rows(pool: PgPool) {
+async fn listings_filter_by_assignable_to_returns_open_spv_rows(pool: PgPool) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -692,6 +721,8 @@ async fn listings_filter_by_assignable_to_returns_live_vacant_rows(pool: PgPool)
             status: "SOLD_OUT",
             legal_deadline: 0, // unset = window open
             developer_lawyer: vacant,
+            // The SPV seat is filled: a vacant dev seat is not self-claimable, so this
+            // row leaves the feed now ADR-45 reads the SPV seat only.
             spv_lawyer: other,
         },
         LawyerListingSeed {
@@ -716,7 +747,8 @@ async fn listings_filter_by_assignable_to_returns_live_vacant_rows(pool: PgPool)
             pubkey: [13; 32],
             listing_id: 13,
             slot: 113,
-            status: "LISTED", // live, not sold out yet — INCLUDED since ADR-44
+            // Live, SPV created, both seats vacant — INCLUDED.
+            status: "LISTED",
             legal_deadline: 0,
             developer_lawyer: vacant,
             spv_lawyer: vacant,
@@ -790,7 +822,41 @@ async fn listings_filter_by_assignable_to_returns_live_vacant_rows(pool: PgPool)
     ];
     for seed in &seeds {
         seed_lawyer_listing(&pool, seed).await;
+        // Every row's asset exists with the SPV created, so each exclusion below can
+        // only trip on the arm it is meant to pin — the EXISTS gate is never the accident.
+        seed_spv_asset(&pool, seed.listing_id, true).await;
     }
+    // ADR-45's two SPV-existence gates, pinned explicitly:
+    seed_lawyer_listing(
+        &pool,
+        &LawyerListingSeed {
+            pubkey: [21; 32],
+            listing_id: 21,
+            slot: 121,
+            status: "LISTED",
+            legal_deadline: 0,
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+    )
+    .await;
+    // The asset row exists but its SPV was never created (`claim_spv_case` not yet run,
+    // the on-chain `SpvNotCreated` rejection) — out.
+    seed_spv_asset(&pool, 21, false).await;
+    seed_lawyer_listing(
+        &pool,
+        &LawyerListingSeed {
+            pubkey: [22; 32],
+            listing_id: 22,
+            slot: 122,
+            status: "SOLD_OUT",
+            legal_deadline: 0,
+            developer_lawyer: vacant,
+            spv_lawyer: vacant,
+        },
+    )
+    .await;
+    // ...and row 22 has NO asset row at all — the EXISTS probe finds nothing, out.
 
     let (ids, total) = run_listings_query(
         &pool,
@@ -801,12 +867,15 @@ async fn listings_filter_by_assignable_to_returns_live_vacant_rows(pool: PgPool)
     )
     .await;
     // No notification rows seeded: sold-out recency is all NULLS LAST, so the listing
-    // slot tiebreak orders the live rows 13, 11, 10 — the ADR-44 widening puts the LISTED
-    // row 13 in, at the top.
-    assert_eq!(ids, ["13", "11", "10"]);
-    assert_eq!(total, 3);
-    // Belt and braces: no terminal/settled or PENDING_ASSETS row leaked into the page.
-    for excluded in ["12", "14", "15", "16", "17", "18", "19", "20"] {
+    // slot tiebreak orders the two open-SPV rows 13, 11. Row 10's vacant DEV seat no
+    // longer counts (ADR-45), and neither do the two SPV-uncreated rows.
+    assert_eq!(ids, ["13", "11"]);
+    assert_eq!(total, 2);
+    // Belt and braces: no filled-SPV-seat, SPV-uncreated, lapsed-deadline, terminal/
+    // settled or PENDING_ASSETS row leaked into the page.
+    for excluded in [
+        "10", "12", "14", "15", "16", "17", "18", "19", "20", "21", "22",
+    ] {
         assert!(
             !ids.contains(&excluded.to_owned()),
             "id {excluded} leaked in"
@@ -814,8 +883,11 @@ async fn listings_filter_by_assignable_to_returns_live_vacant_rows(pool: PgPool)
     }
 }
 
-/// A lawyer never sees their OWN listings in the vacancy feed: a seat they already occupy
-/// excludes the row for them, but not for a lawyer in neither seat.
+/// A lawyer never sees their OWN listings in the vacancy feed: a lawyer who already
+/// occupies either seat (the developer-seat arm mirrors the chain's `ConflictOfInterest`
+/// rejection) excludes the row for themselves, but not for a lawyer in neither seat. The
+/// listing carries an SPV-created asset so the feed-visible-for-others half of the test
+/// pins the seat exclusion, not the ADR-45 EXISTS gate.
 #[sqlx::test(migrations = "../../migrations")]
 async fn listings_assignable_to_excludes_lawyers_own_listings(pool: PgPool) {
     let lawyer_a = [20u8; 32];
@@ -833,6 +905,7 @@ async fn listings_assignable_to_excludes_lawyers_own_listings(pool: PgPool) {
         },
     )
     .await;
+    seed_spv_asset(&pool, 20, true).await;
 
     let (_ids, total) = run_listings_query(
         &pool,
@@ -860,7 +933,10 @@ async fn listings_assignable_to_excludes_lawyers_own_listings(pool: PgPool) {
 /// `sold_out_notifications` coordinate slot DESC, NULLS LAST (a listing whose sold-out
 /// event was never recorded sorts behind every recorded one — and behind it any ADR-44
 /// live LISTED row, which has no notification at all), then the listing mirror
-/// slot and pubkey as tiebreaks. The default ordering is untouched without the argument.
+/// slot and pubkey as tiebreaks. Under ADR-45 every row must also be feed-eligible to
+/// appear at all (open SPV seat + SPV-created asset), so all four rows are seeded that
+/// way and only the ordering is under test. The default ordering is untouched without
+/// the argument.
 #[sqlx::test(migrations = "../../migrations")]
 async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
     let vacant = [0u8; 32];
@@ -871,17 +947,23 @@ async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
         slot,
         status: "SOLD_OUT",
         legal_deadline: 0,
-        developer_lawyer: vacant,
-        spv_lawyer: other,
+        // ADR-45 reads the SPV seat only, so the dev seat is filled (by nobody
+        // asking) and the SPV seat is the vacant one these rows are feed candidates on.
+        developer_lawyer: other,
+        spv_lawyer: vacant,
     };
     // Mirror slots deliberately disagree with the sold-out slots: a plain slot-DESC
-    // ordering would return 32, 30, 31.
+    // ordering would return 32, 30, 31. Every row's asset has the SPV created, so the
+    // ADR-45 EXISTS gate stays out of this ordering test's way.
     seed_lawyer_listing(&pool, &seed(40, 30, 300)).await;
     seed_lawyer_listing(&pool, &seed(41, 31, 200)).await;
     seed_lawyer_listing(&pool, &seed(42, 32, 400)).await; // never recorded sold-out
     seed_sold_out_notification(&pool, &[40u8; 32], 30, 100).await;
     seed_sold_out_notification(&pool, &[41u8; 32], 31, 200).await;
-    // ADR-44: a live LISTED row belongs in the feed too. With no sold-out notification
+    for listing_id in [30i64, 31, 32] {
+        seed_spv_asset(&pool, listing_id, true).await;
+    }
+    // A live LISTED row belongs in the feed too (ADR-44). With no sold-out notification
     // row it joins the NULLS-LAST group, ordered by its listing slot among the other
     // unrecorded rows — even when its mirror slot is the HIGHEST of the whole page.
     seed_lawyer_listing(
@@ -892,11 +974,12 @@ async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
             slot: 500,
             status: "LISTED",
             legal_deadline: 0,
-            developer_lawyer: vacant,
-            spv_lawyer: other,
+            developer_lawyer: other,
+            spv_lawyer: vacant,
         },
     )
     .await;
+    seed_spv_asset(&pool, 33, true).await;
 
     let (ids, total) = run_listings_query(
         &pool,

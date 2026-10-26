@@ -1562,3 +1562,49 @@ in, both-seats-filled and lapsed-deadline out, plus explicit seeds for every
 terminal/settled status and PENDING_ASSETS staying out) and
 `listings_assignable_to_orders_by_sold_out_slot_desc` (extended with a higher-slot LISTED
 row sorting behind the notification-recorded sold-outs).
+
+## ADR-45: `listings(assignableTo:)` refined to the open-SPV-job feed
+
+**Context.** The product owner narrowed the lawyer page's "Newly listed" definition to
+the work a lawyer can actually self-claim, which is the SPV-lawyer job: only the SPV
+side ever fills the `spv_lawyer` seat, the claim path runs through `claim_spv_case`
+and hard-rejects with `SpvNotCreated` while the property's SPV is uncreated, and the
+developer seat is exclusively the developer's to fill (`assign_developer_lawyer`).
+ADR-44's either-seat vacancy therefore over-included two dead-end classes: rows whose
+only vacant seat is the developer's — unclaimable by the reading lawyer, ever — and
+rows whose asset SPV was never created, which reject on chain the moment anyone taps
+them. A feed that shows work that cannot be claimed is noise at best and a broken
+first impression of the lawyer page at worst.
+
+**Decision.** Refine the `assignableTo` predicate in both the page and count queries of
+the `listings` resolver (`crates/api/src/graphql/programs/marketplace.rs`), keeping the
+pair byte-identical modulo the `l.` / `marketplace_listing` outer aliasing per the
+house invariant: the status pair `status IN ('LISTED', 'SOLD_OUT')`, the legal-window
+arm (`legal_deadline = 0` or in the future, same bound wall clock) and both
+not-the-asking-lawyer exclusions are unchanged — the developer-seat exclusion mirrors
+the chain's `ConflictOfInterest` rejection, the SPV-seat one keeps the degenerate
+asking==sentinel case empty. The vacancy arm narrows from
+`developer_lawyer = VACANT OR spv_lawyer = VACANT` to `spv_lawyer = VACANT` (the SPV
+seat only), and both statements gain
+`EXISTS (SELECT 1 FROM marketplace_property_asset AS spa WHERE spa.asset_id = <outer>.asset_id AND spa.spv_created)` —
+the `claim_spv_case` gate, correlated over the `asset_id` index 0009 already ships
+(`idx_mkt_property_asset_id`). ORDER BY (ADR-43's sold-out recency then listing
+recency), arguments and defaults are unchanged, so 0019's `sold_out_notifications`
+index keeps its job; nothing else about the query moves.
+
+**Consequences.** Supersedes ADR-44's predicate bullets: the status pair, legal window
+and exclusion arms stand exactly as ADR-44 wrote them, only the vacancy arm and the
+new EXISTS gate change; the ordering and the 0019 index survive unchanged. No
+migration ships — both new probes ride indexes that already exist (`idx_mkt_property_asset_id`
+for the EXISTS, `sold_out_notifications_listing_idx` for the ORDER BY join), so the
+change deploys safely before or after any indexer deploy. The result set strictly
+narrows versus ADR-44 (same arguments, same shape): deployed clients see a smaller,
+fully claimable feed. Tests: `listings_filter_by_assignable_to_returns_live_vacant_rows`
+is reworked and renamed `listings_filter_by_assignable_to_returns_open_spv_rows` — it
+now seeds property assets, and pins the dev-seat-only row out, the `spv_created=false`
+row out, and the missing-asset-row case out, with the terminal/settled and
+PENDING_ASSETS exclusions kept; `listings_assignable_to_orders_by_sold_out_slot_desc`
+seeds its four rows feed-eligible (open SPV seats, created SPVs) so only ordering is
+under test; `listings_assignable_to_excludes_lawyers_own_listings` gained an
+SPV-created asset so its feed-visible-for-others half pins the seat exclusion, not the
+EXISTS gate. `listings_filter_by_assigned_lawyer_matches_both_slots` is untouched.
