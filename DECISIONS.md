@@ -1608,3 +1608,65 @@ seeds its four rows feed-eligible (open SPV seats, created SPVs) so only orderin
 under test; `listings_assignable_to_excludes_lawyers_own_listings` gained an
 SPV-created asset so its feed-visible-for-others half pins the seat exclusion, not the
 EXISTS gate. `listings_filter_by_assigned_lawyer_matches_both_slots` is untouched.
+
+## ADR-46: Lawyer claim history and exact claim eligibility in `listings`
+
+**Context.** A successful `claim_spv_case` creates a candidacy but leaves the SPV-lawyer
+seat vacant until an election is won. ADR-45's vacancy-only `assignableTo` feed therefore
+continued showing a property to a lawyer who had already claimed it, while the lawyer
+page had no property-shaped feed of their own claims. The vacancy predicate also omitted
+other chain gates: SOLD_OUT status, lawyer role compliance, registry region, account
+lifecycle, election window, and candidate cap. Filtering after pagination would produce
+short pages and incorrect counts, and a separate candidacy query would over-fetch.
+
+**Decision.** Add optional base58 `claimedBy` to `listings`, implemented as an `EXISTS`
+on `marketplace_lawyer_candidacy (lawyer, listing_id)` with no active/round restriction:
+all successful claim attempts remain visible, closed candidacies included, and repeated
+rounds cannot duplicate a listing. Tighten `assignableTo` in both page and count queries
+to mirror `claim_spv_case`: live listing/asset/registry, SOLD_OUT, `now <= legal_deadline`,
+created SPV, vacant SPV seat, no developer-lawyer conflict, an active compliant Lawyer
+role in the property's region, an unstarted or open election below five candidates, and
+`NOT EXISTS` for the asking wallet's own candidacy in any round. Other lawyers' claims do
+not directly exclude a listing. Migration 0020 adds `(lawyer, listing_id)` index support;
+the new role predicate binds the original base58 wallet because the role view stores text.
+
+**Consequences.** The app gets correct server-side pages and totals for "Newly listed" and
+"Claimed" with one property-shaped query each. The result of `assignableTo` narrows again;
+other `listings` arguments and default ordering remain unchanged. `claimedBy` is additive.
+Claim history includes older rounds even when a new claim would be possible, deliberately
+keeping every attempted claim out of Newly listed and in Claimed. Tests pin distinct claim
+history, closed candidacies, per-wallet exclusion with competing lawyers, exact chain
+eligibility, page counts, and unchanged default ordering.
+
+## ADR-47: The existing SPV-candidacy event also drives per-lawyer terms buckets
+
+**Context.** ADR-37 made `claim_spv_case` a durable, transaction-scoped
+`spv_case_claimed` event for the one-per-round voting announcement. The legal workflow now also
+needs a separate discussion bucket for every lawyer candidacy, with the property's claimed-token
+holders, the lawyer, an operator admin, real X25519 key sharing, and the lawyer's terms PDF. The
+existing payload already carries the exact on-chain identity required — property id, round,
+lawyer wallet, listing/property PDAs, and candidacy PDA — and confirmed failed transactions never
+reach the mapper. Holder wallets can be enumerated from the mirror, but their X25519 keys and the
+PDF live only in the profile system, so a second event or a richer chain payload would duplicate
+the same boundary without adding evidence.
+
+**Decision.** Reuse the mapper, payload, outbox, and `SPV_CASE_CLAIMED_WEBHOOK_URL` unchanged. The
+route carries the existing shared `?secret=` because the consumer now performs privileged writes.
+The ProfileApi consumer creates one deterministic `spv-lawyer-terms` bucket per property/candidacy,
+installs its configured admin plus holder/lawyer contributor and viewer memberships, generates a
+fresh X25519 keypair, sends a general-JWE key-sharing document whose private JWK is wrapped for each
+holder/lawyer viewer key, then sends the admin's exact voting prompt and a per-candidacy PDF
+snapshot reference, and preserves ADR-37's existing legal-process voting announcement. The consumer
+resolves positive share holdings, profile X25519 keys, and current PDF bytes downstream; all
+new-bucket writes are atomic and deterministic lookup makes at-least-once redelivery reuse the
+completed bucket and snapshot. No Indexer schema, migration, decoder, configuration, or
+emitted-event change ships.
+
+**Consequences.** Different lawyers in one round get independent encrypted buckets and documents
+while the legacy round announcement remains deduplicated. Missing namespace, holder state, PDF, or
+required viewer keys produces a non-2xx consumer response so the existing outbox retries; a terms
+bucket that committed before a missing legacy legal bucket is not recreated on the next delivery.
+The Indexer's contract remains faithful on-chain evidence, with off-chain identity and document
+versioning explicitly downstream. The existing
+`claim_spv_case_emits_the_spv_case_claimed_event` test remains the producer-side proof, and the
+consumer's webhook suites pin setup, message order, membership, encryption, failures, and retries.

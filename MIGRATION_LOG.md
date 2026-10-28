@@ -2082,3 +2082,55 @@ scripts/lint-migrations.sh`, `cargo fmt && cargo fmt --check`, `cargo clippy
 --locked`, `cargo test --workspace --locked`, `cargo sqlx prepare --check` (api) — all
 green. No migration, so `verify-devnet.sh` (the from-zero migration gate) was not
 re-run.
+
+## API: lawyer claim history and exact claim eligibility (ADR-46) — 2026-10-27
+
+**Why**: claiming an SPV case creates a candidacy without filling the lawyer seat, so the
+vacancy-only Newly listed feed kept showing a lawyer's own claims. The lawyer page also
+needed a paginated Claimed feed, and the vacancy predicate omitted several on-chain
+`claim_spv_case` eligibility gates.
+
+**What**: `listings` gains `claimedBy`, an `EXISTS` over all candidacy history for the
+wallet/listing pair, including closed rows and older rounds. `assignableTo` now mirrors
+the chain's lifecycle, role, region, deadline, election, candidate-cap, seat, and
+conflict gates and excludes the asking wallet's own claim history with `NOT EXISTS`.
+Both page and count queries carry identical predicates. Migration **0020** adds
+`idx_mkt_candidacy_lawyer_listing` on `(lawyer, listing_id)`; the API docs and both
+`.sqlx` listing query cache entries are updated in lockstep.
+
+**Verification**: TDD — five focused listing tests failed against the old API/SQL for
+unknown `claimedBy`, own-claim leakage, LISTED inclusion, and missing eligibility gates;
+all eight focused listing tests then passed. New coverage pins repeated and closed claim
+history without duplicates, competing lawyers, compliant roles, matching regions,
+account closure, election windows, candidate caps, and page totals. `cargo fmt &&
+cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`SQLX_OFFLINE=true cargo build --workspace --locked`, all 275 workspace tests, both
+`cargo sqlx prepare --check` commands, and `scripts/lint-migrations.sh` passed.
+`scripts/agent/verify-devnet.sh` ended `VERIFY OK: 5 programs, 244 instructions, 5
+snapshots, 5 deploy boundaries, 0 chain upgrades`; the program-upgrade check found all
+five deployed programs unchanged.
+
+## Webhooks: per-candidacy encrypted lawyer-terms buckets (ADR-47) — 2026-10-27
+
+**Why**: every successful `claim_spv_case` needs a lawyer-specific property-namespace bucket with
+operator administration, claimed-token-holder and lawyer write/read membership, immediate X25519
+communication, an admin voting prompt, and the lawyer's terms PDF. ADR-37's existing event already
+carries all available on-chain evidence, so a second trigger would only duplicate delivery.
+
+**What**: no Indexer code or schema changed. The `spv_case_claimed` mapper payload, durable outbox,
+route, and deployment wiring are reused; ADR-47 records the richer downstream consumer contract and
+`docs/deployment.md` adds the required shared-secret query parameter to the existing route.
+XcavateProfileApi authenticates the event, creates the atomic per-candidacy bucket, distributes the
+private bucket JWK only as recipient-wrapped JWE ciphertext, and snapshots the PDF under an
+immutable per-candidacy key, while preserving the existing one-per-round JSON voting announcement
+in the legal-process bucket. Holder X25519 resolution and PDF retrieval remain off-chain concerns.
+No migration ships.
+
+**Verification**: the existing Indexer
+`claim_spv_case_emits_the_spv_case_claimed_event` test passed; the full Indexer workspace passed
+275/275, with `cargo fmt --check`, migration lint, and the locked offline workspace build green.
+ProfileApi's post-review solution run passed 567/567: 490 bucket/domain/webhook tests (including
+five protocol and seventeen lawyer-terms webhook cases), 51 live REST tests against the real API,
+and 26 Solana-client tests. Security regression tests pin recipient-only JWE unwrapping,
+nonrecipient rejection, missing/wrong/unconfigured webhook secrets without side effects, and
+immutable PDF bytes after a later lawyer re-upload. Compose and deployment YAML validation passed.

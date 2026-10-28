@@ -590,13 +590,11 @@ impl QueryRoot {
     /// marketplace page's state checkboxes. `statuses` is the plain multi-status match from
     /// the first cut of ADR-39, kept for the clients built against it; an empty list of
     /// either matches nothing, an absent argument switches that filter off.
-    /// `assignedLawyer` / `assignableTo` (ADR-43, refined by ADR-45) are the
-    /// lawyer-directory filters, both taking a Base58 lawyer wallet:
-    /// `assignedLawyer` matches a lawyer in EITHER seat (the "Under Instruction" list);
-    /// `assignableTo` is the "Newly listed" vacancy feed — live listings (LISTED or
-    /// SOLD_OUT with the legal window still open) whose SPV has been created and whose
-    /// SPV-lawyer seat is still vacant, that do not already have this lawyer in either
-    /// slot. Ordered by sold-out recency, then listing recency.
+    /// `assignedLawyer`, `assignableTo`, and `claimedBy` are the lawyer-directory
+    /// filters, each taking a Base58 lawyer wallet. `assignedLawyer` matches either
+    /// lawyer seat. `assignableTo` matches only listings where claim_spv_case can
+    /// currently succeed for that wallet, excluding its own claim history. `claimedBy`
+    /// matches listings with any candidacy by that wallet, including closed rounds.
     #[allow(clippy::too_many_arguments)]
     async fn listings(
         context: &GraphQLContext,
@@ -608,6 +606,7 @@ impl QueryRoot {
         active: Option<bool>,
         assigned_lawyer: Option<String>,
         assignable_to: Option<String>,
+        claimed_by: Option<String>,
         first: Option<i32>,
         offset: Option<i32>,
     ) -> FieldResult<programs::marketplace::ListingConnection> {
@@ -621,6 +620,7 @@ impl QueryRoot {
             active,
             assigned_lawyer,
             assignable_to,
+            claimed_by,
             first,
             offset,
         )

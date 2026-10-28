@@ -280,6 +280,56 @@ async fn seed_spv_asset(pool: &PgPool, asset_id: i64, spv_created: bool) {
     .expect("seed marketplace_property_asset");
 }
 
+async fn seed_lawyer_registry(pool: &PgPool, lawyer: &[u8], region_id: i32) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_lawyer
+               (pubkey, slot, lamports, lawyer, region_id, deposit, active_cases, bump)
+           VALUES ($1, 100, 1000000, $1, $2, 0, 0, 255)"#,
+    )
+    .bind(lawyer)
+    .bind(region_id)
+    .execute(pool)
+    .await
+    .expect("seed marketplace_lawyer");
+}
+
+async fn seed_lawyer_role(pool: &PgPool, lawyer: &[u8], permission: &str) {
+    let lawyer = bs58::encode(lawyer).into_string();
+    let id = format!("lawyer-role-{lawyer}");
+    sqlx::query(
+        r#"INSERT INTO whitelist_actions
+               (id, type, subject, role, permission, actor, slot, block_time,
+                tx_signature, instruction_index)
+           VALUES ($1, 'ROLE_ASSIGNED', $2, 'LAWYER', NULL, $2, 100,
+                   now(), $1, '0')"#,
+    )
+    .bind(&id)
+    .bind(&lawyer)
+    .execute(pool)
+    .await
+    .expect("seed lawyer role");
+    if permission != "COMPLIANT" {
+        sqlx::query(
+            r#"INSERT INTO whitelist_actions
+                   (id, type, subject, role, permission, actor, slot, block_time,
+                    tx_signature, instruction_index)
+               VALUES ($1, 'PERMISSION_UPDATED', $2, 'LAWYER', $3, $2, 101,
+                       now(), $1, '0')"#,
+        )
+        .bind(format!("{id}-permission"))
+        .bind(&lawyer)
+        .bind(permission)
+        .execute(pool)
+        .await
+        .expect("seed lawyer permission");
+    }
+}
+
+async fn seed_claimable_lawyer(pool: &PgPool, lawyer: &[u8]) {
+    seed_lawyer_registry(pool, lawyer, 1).await;
+    seed_lawyer_role(pool, lawyer, "COMPLIANT").await;
+}
+
 /// ADR-31: the mirrored 720x720 JPEGs are served as `metadata.propertyImageThumbnails`,
 /// in `image_index` order — uploaded rows only, and rows past the metadata document's
 /// current `propertyImages` array length are dropped as stale (0016).
@@ -590,11 +640,9 @@ async fn listings_filter_by_feed_state_partitions_every_listing(pool: PgPool) {
 }
 
 // ============================================================================================
-// ADR-43 (widened by ADR-44, refined by ADR-45): the lawyer-directory filters —
-// `assignedLawyer` (the "Under Instruction" list) and `assignableTo` (the "Newly listed"
-// vacancy feed: live listings whose SPV has been created and whose SPV-lawyer seat is
-// still vacant). Both take a base58 pubkey and compose by AND with every existing filter;
-// absent = filter off.
+// ADR-46: the lawyer-directory filters — assigned seats, currently valid claim targets,
+// and all own claim history. Each takes a base58 pubkey, composes by AND with every
+// existing filter, and is off when absent.
 // ============================================================================================
 
 /// Decode the `listings { totalCount, nodes { listingId } }` response shape the lawyer
@@ -693,14 +741,90 @@ async fn listings_filter_by_assigned_lawyer_matches_both_slots(pool: PgPool) {
     assert_eq!(total, 2);
 }
 
-/// The `assignableTo` vacancy feed (ADR-45): live rows — LISTED, or SOLD_OUT with the
-/// legal window still open (`legal_deadline` unset or in the future) — whose SPV EXISTS
-/// (`property_asset.spv_created`, the on-chain `claim_spv_case` / `SpvNotCreated` gate)
-/// and whose SPV-lawyer seat is still vacant. A vacant DEV seat is not self-claimable
-/// (only the developer's `assign_developer_lawyer` fills it), so either-seat vacancy is
-/// gone; SPV-uncreated rows (flag false, or the asset row missing entirely) and
-/// lapsed-deadline rows stay out, as do the terminal/settled statuses (LEGAL, FINALIZED,
-/// EXPIRED, CANCELLED, REFUNDING) and PENDING_ASSETS.
+#[sqlx::test(migrations = "../../migrations")]
+async fn listings_filter_by_claimed_by_returns_distinct_claim_history(pool: PgPool) {
+    for (byte, listing_id) in [(1u8, 1i64), (2, 2), (3, 3)] {
+        seed_lawyer_listing(
+            &pool,
+            &LawyerListingSeed {
+                pubkey: [byte; 32],
+                listing_id,
+                slot: 100 + listing_id,
+                status: "SOLD_OUT",
+                legal_deadline: 0,
+                developer_lawyer: [31; 32],
+                spv_lawyer: [0; 32],
+            },
+        )
+        .await;
+    }
+    seed_lawyer_candidacy(&pool, &[10; 32], 1, 1, 201, &[20; 32], 0).await;
+    seed_lawyer_candidacy(&pool, &[11; 32], 1, 2, 202, &[20; 32], 0).await;
+    seed_lawyer_candidacy(&pool, &[12; 32], 2, 1, 203, &[20; 32], 0).await;
+    seed_lawyer_candidacy(&pool, &[13; 32], 3, 1, 204, &[21; 32], 0).await;
+    sqlx::query("UPDATE marketplace_lawyer_candidacy SET closed_at_slot = 205 WHERE pubkey = $1")
+        .bind([12u8; 32])
+        .execute(&pool)
+        .await
+        .expect("close candidacy");
+
+    let (ids, total) = run_listings_query(
+        &pool,
+        &format!(
+            r#"{{ listings(claimedBy: "{}", first: 10) {{ totalCount nodes {{ listingId }} }} }}"#,
+            b58key(20),
+        ),
+    )
+    .await;
+
+    assert_eq!(ids, ["2", "1"]);
+    assert_eq!(total, 2);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn listings_assignable_to_excludes_only_asking_lawyers_claims(pool: PgPool) {
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 1_000_000;
+    seed_lawyer_listing(
+        &pool,
+        &LawyerListingSeed {
+            pubkey: [4; 32],
+            listing_id: 4,
+            slot: 104,
+            status: "SOLD_OUT",
+            legal_deadline: future,
+            developer_lawyer: [31; 32],
+            spv_lawyer: [0; 32],
+        },
+    )
+    .await;
+    seed_spv_asset(&pool, 4, true).await;
+    for byte in [20u8, 21, 22] {
+        seed_claimable_lawyer(&pool, &[byte; 32]).await;
+    }
+    seed_lawyer_candidacy(&pool, &[14; 32], 4, 1, 201, &[20; 32], 0).await;
+    seed_lawyer_candidacy(&pool, &[15; 32], 4, 1, 202, &[21; 32], 0).await;
+
+    for (asker, expected_total) in [(20u8, 0), (21, 0), (22, 1)] {
+        let (ids, total) = run_listings_query(
+            &pool,
+            &format!(
+                r#"{{ listings(assignableTo: "{}", first: 10) {{ totalCount nodes {{ listingId }} }} }}"#,
+                b58key(asker),
+            ),
+        )
+        .await;
+        assert_eq!(total, expected_total, "asker {asker}");
+        assert_eq!(ids.len(), expected_total as usize, "asker {asker}");
+    }
+}
+
+/// The `assignableTo` feed (ADR-46) requires SOLD_OUT, an open legal window, a
+/// created SPV, and a vacant SPV-lawyer seat. Every terminal/settled status and
+/// PENDING_ASSETS stays out alongside SPV-uncreated and expired rows.
 #[sqlx::test(migrations = "../../migrations")]
 async fn listings_filter_by_assignable_to_returns_open_spv_rows(pool: PgPool) {
     let now = std::time::SystemTime::now()
@@ -747,7 +871,7 @@ async fn listings_filter_by_assignable_to_returns_open_spv_rows(pool: PgPool) {
             pubkey: [13; 32],
             listing_id: 13,
             slot: 113,
-            // Live, SPV created, both seats vacant — INCLUDED.
+            // The claim instruction rejects listings that have not sold out.
             status: "LISTED",
             legal_deadline: 0,
             developer_lawyer: vacant,
@@ -763,8 +887,7 @@ async fn listings_filter_by_assignable_to_returns_open_spv_rows(pool: PgPool) {
             spv_lawyer: vacant,
         },
         // Terminal/settled and not-yet-live statuses: vacant seats and an open legal
-        // window change nothing — the status list excludes them (ADR-44 widened the feed
-        // to LISTED + SOLD_OUT only, never past-sale or pre-listing states).
+        // window change nothing — claim_spv_case accepts SOLD_OUT only.
         LawyerListingSeed {
             pubkey: [15; 32],
             listing_id: 15,
@@ -857,6 +980,7 @@ async fn listings_filter_by_assignable_to_returns_open_spv_rows(pool: PgPool) {
     )
     .await;
     // ...and row 22 has NO asset row at all — the EXISTS probe finds nothing, out.
+    seed_claimable_lawyer(&pool, &[30; 32]).await;
 
     let (ids, total) = run_listings_query(
         &pool,
@@ -866,15 +990,12 @@ async fn listings_filter_by_assignable_to_returns_open_spv_rows(pool: PgPool) {
         ),
     )
     .await;
-    // No notification rows seeded: sold-out recency is all NULLS LAST, so the listing
-    // slot tiebreak orders the two open-SPV rows 13, 11. Row 10's vacant DEV seat no
-    // longer counts (ADR-45), and neither do the two SPV-uncreated rows.
-    assert_eq!(ids, ["13", "11"]);
-    assert_eq!(total, 2);
+    assert_eq!(ids, ["11"]);
+    assert_eq!(total, 1);
     // Belt and braces: no filled-SPV-seat, SPV-uncreated, lapsed-deadline, terminal/
     // settled or PENDING_ASSETS row leaked into the page.
     for excluded in [
-        "10", "12", "14", "15", "16", "17", "18", "19", "20", "21", "22",
+        "10", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22",
     ] {
         assert!(
             !ids.contains(&excluded.to_owned()),
@@ -892,6 +1013,11 @@ async fn listings_filter_by_assignable_to_returns_open_spv_rows(pool: PgPool) {
 async fn listings_assignable_to_excludes_lawyers_own_listings(pool: PgPool) {
     let lawyer_a = [20u8; 32];
     let vacant = [0u8; 32];
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 1_000_000;
     seed_lawyer_listing(
         &pool,
         &LawyerListingSeed {
@@ -899,13 +1025,15 @@ async fn listings_assignable_to_excludes_lawyers_own_listings(pool: PgPool) {
             listing_id: 20,
             slot: 120,
             status: "SOLD_OUT",
-            legal_deadline: 0,
+            legal_deadline: future,
             developer_lawyer: lawyer_a, // A holds the developer seat; SPV seat is free
             spv_lawyer: vacant,
         },
     )
     .await;
     seed_spv_asset(&pool, 20, true).await;
+    seed_claimable_lawyer(&pool, &lawyer_a).await;
+    seed_claimable_lawyer(&pool, &[21; 32]).await;
 
     let (_ids, total) = run_listings_query(
         &pool,
@@ -930,42 +1058,34 @@ async fn listings_assignable_to_excludes_lawyers_own_listings(pool: PgPool) {
 }
 
 /// With `assignableTo` the ordering switches to SOLD-OUT RECENCY: the
-/// `sold_out_notifications` coordinate slot DESC, NULLS LAST (a listing whose sold-out
-/// event was never recorded sorts behind every recorded one — and behind it any ADR-44
-/// live LISTED row, which has no notification at all), then the listing mirror
-/// slot and pubkey as tiebreaks. Under ADR-45 every row must also be feed-eligible to
-/// appear at all (open SPV seat + SPV-created asset), so all four rows are seeded that
-/// way and only the ordering is under test. The default ordering is untouched without
-/// the argument.
+/// `sold_out_notifications` coordinate slot DESC, NULLS LAST, then the listing mirror
+/// slot and pubkey as tiebreaks. The default ordering is untouched without the argument.
 #[sqlx::test(migrations = "../../migrations")]
 async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
     let vacant = [0u8; 32];
     let other = [31u8; 32];
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 1_000_000;
     let seed = |byte: u8, listing_id: i64, slot: i64| LawyerListingSeed {
         pubkey: [byte; 32],
         listing_id,
         slot,
         status: "SOLD_OUT",
-        legal_deadline: 0,
-        // ADR-45 reads the SPV seat only, so the dev seat is filled (by nobody
-        // asking) and the SPV seat is the vacant one these rows are feed candidates on.
+        legal_deadline: future,
         developer_lawyer: other,
         spv_lawyer: vacant,
     };
-    // Mirror slots deliberately disagree with the sold-out slots: a plain slot-DESC
-    // ordering would return 32, 30, 31. Every row's asset has the SPV created, so the
-    // ADR-45 EXISTS gate stays out of this ordering test's way.
     seed_lawyer_listing(&pool, &seed(40, 30, 300)).await;
     seed_lawyer_listing(&pool, &seed(41, 31, 200)).await;
-    seed_lawyer_listing(&pool, &seed(42, 32, 400)).await; // never recorded sold-out
+    seed_lawyer_listing(&pool, &seed(42, 32, 400)).await;
     seed_sold_out_notification(&pool, &[40u8; 32], 30, 100).await;
     seed_sold_out_notification(&pool, &[41u8; 32], 31, 200).await;
     for listing_id in [30i64, 31, 32] {
         seed_spv_asset(&pool, listing_id, true).await;
     }
-    // A live LISTED row belongs in the feed too (ADR-44). With no sold-out notification
-    // row it joins the NULLS-LAST group, ordered by its listing slot among the other
-    // unrecorded rows — even when its mirror slot is the HIGHEST of the whole page.
     seed_lawyer_listing(
         &pool,
         &LawyerListingSeed {
@@ -973,13 +1093,14 @@ async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
             listing_id: 33,
             slot: 500,
             status: "LISTED",
-            legal_deadline: 0,
+            legal_deadline: future,
             developer_lawyer: other,
             spv_lawyer: vacant,
         },
     )
     .await;
     seed_spv_asset(&pool, 33, true).await;
+    seed_claimable_lawyer(&pool, &[30; 32]).await;
 
     let (ids, total) = run_listings_query(
         &pool,
@@ -989,13 +1110,9 @@ async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
         ),
     )
     .await;
-    // Recorded sold-outs by notification slot (31@200, 30@100), then the NULLS-LAST group
-    // by listing slot: the LISTED 33 (500) ahead of the never-recorded 32 (400).
-    assert_eq!(ids, ["31", "30", "33", "32"]);
-    assert_eq!(total, 4);
+    assert_eq!(ids, ["31", "30", "32"]);
+    assert_eq!(total, 3);
 
-    // No argument: the default `slot DESC, pubkey ASC` ordering, notification-free — the
-    // LISTED row rides along (no status filter), at the top on its higher mirror slot.
     let (ids, total) = run_listings_query(
         &pool,
         r#"{ listings(first: 10) { totalCount nodes { listingId } } }"#,
@@ -1003,6 +1120,105 @@ async fn listings_assignable_to_orders_by_sold_out_slot_desc(pool: PgPool) {
     .await;
     assert_eq!(ids, ["33", "32", "30", "31"]);
     assert_eq!(total, 4);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn listings_assignable_to_enforces_claim_spv_case_eligibility(pool: PgPool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let future = now + 1_000_000;
+    let past = now - 1_000_000;
+    for (byte, listing_id, status, legal_deadline) in [
+        (40u8, 40i64, "SOLD_OUT", future),
+        (41, 41, "LISTED", future),
+        (42, 42, "SOLD_OUT", past),
+        (43, 43, "SOLD_OUT", future),
+        (44, 44, "SOLD_OUT", future),
+        (45, 45, "SOLD_OUT", future),
+        (46, 46, "SOLD_OUT", future),
+        (47, 47, "SOLD_OUT", future),
+        (48, 48, "SOLD_OUT", future),
+    ] {
+        seed_lawyer_listing(
+            &pool,
+            &LawyerListingSeed {
+                pubkey: [byte; 32],
+                listing_id,
+                slot: 100 + listing_id,
+                status,
+                legal_deadline,
+                developer_lawyer: [31; 32],
+                spv_lawyer: [0; 32],
+            },
+        )
+        .await;
+        seed_spv_asset(&pool, listing_id, true).await;
+    }
+    seed_claimable_lawyer(&pool, &[30; 32]).await;
+    sqlx::query("UPDATE marketplace_listing SET closed_at_slot = 500 WHERE listing_id = 43")
+        .execute(&pool)
+        .await
+        .expect("close listing");
+    sqlx::query("UPDATE marketplace_property_asset SET closed_at_slot = 500 WHERE asset_id = 44")
+        .execute(&pool)
+        .await
+        .expect("close asset");
+    for (listing_id, expiry, candidate_count) in [
+        (45, past, 1),
+        (46, future, 5),
+        (47, future, 4),
+        (48, future, 1),
+    ] {
+        sqlx::query(
+            "UPDATE marketplace_listing SET spv_election_round = 1, spv_election_expiry = $1, spv_election_candidate_count = $2 WHERE listing_id = $3",
+        )
+        .bind(expiry)
+        .bind(candidate_count)
+        .bind(listing_id)
+        .execute(&pool)
+        .await
+        .expect("set election");
+    }
+    seed_lawyer_candidacy(&pool, &[60; 32], 48, 1, 201, &[30; 32], 0).await;
+
+    let (ids, total) = run_listings_query(
+        &pool,
+        &format!(
+            r#"{{ listings(assignableTo: "{}", first: 10) {{ totalCount nodes {{ listingId }} }} }}"#,
+            b58key(30),
+        ),
+    )
+    .await;
+    assert_eq!(ids, ["47", "40"]);
+    assert_eq!(total, 2);
+
+    seed_lawyer_registry(&pool, &[51; 32], 1).await;
+    seed_lawyer_role(&pool, &[51; 32], "REVOKED").await;
+    seed_claimable_lawyer(&pool, &[52; 32]).await;
+    sqlx::query("UPDATE marketplace_lawyer SET region_id = 2 WHERE lawyer = $1")
+        .bind([52u8; 32])
+        .execute(&pool)
+        .await
+        .expect("change lawyer region");
+    seed_claimable_lawyer(&pool, &[53; 32]).await;
+    sqlx::query("UPDATE marketplace_lawyer SET closed_at_slot = 500 WHERE lawyer = $1")
+        .bind([53u8; 32])
+        .execute(&pool)
+        .await
+        .expect("close lawyer registry");
+    for asker in [50u8, 51, 52, 53] {
+        let (_ids, total) = run_listings_query(
+            &pool,
+            &format!(
+                r#"{{ listings(assignableTo: "{}", first: 10) {{ totalCount nodes {{ listingId }} }} }}"#,
+                b58key(asker),
+            ),
+        )
+        .await;
+        assert_eq!(total, 0, "asker {asker}");
+    }
 }
 
 // ============================================================================================
