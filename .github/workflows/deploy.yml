@@ -316,11 +316,9 @@ jobs:
 
       - name: Pull images and restart stack
         env:
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "$GHCR_PULL_TOKEN" ]; then
-            ssh deploy-target "echo '$GHCR_PULL_TOKEN' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
-          fi
+          printf '%s' "$GHCR_TOKEN" | ssh deploy-target "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
           ssh deploy-target "cd $DEPLOY_DIR && docker compose pull && docker compose up -d --remove-orphans"
           # Prometheus only reads its config/rule files at startup or on an explicit reload,
           # and `up -d` leaves the running container untouched when only the mounted files

@@ -2134,3 +2134,24 @@ five protocol and seventeen lawyer-terms webhook cases), 51 live REST tests agai
 and 26 Solana-client tests. Security regression tests pin recipient-only JWE unwrapping,
 nonrecipient rejection, missing/wrong/unconfigured webhook secrets without side effects, and
 immutable PDF bytes after a later lawyer re-upload. Compose and deployment YAML validation passed.
+
+## Deploy: authenticate GHCR pulls with the workflow token — 2026-10-28
+
+**Why**: the Hetzner deploy could build and push all three private GHCR images but failed to pull
+them on the server with `error from registry: denied`. That path depended on the optional
+`GHCR_PULL_TOKEN` PAT even though the same workflow already has a `GITHUB_TOKEN` with package
+access.
+
+**What**: the deploy job now always authenticates the server to GHCR with its `GITHUB_TOKEN`,
+piped through SSH to `docker login --password-stdin` rather than interpolated into the remote
+command. The separate PAT and its conditional login are removed, along with the obsolete secret
+setup row. No application, image, schema, or server-environment changes ship.
+
+**Verification**: the workflow regression check failed against the PAT-based configuration and
+passed after the change. An SSH stub executing the actual deploy step confirmed that the token
+reaches remote Docker on stdin and that `docker compose pull` remains in the restart sequence;
+`deploy.yml` also parsed successfully as YAML. Formatting, clippy, the locked offline build,
+migrations, both `sqlx` checks, migration lint, and all 275 workspace tests passed. Devnet
+verification ended `VERIFY OK: 5 programs, 250 instructions, 5 snapshots, 5 deploy boundaries,
+0 chain upgrades`; the program-upgrade check found all five deployed programs unchanged. A live
+deploy was not run from this branch.
