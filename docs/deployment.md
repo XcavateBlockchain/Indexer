@@ -65,7 +65,6 @@ edits on the server do not survive and are not a supported way to configure anyt
 | `ALCHEMY_API_KEY` | Alchemy key with Solana Devnet enabled (Yellowstone gRPC on a paid plan — see `MIGRATION_LOG.md`'s Phase 0 recon) |
 | `POSTGRES_PASSWORD` | Any strong password (stack-internal only) |
 | `GRAFANA_PASSWORD` | Grafana admin password. **Required** — the deploy fails fast if unset, because Grafana is published on `GRAFANA_PORT` and would otherwise fall back to `admin`/`admin`. |
-| `GHCR_PULL_TOKEN` | Optional: PAT with `read:packages`, only needed while the GHCR images are private. Alternatively make the packages public and omit this. |
 | `OBJECT_STORAGE_ENDPOINT` | Optional, part of the all-or-nothing image-mirror set (ADR-31) — see "Property image mirror" below for the five values |
 | `OBJECT_STORAGE_BUCKET` | Optional, all-or-nothing with the other four |
 | `OBJECT_STORAGE_REGION` | Optional, all-or-nothing with the other four |
@@ -126,8 +125,9 @@ What the workflow does:
    Grafana configs are bind-mounted rather than baked into an image, so they have to be on
    the server; `monitoring/` is replaced wholesale on each deploy, so deleting a file from
    the repo also removes it from the server.
-3. `docker compose pull && docker compose up -d --remove-orphans`, then verifies `api`'s
-   `/health` endpoint plus Prometheus and Grafana (checked in-network, via `docker compose
+3. Authenticates the server to GHCR with the deploy job's `GITHUB_TOKEN` (no separate pull PAT
+   is needed), runs `docker compose pull && docker compose up -d --remove-orphans`, then verifies
+   `api`'s `/health` endpoint plus Prometheus and Grafana (checked in-network, via `docker compose
    exec api curl ...`), and prunes old images.
 
 **Rollback (staying on the Carbon/Rust stack)**: fastest is on the server — edit `.env` to

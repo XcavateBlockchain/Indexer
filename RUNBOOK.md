@@ -5,6 +5,15 @@ mechanics, see [docs/deployment.md](docs/deployment.md) — this document assume
 already running and something needs investigating or fixing. For *why* things work this way,
 see [ARCHITECTURE.md](ARCHITECTURE.md) and [DECISIONS.md](DECISIONS.md).
 
+## Deploy fails with `error from registry: denied`
+
+The deploy job authenticates the Hetzner host to GHCR with its own `GITHUB_TOKEN` immediately
+before `docker compose pull`; no `GHCR_PULL_TOKEN` or other PAT needs configuring. If the login
+itself succeeds but all three private images are denied, confirm that the workflow still has
+`packages: write` permission and that the GHCR packages belong to this repository, then re-run
+the deploy workflow after correcting either drift. Docker Hub pulls for Prometheus and Grafana
+do not use GHCR authentication and can succeed independently.
+
 ## Is the indexer behind?
 
 Three signals, cheapest first:
