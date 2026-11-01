@@ -415,6 +415,10 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             "SPV_LAWYER_ELECTED_WEBHOOK_URL",
             event_type::SPV_LAWYER_ELECTED,
         ),
+        (
+            "DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL",
+            event_type::DEVELOPER_LAWYER_ASSIGNED,
+        ),
         ("DEAL_EXECUTED_WEBHOOK_URL", event_type::DEAL_EXECUTED),
         (
             "LETTING_AGENT_APPOINTED_WEBHOOK_URL",

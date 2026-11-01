@@ -332,6 +332,7 @@ table — one optional env var per event type, each independently switchable:
 | `property_asset_registered` | `INIT_PROPERTY_ASSET_WEBHOOK_URL` | marketplace `init_property_assets` (the `PropertyAsset` PDA gets name + metadata_uri + share mint) | the asset PDA (once per asset) |
 | `property_claim_started` | `PROPERTY_CLAIM_STARTED_WEBHOOK_URL` | the FIRST marketplace `claim_shares` on a listing | the listing PDA (once per listing) |
 | `spv_lawyer_elected` | `SPV_LAWYER_ELECTED_WEBHOOK_URL` | marketplace `finalize_spv_election` | the transaction + instruction path |
+| `developer_lawyer_assigned` | `DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL` | marketplace `assign_developer_lawyer` | the transaction + instruction path |
 | `deal_executed` | `DEAL_EXECUTED_WEBHOOK_URL` | marketplace `execute_deal` | the transaction + instruction path |
 | `letting_agent_appointed` | `LETTING_AGENT_APPOINTED_WEBHOOK_URL` | property `finalize_agent_election` | the transaction + instruction path |
 | `property_shares_transferred` | `SHARES_TRANSFERRED_WEBHOOK_URL` | marketplace `buy_relisted_shares` / `accept_offer` / `send_property_shares` | the transaction + instruction path |
@@ -393,8 +394,18 @@ repeatable events).
       "listing_id": 12, "investor": "<base58 wallet of the first claimer>", ... }
 
     { "event": "spv_lawyer_elected",
-      "listing_id": 12, "listing": "...", "property": "...",
+      "listing_id": 12, "property_id": 12, "cluster": "devnet",
+      "listing": "...", "property": "...",
       "winner_registry": "<base58 Lawyer REGISTRY PDA — not the lawyer's wallet> | null", ... }
+
+    { "event": "developer_lawyer_assigned",
+      "listing_id": 12, "property_id": 12, "cluster": "devnet",
+      "listing": "...", "property": "...",
+      "developer_lawyer": "<base58 lawyer wallet>",
+      "developer_lawyer_registry": "<base58 Lawyer REGISTRY PDA>", ... }
+      // note: ADR-48. Both lawyer-trigger payloads retain listing_id and add property_id with
+      // the same numeric value. cluster comes from CLUSTER (default devnet), which Compose and
+      // the deploy workflow's server.env render pass through to the indexer.
 
     { "event": "deal_executed",
       "listing_id": 12, "listing": "...", "property": "...",

@@ -548,12 +548,12 @@ mod marketplace {
     use super::*;
     use crate::mapping::marketplace::map_instruction;
     use carbon_marketplace_decoder::instructions::{
-        AcceptOffer, BuyPropertyShares, BuyRelistedShares, CancelOffer, ClaimShares, ClaimSpvCase,
-        CloseCancelledPosition, CloseCase, CloseDeadListing, CloseShareHolding, DelistShares,
-        ExecuteDeal, FinalizeSpvElection, InitPropertyAssets, MakeOffer, MarketplaceInstruction,
-        RejectOffer, ReleaseReservation, RelistShares, ReserveShares, SendPropertyShares,
-        UnregisterLawyer, UnreserveShares, WithdrawCancelled, WithdrawExpired,
-        WithdrawLegalProcessExpired,
+        AcceptOffer, AssignDeveloperLawyer, BuyPropertyShares, BuyRelistedShares, CancelOffer,
+        ClaimShares, ClaimSpvCase, CloseCancelledPosition, CloseCase, CloseDeadListing,
+        CloseShareHolding, DelistShares, ExecuteDeal, FinalizeSpvElection, InitPropertyAssets,
+        MakeOffer, MarketplaceInstruction, RejectOffer, ReleaseReservation, RelistShares,
+        ReserveShares, SendPropertyShares, UnregisterLawyer, UnreserveShares, WithdrawCancelled,
+        WithdrawExpired, WithdrawLegalProcessExpired,
     };
     use carbon_marketplace_decoder::PROGRAM_ID;
 
@@ -987,6 +987,43 @@ mod marketplace {
     }
 
     #[test]
+    fn assign_developer_lawyer_emits_the_developer_lawyer_assigned_event() {
+        // ADR-48: accounts 3/4/5 are the lawyer registry, listing, and property PDAs. The
+        // transaction-scoped event and the SPV-election event drive the same downstream bucket.
+        let m = map(
+            MarketplaceInstruction::AssignDeveloperLawyer(AssignDeveloperLawyer {
+                listing_id: 7,
+                lawyer: pk(20),
+            }),
+            6,
+        );
+        assert_eq!(m.instruction.ix_name, "assign_developer_lawyer");
+        assert_eq!(m.webhook_events.len(), 1);
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "developer_lawyer_assigned");
+        assert_eq!(
+            ev.event_id,
+            format!("developer_lawyer_assigned:{}:0", sig())
+        );
+        assert_eq!(ev.slot, SLOT as i64);
+        assert_eq!(ev.tx_signature, sig().to_string());
+        assert_eq!(ev.block_time, block_time());
+        let p = &ev.payload;
+        assert_eq!(p["event"], "developer_lawyer_assigned");
+        assert_eq!(p["listing_id"], serde_json::json!(7));
+        assert_eq!(p["property_id"], serde_json::json!(7));
+        assert_eq!(p["developer_lawyer"], pk(20).to_string());
+        assert_eq!(p["developer_lawyer_registry"], pk(4).to_string());
+        assert_eq!(p["listing"], pk(5).to_string());
+        assert_eq!(p["property"], pk(6).to_string());
+        assert_eq!(p["cluster"], "devnet");
+        assert_eq!(p["slot"], serde_json::json!(SLOT as i64));
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["block_time"], block_time().to_rfc3339());
+        assert_eq!(p["program"], "marketplace");
+    }
+
+    #[test]
     fn finalize_spv_election_emits_the_lawyer_elected_event() {
         // ADR-36: accounts 1/2 are the listing + property PDAs; account 3 is the winner's
         // Lawyer registry (optional). The event id is transaction-scoped: a second election
@@ -1003,8 +1040,10 @@ mod marketplace {
         let p = &ev.payload;
         assert_eq!(p["event"], "spv_lawyer_elected");
         assert_eq!(p["listing_id"], serde_json::json!(7));
+        assert_eq!(p["property_id"], serde_json::json!(7));
         assert_eq!(p["listing"], pk(2).to_string()); // account index 1
         assert_eq!(p["property"], pk(3).to_string()); // account index 2
+        assert_eq!(p["cluster"], "devnet");
         assert_eq!(p["winner_registry"], pk(4).to_string()); // account index 3
     }
 

@@ -37,8 +37,8 @@
 //! `relist_shares` / `send_property_shares` close nothing.
 //!
 //! This is also the program that produces most webhook events (ADR-28/ADR-36):
-//! `init_property_assets`, `claim_shares`, `claim_spv_case`, `finalize_spv_election`,
-//! `execute_deal`, and the three secondary-market transfers each record one durable
+//! `init_property_assets`, `claim_shares`, `claim_spv_case`, `assign_developer_lawyer`,
+//! `finalize_spv_election`, `execute_deal`, and the three secondary-market transfers each record one durable
 //! `webhook_events` row -- see the table above the `webhook_events` match below.
 //! `send_property_shares` additionally records the narrow `shares_transferred`
 //! notification event (ADR-41) alongside its ADR-36 transfer event.
@@ -433,6 +433,32 @@ pub fn map_instruction(
                 block_time,
             }]
         }
+        // The developer assigns their lawyer (accounts: lawyer registry 3, listing 4, property 5).
+        // This and the SPV-election event ensure the same review bucket downstream (ADR-48), so
+        // either lawyer transition may arrive first without the mapper persisting partial state.
+        MarketplaceInstruction::AssignDeveloperLawyer(args) => {
+            vec![WebhookEvent {
+                event_id: format!("developer_lawyer_assigned:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::DEVELOPER_LAWYER_ASSIGNED,
+                payload: serde_json::json!({
+                    "event": event_type::DEVELOPER_LAWYER_ASSIGNED,
+                    "listing_id": args.listing_id,
+                    "property_id": args.listing_id,
+                    "developer_lawyer": args.lawyer.to_string(),
+                    "developer_lawyer_registry": account_at(accounts, 3, name)?,
+                    "listing": account_at(accounts, 4, name)?,
+                    "property": account_at(accounts, 5, name)?,
+                    "cluster": cluster(),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
         // The SPV lawyer election finalizes with a winner (accounts: listing 1, property 2,
         // winner's Lawyer registry 3 -- trailing and OPTIONAL, so absent when... on-chain
         // never omits it on the success path, but a missing index 3 must not fail the
@@ -444,8 +470,10 @@ pub fn map_instruction(
                 payload: serde_json::json!({
                     "event": event_type::SPV_LAWYER_ELECTED,
                     "listing_id": args.listing_id,
+                    "property_id": args.listing_id,
                     "listing": account_at(accounts, 1, name)?,
                     "property": account_at(accounts, 2, name)?,
+                    "cluster": cluster(),
                     "winner_registry": accounts.get(3).map(|a| a.pubkey.to_string()),
                     "slot": slot,
                     "tx_signature": &tx_signature,

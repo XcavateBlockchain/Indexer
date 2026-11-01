@@ -1670,3 +1670,36 @@ The Indexer's contract remains faithful on-chain evidence, with off-chain identi
 versioning explicitly downstream. The existing
 `claim_spv_case_emits_the_spv_case_claimed_event` test remains the producer-side proof, and the
 consumer's webhook suites pin setup, message order, membership, encryption, failures, and retries.
+
+## ADR-48: Either lawyer transition ensures the property's document-review bucket
+
+**Context.** A property needs one discussion bucket after its SPV lawyer wins an election and its
+developer lawyer is assigned. Those transitions can arrive in either order, and neither instruction
+alone contains both lawyer wallets. The existing SPV-election event cannot cover a later developer
+assignment, while persisting partial lawyer state in ProfileApi would duplicate the listing mirror.
+Claimed-holder wallets are available from the mirror; X25519 keys and LawyerMainPage PDFs remain
+off-chain ProfileApi concerns, as they were for ADR-47.
+
+**Decision.** Add a transaction-scoped `developer_lawyer_assigned` marketplace event through the
+existing pure mapper and durable outbox, carrying the listing/property identity and developer-lawyer
+wallet/registry. Retain `spv_lawyer_elected` as the second trigger and route both authenticated events
+to one idempotent ProfileApi ensure operation. Both trigger payloads preserve `listing_id` and
+additively carry `property_id` with the same numeric value plus `cluster` from `CLUSTER`; Compose and
+the deploy render pass that setting through with the existing `devnet` default. The consumer resolves
+the complete lawyer pair from
+`listings`, creates one deterministic `lawyer-document-review` bucket per property namespace, installs
+the configured admin as admin/contributor, current positive claimed holders as viewers, and both
+lawyers as contributors/viewers. It then performs the ADR-47 X25519 key ceremony and sends the admin's
+review prompt plus SPV/developer PDF snapshots or exact missing-document text. All database writes
+are atomic; an existing bucket, its key, and its four messages are reused on redelivery. A partial
+unique ProfileApi index enforces the review-bucket identity across overlapping requests, with the
+loser returning the winner's committed bucket. No Indexer schema, migration, decoder, or IDL change ships.
+
+**Consequences.** Either chain order and at-least-once delivery converge without partial off-chain
+assignment state. The developer event answers retryable non-2xx responses until both seats and other
+prerequisites are ready; the SPV event preserves its legacy 200 response when the developer seat is
+still empty because the assignment event supplies the later trigger. Missing PDF rows no longer block
+this bucket, but missing required viewer keys and transient Indexer/S3 failures still retry. Producer
+tests pin the new payload and base58 wallet, while consumer suites pin both orders, exact membership,
+encryption, message order/fallbacks, and redelivery. Deployment adds
+`DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL` alongside the existing SPV route.

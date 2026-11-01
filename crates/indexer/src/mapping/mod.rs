@@ -47,8 +47,9 @@ pub struct MappedInstruction {
     /// Outbound webhook events this instruction records (ADR-28/ADR-36). Usually empty; the
     /// producers are marketplace's `init_property_assets` (a new property asset registered),
     /// `claim_shares` (the first claim on a sold-out listing), `claim_spv_case` (an SPV
-    /// candidacy), `finalize_spv_election`, `execute_deal`, and the three secondary-market
-    /// transfer instructions, plus property's `finalize_agent_election`, `claim_property`,
+    /// candidacy), `assign_developer_lawyer`, `finalize_spv_election`, `execute_deal`, and the
+    /// three secondary-market transfer instructions, plus property's `finalize_agent_election`,
+    /// `claim_property`,
     /// `propose`/`finalize_proposal`, and `challenge_agent`/`finalize_challenge` -- see
     /// [`event_type`]. `distribute_income` joins them as `income_distributed` (ADR-40), and
     /// `send_property_shares` additionally records the narrow `shares_transferred`
@@ -70,6 +71,8 @@ pub mod event_type {
     pub const PROPERTY_CLAIM_STARTED: &str = "property_claim_started";
     /// marketplace `finalize_spv_election` -- the SPV lawyer election has a winner.
     pub const SPV_LAWYER_ELECTED: &str = "spv_lawyer_elected";
+    /// marketplace `assign_developer_lawyer` -- the developer lawyer seat is filled (ADR-48).
+    pub const DEVELOPER_LAWYER_ASSIGNED: &str = "developer_lawyer_assigned";
     /// marketplace `execute_deal` -- the sale is agreed and settled on-chain.
     pub const DEAL_EXECUTED: &str = "deal_executed";
     /// property `finalize_agent_election` -- a letting agent is appointed to the property.

@@ -2155,3 +2155,37 @@ migrations, both `sqlx` checks, migration lint, and all 275 workspace tests pass
 verification ended `VERIFY OK: 5 programs, 250 instructions, 5 snapshots, 5 deploy boundaries,
 0 chain upgrades`; the program-upgrade check found all five deployed programs unchanged. A live
 deploy was not run from this branch.
+
+## Webhooks: dual-trigger lawyer document-review buckets (ADR-48) — 2026-11-01
+
+**Why**: once a listing has both a ratified SPV lawyer and an assigned developer lawyer, the lawyers
+and claimed-token holders need one property-namespace bucket for immediate document review. The two
+transitions can arrive in either order, so the existing SPV-election webhook alone cannot cover them.
+
+**What**: marketplace `assign_developer_lawyer` now records a transaction-scoped
+`developer_lawyer_assigned` event with the developer wallet/registry and listing/property identity.
+Both lawyer-trigger payloads retain `listing_id` and add `property_id` with the same numeric value
+and `cluster` from `CLUSTER`; Compose and the deploy server.env render pass that setting through with
+the existing `devnet` default. The existing durable outbox, Compose, deployment, and operator surfaces
+gain `DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL`; no Indexer schema, decoder, IDL, or migration changes.
+ProfileApi resolves both lawyer wallets through GraphQL and ensures one deterministic
+`lawyer-document-review` bucket, with the configured admin, claimed-holder viewers, lawyer
+contributors/viewers, real X25519 key sharing, the exact admin prompt, and SPV/developer PDF snapshots
+or exact missing-document fallbacks. A partial unique ProfileApi index and conflict-to-existing
+handling close the overlapping-trigger race. The deployment workflow now sources
+`BUCKET_ADMIN_ADDRESS` from the correctly named environment secret and passes `INDEXER_GRAPHQL_URL`.
+
+**Verification**: the new mapper test failed before emission, caught the wallet's initial byte-array
+serialization, and passed with base58 output. Formatting, clippy, the locked offline build, both sqlx
+checks, migration lint, and all 209 Indexer tests passed; devnet verification ended `VERIFY OK: 5
+programs, 276 instructions, 5 snapshots, 5 deploy boundaries, 0 chain upgrades`. ProfileApi passed
+603/603 bucket/domain/webhook tests and 26/26 Solana-client tests. The PostgreSQL race test proved
+two buckets/two keys/eight messages before uniqueness, then one bucket/one key/four messages with
+both requests returning 200. Compose/YAML validation and a live public GraphQL lawyer-field query
+passed. The real API E2E script ran 51 tests (10 passed/41 failed) only because authorized
+object-storage configuration was unavailable, so it is not claimed green. The new authenticated
+webhook URL secret remains unset because the existing shared secret value was unavailable; no
+rotation, placeholder, deployment, commit, or push was performed. The additive metadata follow-up
+was TDD-checked: both extended mapper tests failed on missing `property_id` before implementation;
+the 35-test marketplace module and 82-test mapping suite then passed, as did plain `cargo fmt
+--check` and mainnet Compose/server.env render checks.
