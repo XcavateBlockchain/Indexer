@@ -1703,3 +1703,29 @@ this bucket, but missing required viewer keys and transient Indexer/S3 failures 
 tests pin the new payload and base58 wallet, while consumer suites pin both orders, exact membership,
 encryption, message order/fallbacks, and redelivery. Deployment adds
 `DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL` alongside the existing SPV route.
+
+## ADR-49: Lawyer-terms buckets carry and display their exact election target
+
+**Context.** ADR-47 created one encrypted bucket per SPV candidacy but left the `voting/terms`
+announcement only in the property's legal-process bucket, so the lawyer-specific chat had no election
+to display. Its dashboard transaction also selected the leading candidacy from a separate query rather
+than the lawyer named by that bucket. The bucket needs the originating Solana cluster as well as its
+property, lawyer, and candidacy identity, and finalization needs an efficient exact-candidacy lookup.
+
+**Decision.** Add `cluster` to the existing `spv_case_claimed` payload and optional `round` to
+`lawyerCandidacies`, applying the latter identically to the page and count SQL over the existing
+`(listing_id, round)` index. ProfileApi stores `listing_id`, `cluster`, `lawyer`, and `candidacy` in the
+lawyer-terms bucket properties and posts the same deterministic open/result payloads to both the legal
+and lawyer-terms buckets. Open and final lawyer-bucket messages use the configured bucket admin rather
+than `system:voting`. Both outcomes close every candidacy bucket in that round only; ratification also
+resolves the winner by listing, round, and lawyer to verify its bucket exists. The dashboard reuses its
+existing terms-vote lane, displays
+the lawyer and cluster, and prefers the bucket's exact candidacy PDA when constructing the transaction.
+
+**Consequences.** This is an additive webhook/GraphQL change with no schema, migration, decoder, or IDL
+change. Older claim events and lawyer buckets remain devnet-compatible by default, while legal-bucket
+messages and response shapes keep their existing identity and contract. Redelivery remains
+body-deduplicated independently in each bucket, a failed round cannot close an earlier round, and a late
+claim copies any existing same-round legal result after its open message so out-of-order delivery cannot
+leave the new bucket actionable. The existing leading-candidacy behavior remains only as a fallback for
+legal buckets without exact metadata.

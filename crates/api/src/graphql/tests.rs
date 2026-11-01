@@ -782,6 +782,46 @@ async fn listings_filter_by_claimed_by_returns_distinct_claim_history(pool: PgPo
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn lawyer_candidacies_filter_by_listing_round_and_lawyer(pool: PgPool) {
+    seed_lawyer_candidacy(&pool, &[40; 32], 12, 1, 201, &[60; 32], 10).await;
+    seed_lawyer_candidacy(&pool, &[41; 32], 12, 2, 202, &[60; 32], 20).await;
+    seed_lawyer_candidacy(&pool, &[42; 32], 12, 2, 203, &[61; 32], 30).await;
+    seed_lawyer_candidacy(&pool, &[43; 32], 13, 2, 204, &[60; 32], 40).await;
+
+    let query = format!(
+        r#"{{ lawyerCandidacies(listingId: "12", round: "2", lawyer: "{}", first: 10) {{
+            totalCount nodes {{ id round lawyer votePower }}
+        }} }}"#,
+        b58key(60),
+    );
+    let (data, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "lawyerCandidacies": {
+                "totalCount": 1,
+                "nodes": [{
+                    "id": b58key(41),
+                    "round": "2",
+                    "lawyer": b58key(60),
+                    "votePower": "20",
+                }],
+            },
+        }),
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn listings_assignable_to_excludes_only_asking_lawyers_claims(pool: PgPool) {
     let future = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -2189,3 +2189,29 @@ rotation, placeholder, deployment, commit, or push was performed. The additive m
 was TDD-checked: both extended mapper tests failed on missing `property_id` before implementation;
 the 35-test marketplace module and 82-test mapping suite then passed, as did plain `cargo fmt
 --check` and mainnet Compose/server.env render checks.
+
+## Webhooks: in-chat SPV lawyer elections (ADR-49) — 2026-11-01
+
+**Why**: lawyer-specific terms buckets had no `voting/terms` announcement, so their chat could not show
+the election. The dashboard also needs the exact lawyer/candidacy target and Solana cluster rather than
+inferring the target from the election's current leader.
+
+**What**: `spv_case_claimed` now includes `cluster`, and `lawyerCandidacies` accepts an additive `round`
+filter in both page and count queries using the existing `(listing_id, round)` index. ProfileApi persists
+property, cluster, lawyer, and candidacy metadata and mirrors open/final voting messages into the legal
+and lawyer-terms buckets with the appropriate author. Both outcomes close every candidacy in that round
+only; ratification also verifies the exact winner's bucket. Late claims copy an existing same-round legal
+result after their open announcement, preserving terminal state under unordered webhook delivery. The
+dashboard reuses its terms-vote UI and exact bucket PDA, with legacy fallbacks. No Indexer schema,
+migration, decoder, or IDL change ships.
+
+**Verification**: TDD covered missing cluster/round support, bucket open/final publication, exact winner
+lookup, losing candidates, earlier-round isolation, late-claim/finalization ordering, metadata parsing,
+and exact transaction PDA use. The
+Indexer passed 277 workspace tests plus formatting, clippy, the locked offline build, both sqlx checks,
+and migration lint; devnet verification ended `VERIFY OK: 5 programs, 302 instructions, 5 snapshots, 5
+deploy boundaries, 0 chain upgrades`, with all five deployed programs unchanged. ProfileApi's final
+bucket run passed 627/627 enabled tests (two environment-gated skips) and its Solana client passed
+27/27. The dashboard passed 584 tests, typecheck, lint, and production build; a browser check rendered
+the lawyer/cluster and 25%/75% native progress state without page errors. The separate 51-test live REST
+suite was not green because its required localhost:5000 API/PostgreSQL stack was not running.
