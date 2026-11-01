@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, round, lawyer, costs,\n               vote_power, rent_payer\n        FROM marketplace_lawyer_candidacy\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR lawyer = $2)\n          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $4 OFFSET $5\n        ",
+  "query": "\n        SELECT pubkey, slot, lamports, closed_at_slot, listing_id, round, lawyer, costs,\n               vote_power, rent_payer\n        FROM marketplace_lawyer_candidacy\n        WHERE ($1::bigint IS NULL OR listing_id = $1)\n          AND ($2::bytea IS NULL OR lawyer = $2)\n          AND ($3::bigint IS NULL OR round = $3)\n          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)\n        ORDER BY slot DESC, pubkey ASC\n        LIMIT $5 OFFSET $6\n        ",
   "describe": {
     "columns": [
       {
@@ -58,6 +58,7 @@
       "Left": [
         "Int8",
         "Bytea",
+        "Int8",
         "Bool",
         "Int8",
         "Int8"
@@ -76,5 +77,5 @@
       false
     ]
   },
-  "hash": "0595e76c9f988c897a011fe485606be5661fe001f1c7e53003200f57ca4153e4"
+  "hash": "194d07b5ee5430b64a4037c72be8b90c4bedce27a04b63cfe0ba315cae7a8b14"
 }

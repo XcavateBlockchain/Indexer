@@ -639,6 +639,7 @@ pub fn map_instruction(
                     "listing": account_at(accounts, 4, name)?,
                     "property": account_at(accounts, 5, name)?,
                     "candidacy": account_at(accounts, 6, name)?,
+                    "cluster": cluster(),
                     "slot": slot,
                     "tx_signature": &tx_signature,
                     "block_time": block_time.to_rfc3339(),

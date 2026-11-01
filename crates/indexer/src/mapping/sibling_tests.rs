@@ -819,6 +819,7 @@ mod marketplace {
         assert_eq!(p["listing"], pk(5).to_string()); // account index 4
         assert_eq!(p["property"], pk(6).to_string()); // account index 5
         assert_eq!(p["candidacy"], pk(7).to_string()); // account index 6
+        assert_eq!(p["cluster"], "devnet");
         assert_eq!(p["program"], "marketplace");
     }
 

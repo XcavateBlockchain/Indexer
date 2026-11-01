@@ -686,12 +686,13 @@ impl QueryRoot {
         context: &GraphQLContext,
         listing_id: Option<I64>,
         lawyer: Option<String>,
+        round: Option<I64>,
         active: Option<bool>,
         first: Option<i32>,
         offset: Option<i32>,
     ) -> FieldResult<programs::marketplace::LawyerCandidacyConnection> {
         programs::marketplace::lawyer_candidacies(
-            context, listing_id, lawyer, active, first, offset,
+            context, listing_id, lawyer, round, active, first, offset,
         )
         .await
     }

@@ -862,6 +862,7 @@ pub async fn lawyer_candidacies(
     context: &GraphQLContext,
     listing_id: Option<I64>,
     lawyer: Option<String>,
+    round: Option<I64>,
     active: Option<bool>,
     first: Option<i32>,
     offset: Option<i32>,
@@ -869,6 +870,7 @@ pub async fn lawyer_candidacies(
     let limit = clamp_first(first);
     let skip = clamp_offset(offset);
     let listing_id = listing_id.map(|v| v.0);
+    let round = round.map(|v| v.0);
     let lawyer = lawyer
         .as_deref()
         .map(|s| parse_b58("lawyer", s))
@@ -881,12 +883,14 @@ pub async fn lawyer_candidacies(
         FROM marketplace_lawyer_candidacy
         WHERE ($1::bigint IS NULL OR listing_id = $1)
           AND ($2::bytea IS NULL OR lawyer = $2)
-          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)
+          AND ($3::bigint IS NULL OR round = $3)
+          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)
         ORDER BY slot DESC, pubkey ASC
-        LIMIT $4 OFFSET $5
+        LIMIT $5 OFFSET $6
         "#,
         listing_id,
         lawyer.as_deref(),
+        round,
         active,
         limit,
         skip,
@@ -899,10 +903,12 @@ pub async fn lawyer_candidacies(
         SELECT count(*) FROM marketplace_lawyer_candidacy
         WHERE ($1::bigint IS NULL OR listing_id = $1)
           AND ($2::bytea IS NULL OR lawyer = $2)
-          AND ($3::bool IS NULL OR (closed_at_slot IS NULL) = $3)
+          AND ($3::bigint IS NULL OR round = $3)
+          AND ($4::bool IS NULL OR (closed_at_slot IS NULL) = $4)
         "#,
         listing_id,
         lawyer.as_deref(),
+        round,
         active,
     )
     .fetch_one(&context.pool)
