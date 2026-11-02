@@ -1,0 +1,128 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT l.listing_id,\n               COALESCE((SELECT ip.reserved_share_amount\n                          FROM marketplace_investor_position AS ip\n                         WHERE ip.listing_id = l.listing_id\n                           AND ip.investor = $2\n                           AND ip.closed_at_slot IS NULL\n                           AND NOT ip.cancelled\n                         ORDER BY ip.slot DESC, ip.pubkey ASC\n                         LIMIT 1), 0) AS \"reserved_shares!\",\n               COALESCE((SELECT sh.amount\n                          FROM marketplace_share_holding AS sh\n                         WHERE sh.asset_id = l.asset_id\n                           AND sh.owner = $2\n                           AND sh.closed_at_slot IS NULL), 0) AS \"owned_shares!\",\n               EXISTS (SELECT 1 FROM marketplace_lawyer_candidacy AS lc\n                        WHERE lc.listing_id = l.listing_id AND lc.lawyer = $2)\n                   AS \"has_claimed_spv_case!\",\n               (SELECT MAX(lc.round) FROM marketplace_lawyer_candidacy AS lc\n                 WHERE lc.listing_id = l.listing_id AND lc.lawyer = $2\n                   AND lc.closed_at_slot IS NULL) AS active_spv_case_claim_round,\n               (l.closed_at_slot IS NULL\n                AND l.status = 'SOLD_OUT'\n                AND l.legal_deadline >= $3\n                AND l.spv_lawyer = $4\n                AND l.developer_lawyer <> $2\n                AND pa.spv_created\n                AND (l.spv_election_expiry = 0\n                     OR (l.spv_election_expiry > $3 AND l.spv_election_candidate_count < 5))\n                AND EXISTS (SELECT 1 FROM marketplace_lawyer AS lr\n                             WHERE lr.lawyer = $2 AND lr.closed_at_slot IS NULL\n                               AND lr.region_id = pa.region_id)\n                AND EXISTS (SELECT 1 FROM role_assignments_view AS ra\n                             WHERE ra.user_pubkey = $5 AND ra.role = 'LAWYER'\n                               AND ra.active AND ra.permission = 'COMPLIANT')\n                AND NOT EXISTS (SELECT 1 FROM marketplace_lawyer_candidacy AS own\n                                 WHERE own.listing_id = l.listing_id AND own.lawyer = $2\n                                   AND own.closed_at_slot IS NULL\n                                   AND own.round = CASE WHEN l.spv_election_expiry = 0\n                                                        THEN l.spv_election_round + 1\n                                                        ELSE l.spv_election_round END))\n                   AS \"can_claim_spv_case!\",\n               pl.agent AS \"letting_agent?\",\n               COALESCE(pl.election_round, 0) AS \"letting_election_round!\",\n               COALESCE(pl.election_expiry, 0) AS \"letting_election_expiry!\",\n               COALESCE(pl.election_candidate_count, 0) AS \"letting_election_candidate_count!\",\n               COALESCE(pl.governance_active_proposal, 0) AS \"active_proposal_id!\",\n               pp.proposer AS \"active_proposal_proposer?\",\n               COALESCE(pl.governance_active_challenge, 0) AS \"active_challenge_id!\",\n               pc.agent AS \"active_challenge_agent?\",\n               EXISTS (SELECT 1 FROM property_agent_candidacy AS ac\n                        WHERE ac.asset_id = l.asset_id AND ac.agent = $2)\n                   AS \"has_claimed_property!\",\n               (SELECT MAX(ac.round) FROM property_agent_candidacy AS ac\n                 WHERE ac.asset_id = l.asset_id AND ac.agent = $2\n                   AND ac.closed_at_slot IS NULL) AS active_property_claim_round,\n               (l.closed_at_slot IS NULL\n                AND pa.finalized\n                AND COALESCE(pl.agent, $4) = $4\n                AND (COALESCE(pl.election_expiry, 0) = 0\n                     OR (pl.election_expiry > $3 AND pl.election_candidate_count < 5))\n                AND EXISTS (SELECT 1 FROM property_letting_agent AS la\n                             WHERE la.wallet = $2 AND la.closed_at_slot IS NULL\n                               AND la.region_id = pa.region_id\n                               AND EXISTS (SELECT 1\n                                            FROM jsonb_array_elements(la.locations) AS loc(entry)\n                                           WHERE loc.entry->>'postcode' = convert_from(pa.location, 'UTF8')))\n                AND EXISTS (SELECT 1 FROM role_assignments_view AS ra\n                             WHERE ra.user_pubkey = $5 AND ra.role = 'LETTING_AGENT' AND ra.active)\n                AND NOT EXISTS (SELECT 1 FROM property_agent_candidacy AS own\n                                 WHERE own.asset_id = l.asset_id AND own.agent = $2\n                                   AND own.closed_at_slot IS NULL\n                                   AND own.round = CASE WHEN COALESCE(pl.election_expiry, 0) = 0\n                                                        THEN COALESCE(pl.election_round, 0) + 1\n                                                        ELSE pl.election_round END))\n                   AS \"can_claim_property!\",\n               rn.due_ts AS resignation_due_timestamp\n        FROM marketplace_listing AS l\n        LEFT JOIN marketplace_property_asset AS pa\n               ON pa.asset_id = l.asset_id AND pa.closed_at_slot IS NULL\n        LEFT JOIN property_letting AS pl\n               ON pl.asset_id = l.asset_id AND pl.closed_at_slot IS NULL\n        LEFT JOIN property_proposal AS pp\n               ON pp.asset_id = l.asset_id AND pp.id = pl.governance_active_proposal\n              AND pp.closed_at_slot IS NULL\n        LEFT JOIN property_challenge AS pc\n               ON pc.asset_id = l.asset_id AND pc.id = pl.governance_active_challenge\n              AND pc.closed_at_slot IS NULL\n        LEFT JOIN property_resignation_notice AS rn\n               ON rn.asset_id = l.asset_id AND rn.agent = $2 AND rn.closed_at_slot IS NULL\n        WHERE l.listing_id = ANY($1)\n        ORDER BY l.listing_id ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "listing_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "reserved_shares!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "owned_shares!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "has_claimed_spv_case!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "active_spv_case_claim_round",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "can_claim_spv_case!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "letting_agent?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "letting_election_round!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "letting_election_expiry!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "letting_election_candidate_count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "active_proposal_id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "active_proposal_proposer?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 12,
+        "name": "active_challenge_id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "active_challenge_agent?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 14,
+        "name": "has_claimed_property!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "active_property_claim_round",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "can_claim_property!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 17,
+        "name": "resignation_due_timestamp",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Bytea",
+        "Int8",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      true,
+      null,
+      null,
+      null,
+      null,
+      true,
+      null,
+      true,
+      null,
+      null,
+      null,
+      true
+    ]
+  },
+  "hash": "9e8f9412b4d1ae4b708d608a8bf928588590df9c56c5c438cb3b137400512791"
+}

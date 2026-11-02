@@ -954,6 +954,17 @@ impl QueryRoot {
         programs::derived::pending_finalizations(context, asset_id, listing_id).await
     }
 
+    /// One viewer's role-specific facts for a page of listings (ADR-50): investor position,
+    /// lawyer claims/eligibility, and letting-agent seat/election/governance/claim/resignation
+    /// state. One SQL read returns exactly one row per requested listing.
+    async fn property_role_contexts(
+        context: &GraphQLContext,
+        viewer: String,
+        listing_ids: Vec<I64>,
+    ) -> FieldResult<Vec<programs::derived::PropertyRoleContext>> {
+        programs::derived::property_role_contexts(context, viewer, listing_ids).await
+    }
+
     // --- regions ----------------------------------------------------------------------------
 
     /// The regions program's singleton config PDA.

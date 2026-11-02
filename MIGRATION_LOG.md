@@ -2215,3 +2215,12 @@ bucket run passed 627/627 enabled tests (two environment-gated skips) and its So
 27/27. The dashboard passed 584 tests, typecheck, lint, and production build; a browser check rendered
 the lawyer/cluster and 25%/75% native progress state without page errors. The separate 51-test live REST
 suite was not green because its required localhost:5000 API/PostgreSQL stack was not running.
+
+
+## API: page-scoped role context for marketplace status labels (ADR-50) — 2026-11-02
+
+**Why**: property cards and detail pages need investor, developer-supporting, lawyer, and letting-agent facts from one consistent read. The general feed lacked viewer positions, lawyer history required a detail-only RPC probe, and letting-agent personal/election/governance state was absent; per-card reads would be N+1 and disagree at deadline boundaries.
+
+**What**: add derived GraphQL `propertyRoleContexts(viewer, listingIds)` with one row per listing for investor shares, lawyer/agent historical and active claims, exact claim eligibility, letting seat/elections, proposal/challenge identities, and resignation. The implementation uses one SQL statement and one request clock over existing mirror tables, keyed joins/subqueries, a 100-id cap, and no schema or database migration. The mobile resolver consumes history separately from active current-round claims and predecessor governance separately from the replacement agent.
+
+**Verification**: the four initial `property_role_contexts_*` GraphQL database tests failed on the missing root field before implementation and passed afterward; a fifth eligibility-partition test covers registration/region/postcode/SPV/deadline/cap gates and killed a temporary `pa.spv_created` mutation, which was then restored. `cargo sqlx prepare -- --bin api` regenerated `crates/api/.sqlx/query-9e8f9412b4d1ae4b708d608a8bf928588590df9c56c5c438cb3b137400512791.json`. Final verification passed all 282 workspace tests, plain `cargo fmt --check`, clippy with warnings denied, the locked offline workspace build, both sqlx prepare checks, and migration lint. Devnet verification ended `VERIFY OK: 5 programs, 312 instructions, 5 snapshots, 5 deploy boundaries, 0 chain upgrades`, and the program-upgrade checker reported all five deployed programs unchanged. No deployment, commit, or push was performed.
