@@ -792,6 +792,183 @@ pub async fn pending_finalizations(
 }
 
 // ============================================================================================
+// `propertyRoleContexts` — one viewer's role-specific facts for one page of listings (ADR-50).
+// One SQL statement, one request clock, and one output row per listing: marketplace cards do
+// not need an investor/lawyer/agent query per card, and detail reads use the same payload.
+// ============================================================================================
+
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct PropertyRoleContext {
+    pub listing_id: I64,
+    pub reserved_shares: I64,
+    pub owned_shares: I64,
+    pub has_claimed_spv_case: bool,
+    pub active_spv_case_claim_round: Option<I64>,
+    pub can_claim_spv_case: bool,
+    pub letting_agent: Option<String>,
+    pub letting_election_round: I64,
+    pub letting_election_expiry: I64,
+    pub letting_election_candidate_count: I64,
+    pub active_proposal_id: I64,
+    pub active_proposal_proposer: Option<String>,
+    pub active_challenge_id: I64,
+    pub active_challenge_agent: Option<String>,
+    pub has_claimed_property: bool,
+    pub active_property_claim_round: Option<I64>,
+    pub can_claim_property: bool,
+    pub resignation_due_timestamp: Option<I64>,
+}
+
+pub async fn property_role_contexts(
+    context: &GraphQLContext,
+    viewer: String,
+    listing_ids: Vec<I64>,
+) -> FieldResult<Vec<PropertyRoleContext>> {
+    if listing_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if listing_ids.len() > 100 {
+        return Err(juniper::FieldError::new(
+            "listingIds accepts at most 100 ids",
+            juniper::Value::null(),
+        ));
+    }
+
+    let viewer_text = viewer;
+    let viewer = parse_b58("viewer", &viewer_text)?;
+    let listing_ids: Vec<i64> = listing_ids.into_iter().map(|id| id.0).collect();
+    let now_unix = now_unix();
+    let vacant_seat = [0u8; 32];
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT l.listing_id,
+               COALESCE((SELECT ip.reserved_share_amount
+                          FROM marketplace_investor_position AS ip
+                         WHERE ip.listing_id = l.listing_id
+                           AND ip.investor = $2
+                           AND ip.closed_at_slot IS NULL
+                           AND NOT ip.cancelled
+                         ORDER BY ip.slot DESC, ip.pubkey ASC
+                         LIMIT 1), 0) AS "reserved_shares!",
+               COALESCE((SELECT sh.amount
+                          FROM marketplace_share_holding AS sh
+                         WHERE sh.asset_id = l.asset_id
+                           AND sh.owner = $2
+                           AND sh.closed_at_slot IS NULL), 0) AS "owned_shares!",
+               EXISTS (SELECT 1 FROM marketplace_lawyer_candidacy AS lc
+                        WHERE lc.listing_id = l.listing_id AND lc.lawyer = $2)
+                   AS "has_claimed_spv_case!",
+               (SELECT MAX(lc.round) FROM marketplace_lawyer_candidacy AS lc
+                 WHERE lc.listing_id = l.listing_id AND lc.lawyer = $2
+                   AND lc.closed_at_slot IS NULL) AS active_spv_case_claim_round,
+               (l.closed_at_slot IS NULL
+                AND l.status = 'SOLD_OUT'
+                AND l.legal_deadline >= $3
+                AND l.spv_lawyer = $4
+                AND l.developer_lawyer <> $2
+                AND pa.spv_created
+                AND (l.spv_election_expiry = 0
+                     OR (l.spv_election_expiry > $3 AND l.spv_election_candidate_count < 5))
+                AND EXISTS (SELECT 1 FROM marketplace_lawyer AS lr
+                             WHERE lr.lawyer = $2 AND lr.closed_at_slot IS NULL
+                               AND lr.region_id = pa.region_id)
+                AND EXISTS (SELECT 1 FROM role_assignments_view AS ra
+                             WHERE ra.user_pubkey = $5 AND ra.role = 'LAWYER'
+                               AND ra.active AND ra.permission = 'COMPLIANT')
+                AND NOT EXISTS (SELECT 1 FROM marketplace_lawyer_candidacy AS own
+                                 WHERE own.listing_id = l.listing_id AND own.lawyer = $2
+                                   AND own.closed_at_slot IS NULL
+                                   AND own.round = CASE WHEN l.spv_election_expiry = 0
+                                                        THEN l.spv_election_round + 1
+                                                        ELSE l.spv_election_round END))
+                   AS "can_claim_spv_case!",
+               pl.agent AS "letting_agent?",
+               COALESCE(pl.election_round, 0) AS "letting_election_round!",
+               COALESCE(pl.election_expiry, 0) AS "letting_election_expiry!",
+               COALESCE(pl.election_candidate_count, 0) AS "letting_election_candidate_count!",
+               COALESCE(pl.governance_active_proposal, 0) AS "active_proposal_id!",
+               pp.proposer AS "active_proposal_proposer?",
+               COALESCE(pl.governance_active_challenge, 0) AS "active_challenge_id!",
+               pc.agent AS "active_challenge_agent?",
+               EXISTS (SELECT 1 FROM property_agent_candidacy AS ac
+                        WHERE ac.asset_id = l.asset_id AND ac.agent = $2)
+                   AS "has_claimed_property!",
+               (SELECT MAX(ac.round) FROM property_agent_candidacy AS ac
+                 WHERE ac.asset_id = l.asset_id AND ac.agent = $2
+                   AND ac.closed_at_slot IS NULL) AS active_property_claim_round,
+               (l.closed_at_slot IS NULL
+                AND pa.finalized
+                AND COALESCE(pl.agent, $4) = $4
+                AND (COALESCE(pl.election_expiry, 0) = 0
+                     OR (pl.election_expiry > $3 AND pl.election_candidate_count < 5))
+                AND EXISTS (SELECT 1 FROM property_letting_agent AS la
+                             WHERE la.wallet = $2 AND la.closed_at_slot IS NULL
+                               AND la.region_id = pa.region_id
+                               AND EXISTS (SELECT 1
+                                            FROM jsonb_array_elements(la.locations) AS loc(entry)
+                                           WHERE loc.entry->>'postcode' = convert_from(pa.location, 'UTF8')))
+                AND EXISTS (SELECT 1 FROM role_assignments_view AS ra
+                             WHERE ra.user_pubkey = $5 AND ra.role = 'LETTING_AGENT' AND ra.active)
+                AND NOT EXISTS (SELECT 1 FROM property_agent_candidacy AS own
+                                 WHERE own.asset_id = l.asset_id AND own.agent = $2
+                                   AND own.closed_at_slot IS NULL
+                                   AND own.round = CASE WHEN COALESCE(pl.election_expiry, 0) = 0
+                                                        THEN COALESCE(pl.election_round, 0) + 1
+                                                        ELSE pl.election_round END))
+                   AS "can_claim_property!",
+               rn.due_ts AS resignation_due_timestamp
+        FROM marketplace_listing AS l
+        LEFT JOIN marketplace_property_asset AS pa
+               ON pa.asset_id = l.asset_id AND pa.closed_at_slot IS NULL
+        LEFT JOIN property_letting AS pl
+               ON pl.asset_id = l.asset_id AND pl.closed_at_slot IS NULL
+        LEFT JOIN property_proposal AS pp
+               ON pp.asset_id = l.asset_id AND pp.id = pl.governance_active_proposal
+              AND pp.closed_at_slot IS NULL
+        LEFT JOIN property_challenge AS pc
+               ON pc.asset_id = l.asset_id AND pc.id = pl.governance_active_challenge
+              AND pc.closed_at_slot IS NULL
+        LEFT JOIN property_resignation_notice AS rn
+               ON rn.asset_id = l.asset_id AND rn.agent = $2 AND rn.closed_at_slot IS NULL
+        WHERE l.listing_id = ANY($1)
+        ORDER BY l.listing_id ASC
+        "#,
+        listing_ids.as_slice(),
+        viewer.as_slice(),
+        now_unix,
+        &vacant_seat[..],
+        viewer_text,
+    )
+    .fetch_all(&context.pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| PropertyRoleContext {
+            listing_id: I64(row.listing_id),
+            reserved_shares: I64(row.reserved_shares),
+            owned_shares: I64(row.owned_shares),
+            has_claimed_spv_case: row.has_claimed_spv_case,
+            active_spv_case_claim_round: row.active_spv_case_claim_round.map(I64),
+            can_claim_spv_case: row.can_claim_spv_case,
+            letting_agent: row.letting_agent.as_deref().map(b58),
+            letting_election_round: I64(row.letting_election_round),
+            letting_election_expiry: I64(row.letting_election_expiry),
+            letting_election_candidate_count: I64(row.letting_election_candidate_count),
+            active_proposal_id: I64(row.active_proposal_id),
+            active_proposal_proposer: row.active_proposal_proposer.as_deref().map(b58),
+            active_challenge_id: I64(row.active_challenge_id),
+            active_challenge_agent: row.active_challenge_agent.as_deref().map(b58),
+            has_claimed_property: row.has_claimed_property,
+            active_property_claim_round: row.active_property_claim_round.map(I64),
+            can_claim_property: row.can_claim_property,
+            resignation_due_timestamp: row.resignation_due_timestamp.map(I64),
+        })
+        .collect())
+}
+
+// ============================================================================================
 // Pure-core unit tests: the boundary semantics with a frozen clock (the DB-seeded wiring
 // tests live in `super::super::tests`). These mirror the C# reference's frozen-time tests:
 // every gate's on/off edge, the tie rule, the clamps, and the u128 ranges.

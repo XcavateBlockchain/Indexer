@@ -2048,3 +2048,567 @@ async fn pending_finalizations_execute_deal_carries_config_and_collected_mints(p
         }),
     );
 }
+
+// ============================================================================================
+// ADR-50: page-scoped property role contexts
+// ============================================================================================
+
+async fn seed_role_context_listing(
+    pool: &PgPool,
+    listing_id: i64,
+    status: &'static str,
+    finalized: bool,
+) {
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 1_000_000;
+    seed_lawyer_listing(
+        pool,
+        &LawyerListingSeed {
+            pubkey: [100 + listing_id as u8; 32],
+            listing_id,
+            slot: 100 + listing_id,
+            status,
+            legal_deadline: future,
+            developer_lawyer: [31; 32],
+            spv_lawyer: [0; 32],
+        },
+    )
+    .await;
+    seed_spv_asset(pool, listing_id, true).await;
+    sqlx::query("UPDATE marketplace_property_asset SET finalized = $1 WHERE asset_id = $2")
+        .bind(finalized)
+        .bind(listing_id)
+        .execute(pool)
+        .await
+        .expect("set asset finalization");
+}
+
+async fn seed_role_context_position(
+    pool: &PgPool,
+    listing_id: i64,
+    investor: &[u8],
+    shares: i64,
+    reserved: i64,
+) {
+    sqlx::query(
+        r#"INSERT INTO marketplace_investor_position
+               (pubkey, slot, lamports, listing_id, investor, payment_mint, payment_account,
+                share_amount, reserved_share_amount, paid_funds, paid_tax, paid_fee,
+                reserved_funds, reserved_tax, reserved_fee, cancelled, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, $4, $5, $6, 0, 0, 0, 0, 0, 0, FALSE, 255)"#,
+    )
+    .bind([110 + listing_id as u8; 32])
+    .bind(listing_id)
+    .bind(investor)
+    .bind(vec![111u8; 32])
+    .bind(shares)
+    .bind(reserved)
+    .execute(pool)
+    .await
+    .expect("seed investor position");
+}
+
+async fn seed_role_context_agent(pool: &PgPool, agent: &[u8], region_id: i32, postcode: &str) {
+    sqlx::query(
+        r#"INSERT INTO property_letting_agent
+               (pubkey, slot, lamports, wallet, region_id, locations, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $1, $2, $3::jsonb, $1, 255)"#,
+    )
+    .bind(agent)
+    .bind(region_id)
+    .bind(format!(
+        r#"[{{"postcode":"{postcode}","assigned_count":0,"deposit":0}}]"#
+    ))
+    .execute(pool)
+    .await
+    .expect("seed letting-agent registry");
+
+    let wallet = bs58::encode(agent).into_string();
+    let id = format!("agent-role-{wallet}");
+    sqlx::query(
+        r#"INSERT INTO whitelist_actions
+               (id, type, subject, role, permission, actor, slot, block_time,
+                tx_signature, instruction_index)
+           VALUES ($1, 'ROLE_ASSIGNED', $2, 'LETTING_AGENT', NULL, $2, 100,
+                   now(), $1, '0')"#,
+    )
+    .bind(id)
+    .bind(wallet)
+    .execute(pool)
+    .await
+    .expect("seed letting-agent role");
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_role_context_letting(
+    pool: &PgPool,
+    asset_id: i64,
+    agent: &[u8],
+    round: i64,
+    expiry: i64,
+    candidate_count: i64,
+    active_proposal: i64,
+    active_challenge: i64,
+) {
+    sqlx::query(
+        r#"INSERT INTO property_letting
+               (pubkey, slot, lamports, asset_id, agent, election_expiry,
+                election_candidate_count, election_round, election_quorum_bps,
+                governance_active_proposal, governance_active_challenge, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, $5, $6, 0, $7, $8, $1, 255)"#,
+    )
+    .bind([120 + asset_id as u8; 32])
+    .bind(asset_id)
+    .bind(agent)
+    .bind(expiry)
+    .bind(candidate_count)
+    .bind(round)
+    .bind(active_proposal)
+    .bind(active_challenge)
+    .execute(pool)
+    .await
+    .expect("seed role-context letting");
+}
+
+async fn seed_role_context_resignation(pool: &PgPool, asset_id: i64, agent: &[u8], due: i64) {
+    sqlx::query(
+        r#"INSERT INTO property_resignation_notice
+               (pubkey, slot, lamports, asset_id, agent, due_ts, rent_payer, bump)
+           VALUES ($1, 100, 1000000, $2, $3, $4, $3, 255)"#,
+    )
+    .bind([130 + asset_id as u8; 32])
+    .bind(asset_id)
+    .bind(agent)
+    .bind(due)
+    .execute(pool)
+    .await
+    .expect("seed resignation notice");
+}
+
+const ROLE_CONTEXT_FIELDS: &str = r#"
+    listingId reservedShares ownedShares
+    hasClaimedSpvCase activeSpvCaseClaimRound canClaimSpvCase
+    lettingAgent lettingElectionRound lettingElectionExpiry lettingElectionCandidateCount
+    activeProposalId activeProposalProposer activeChallengeId activeChallengeAgent
+    hasClaimedProperty activePropertyClaimRound canClaimProperty resignationDueTimestamp
+"#;
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn property_role_contexts_return_one_complete_row_per_listing(pool: PgPool) {
+    let viewer = [20u8; 32];
+    let predecessor = [56u8; 32];
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 1_000_000;
+
+    for listing_id in [1, 2] {
+        seed_role_context_listing(&pool, listing_id, "FINALIZED", true).await;
+    }
+    seed_claimable_lawyer(&pool, &viewer).await;
+    seed_role_context_agent(&pool, &viewer, 1, "London").await;
+    seed_role_context_position(&pool, 1, &viewer, 3, 7).await;
+    seed_share_holding(&pool, 1, &viewer, 5).await;
+
+    seed_lawyer_candidacy(&pool, &[141; 32], 1, 1, 201, &viewer, 0).await;
+    sqlx::query("UPDATE marketplace_lawyer_candidacy SET closed_at_slot = 202 WHERE pubkey = $1")
+        .bind([141u8; 32])
+        .execute(&pool)
+        .await
+        .expect("close lawyer candidacy");
+    seed_lawyer_candidacy(&pool, &[142; 32], 1, 2, 203, &viewer, 0).await;
+    sqlx::query("UPDATE marketplace_lawyer_candidacy SET closed_at_slot = 204 WHERE pubkey = $1")
+        .bind([142u8; 32])
+        .execute(&pool)
+        .await
+        .expect("close second lawyer candidacy");
+    seed_lawyer_candidacy(&pool, &[143; 32], 2, 4, 205, &viewer, 0).await;
+
+    seed_agent_candidacy(&pool, &[151; 32], 1, 1, 201, &viewer, 0, true).await;
+    seed_agent_candidacy(&pool, &[152; 32], 1, 2, 202, &viewer, 0, true).await;
+    seed_agent_candidacy(&pool, &[153; 32], 2, 3, 203, &viewer, 0, false).await;
+
+    seed_role_context_letting(&pool, 1, &viewer, 1, 0, 0, 11, 12).await;
+    seed_role_context_letting(&pool, 2, &[0; 32], 3, future, 2, 0, 0).await;
+    seed_proposal(&pool, 1, 11, future, &predecessor).await;
+    seed_challenge(&pool, 1, 12, future, &predecessor, &[21; 32], &predecessor).await;
+    seed_role_context_resignation(&pool, 1, &viewer, 456789).await;
+
+    let query = format!(
+        r#"{{ propertyRoleContexts(viewer: "{}", listingIds: ["1", "2"]) {{ {} }} }}"#,
+        b58key(20),
+        ROLE_CONTEXT_FIELDS,
+    );
+    let (data, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        data,
+        juniper::graphql_value!({
+            "propertyRoleContexts": [
+                {
+                    "listingId": "1",
+                    "reservedShares": "7",
+                    "ownedShares": "5",
+                    "hasClaimedSpvCase": true,
+                    "activeSpvCaseClaimRound": null,
+                    "canClaimSpvCase": false,
+                    "lettingAgent": b58key(20),
+                    "lettingElectionRound": "1",
+                    "lettingElectionExpiry": "0",
+                    "lettingElectionCandidateCount": "0",
+                    "activeProposalId": "11",
+                    "activeProposalProposer": b58key(59),
+                    "activeChallengeId": "12",
+                    "activeChallengeAgent": b58key(56),
+                    "hasClaimedProperty": true,
+                    "activePropertyClaimRound": null,
+                    "canClaimProperty": false,
+                    "resignationDueTimestamp": "456789",
+                },
+                {
+                    "listingId": "2",
+                    "reservedShares": "0",
+                    "ownedShares": "0",
+                    "hasClaimedSpvCase": true,
+                    "activeSpvCaseClaimRound": "4",
+                    "canClaimSpvCase": false,
+                    "lettingAgent": b58key(0),
+                    "lettingElectionRound": "3",
+                    "lettingElectionExpiry": future.to_string(),
+                    "lettingElectionCandidateCount": "2",
+                    "activeProposalId": "0",
+                    "activeProposalProposer": null,
+                    "activeChallengeId": "0",
+                    "activeChallengeAgent": null,
+                    "hasClaimedProperty": true,
+                    "activePropertyClaimRound": "3",
+                    "canClaimProperty": false,
+                    "resignationDueTimestamp": null,
+                },
+            ],
+        }),
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn property_role_contexts_claim_eligibility_matches_chain_gates(pool: PgPool) {
+    let viewer = [20u8; 32];
+    seed_role_context_listing(&pool, 3, "SOLD_OUT", false).await;
+    seed_role_context_listing(&pool, 4, "FINALIZED", true).await;
+    seed_claimable_lawyer(&pool, &viewer).await;
+    seed_role_context_agent(&pool, &viewer, 1, "London").await;
+    seed_role_context_letting(&pool, 4, &[0; 32], 0, 0, 0, 0, 0).await;
+
+    async fn eligibility(
+        pool: &PgPool,
+        listing_ids: &str,
+    ) -> juniper::Value<juniper::DefaultScalarValue> {
+        let query = format!(
+            r#"{{ propertyRoleContexts(viewer: "{}", listingIds: [{}]) {{
+                listingId canClaimSpvCase canClaimProperty
+            }} }}"#,
+            b58key(20),
+            listing_ids,
+        );
+        let (data, errors) = juniper::execute(
+            &query,
+            None,
+            &schema(),
+            &juniper::Variables::new(),
+            &context(pool.clone()),
+        )
+        .await
+        .expect("GraphQL execute");
+        assert!(errors.is_empty(), "{errors:?}");
+        data
+    }
+
+    assert_eq!(
+        eligibility(&pool, r#""3", "4""#).await,
+        juniper::graphql_value!({
+            "propertyRoleContexts": [
+                {"listingId": "3", "canClaimSpvCase": true, "canClaimProperty": false},
+                {"listingId": "4", "canClaimSpvCase": false, "canClaimProperty": true},
+            ],
+        }),
+    );
+
+    // A same-round open candidacy is the chain's duplicate-claim guard; historical rows in the
+    // complete-context fixture above do not multiply output or count as a standing claim.
+    seed_lawyer_candidacy(&pool, &[161; 32], 3, 1, 201, &viewer, 0).await;
+    seed_agent_candidacy(&pool, &[162; 32], 4, 1, 201, &viewer, 0, false).await;
+    assert_eq!(
+        eligibility(&pool, r#""3", "4""#).await,
+        juniper::graphql_value!({
+            "propertyRoleContexts": [
+                {"listingId": "3", "canClaimSpvCase": false, "canClaimProperty": false},
+                {"listingId": "4", "canClaimSpvCase": false, "canClaimProperty": false},
+            ],
+        }),
+    );
+
+    let lawyer_wallet = b58key(20);
+    sqlx::query(
+        r#"INSERT INTO whitelist_actions
+               (id, type, subject, role, permission, actor, slot, block_time,
+                tx_signature, instruction_index)
+           VALUES ('lawyer-role-revoked', 'PERMISSION_UPDATED', $1, 'LAWYER', 'REVOKED', $1,
+                   101, now(), 'lawyer-role-revoked', '0')"#,
+    )
+    .bind(lawyer_wallet)
+    .execute(&pool)
+    .await
+    .expect("revoke lawyer role");
+    sqlx::query("UPDATE property_letting_agent SET locations = $1::jsonb WHERE wallet = $2")
+        .bind(r#"[{"postcode":"Elsewhere","assigned_count":0,"deposit":0}]"#)
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .expect("move agent outside property postcode");
+    assert_eq!(
+        eligibility(&pool, r#""3", "4""#).await,
+        juniper::graphql_value!({
+            "propertyRoleContexts": [
+                {"listingId": "3", "canClaimSpvCase": false, "canClaimProperty": false},
+                {"listingId": "4", "canClaimSpvCase": false, "canClaimProperty": false},
+            ],
+        }),
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn property_role_contexts_empty_ids_return_no_rows(pool: PgPool) {
+    let query = format!(
+        r#"{{ propertyRoleContexts(viewer: "{}", listingIds: []) {{ listingId }} }}"#,
+        b58key(20),
+    );
+    let (data, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(data, juniper::graphql_value!({"propertyRoleContexts": []}));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn property_role_contexts_reject_more_than_one_page_of_ids(pool: PgPool) {
+    let ids = (0..101).map(|_| r#""1""#).collect::<Vec<_>>().join(", ");
+    let query = format!(
+        r#"{{ propertyRoleContexts(viewer: "{}", listingIds: [{}]) {{ listingId }} }}"#,
+        b58key(20),
+        ids,
+    );
+    let (_, errors) = juniper::execute(
+        &query,
+        None,
+        &schema(),
+        &juniper::Variables::new(),
+        &context(pool),
+    )
+    .await
+    .expect("GraphQL execute");
+
+    assert!(!errors.is_empty(), "101 listing ids must be rejected");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn property_role_contexts_eligibility_rejects_closed_windows_and_bad_registration(
+    pool: PgPool,
+) {
+    let viewer = [20u8; 32];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let future = now + 1_000_000;
+    let past = now - 1_000_000;
+    seed_role_context_listing(&pool, 5, "SOLD_OUT", false).await;
+    seed_role_context_listing(&pool, 6, "FINALIZED", true).await;
+    seed_role_context_letting(&pool, 6, &[0; 32], 0, 0, 0, 0, 0).await;
+
+    async fn eligibility(pool: &PgPool) -> juniper::Value<juniper::DefaultScalarValue> {
+        let query = format!(
+            r#"{{ propertyRoleContexts(viewer: "{}", listingIds: ["5", "6"]) {{
+                listingId canClaimSpvCase canClaimProperty
+            }} }}"#,
+            b58key(20),
+        );
+        let (data, errors) = juniper::execute(
+            &query,
+            None,
+            &schema(),
+            &juniper::Variables::new(),
+            &context(pool.clone()),
+        )
+        .await
+        .expect("GraphQL execute");
+        assert!(errors.is_empty(), "{errors:?}");
+        data
+    }
+
+    // No role or registry at all: both instructions are closed.
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": false, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": false},
+        ]}),
+    );
+
+    // Both registrations are in region 2 while both assets are in region 1.
+    seed_lawyer_registry(&pool, &viewer, 2).await;
+    seed_lawyer_role(&pool, &viewer, "COMPLIANT").await;
+    seed_role_context_agent(&pool, &viewer, 2, "London").await;
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": false, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": false},
+        ]}),
+    );
+
+    // Region now matches, but the agent still does not cover the exact postcode.
+    sqlx::query("UPDATE marketplace_lawyer SET region_id = 1 WHERE lawyer = $1")
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .expect("move lawyer to asset region");
+    sqlx::query(
+        "UPDATE property_letting_agent SET region_id = 1, locations = $1::jsonb WHERE wallet = $2",
+    )
+    .bind(r#"[{"postcode":"Elsewhere","assigned_count":0,"deposit":0}]"#)
+    .bind(viewer)
+    .execute(&pool)
+    .await
+    .expect("move agent outside postcode");
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": true, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": false},
+        ]}),
+    );
+
+    sqlx::query("UPDATE property_letting_agent SET locations = $1::jsonb WHERE wallet = $2")
+        .bind(r#"[{"postcode":"London","assigned_count":0,"deposit":0}]"#)
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .expect("cover asset postcode");
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": true, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": true},
+        ]}),
+    );
+
+    // SPV attestation and both deadline/election closures are independent gates.
+    sqlx::query("UPDATE marketplace_property_asset SET spv_created = FALSE WHERE asset_id = 5")
+        .execute(&pool)
+        .await
+        .expect("remove SPV attestation");
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": false, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": true},
+        ]}),
+    );
+
+    sqlx::query("UPDATE marketplace_property_asset SET spv_created = TRUE WHERE asset_id = 5")
+        .execute(&pool)
+        .await
+        .expect("restore SPV attestation");
+    sqlx::query("UPDATE marketplace_listing SET legal_deadline = $1 WHERE listing_id = 5")
+        .bind(past)
+        .execute(&pool)
+        .await
+        .expect("expire legal process");
+    sqlx::query("UPDATE property_letting SET election_expiry = $1, election_candidate_count = 1 WHERE asset_id = 6")
+        .bind(past)
+        .execute(&pool)
+        .await
+        .expect("close agent election");
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": false, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": false},
+        ]}),
+    );
+
+    sqlx::query("UPDATE marketplace_listing SET legal_deadline = $1, spv_election_expiry = $2, spv_election_candidate_count = 1 WHERE listing_id = 5")
+        .bind(future)
+        .bind(past)
+        .execute(&pool)
+        .await
+        .expect("close SPV election");
+    sqlx::query("UPDATE property_letting SET election_expiry = 0, election_candidate_count = 0 WHERE asset_id = 6")
+        .execute(&pool)
+        .await
+        .expect("reopen agent seat");
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": false, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": true},
+        ]}),
+    );
+
+    // The five-candidate cap closes both elections; four leaves room for one more claim.
+    sqlx::query("UPDATE marketplace_listing SET spv_election_expiry = $1, spv_election_candidate_count = 5 WHERE listing_id = 5")
+        .bind(future)
+        .execute(&pool)
+        .await
+        .expect("fill SPV election");
+    sqlx::query("UPDATE property_letting SET election_expiry = $1, election_candidate_count = 5 WHERE asset_id = 6")
+        .bind(future)
+        .execute(&pool)
+        .await
+        .expect("fill agent election");
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": false, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": false},
+        ]}),
+    );
+
+    sqlx::query(
+        "UPDATE marketplace_listing SET spv_election_candidate_count = 4 WHERE listing_id = 5",
+    )
+    .execute(&pool)
+    .await
+    .expect("leave SPV candidate slot");
+    sqlx::query("UPDATE property_letting SET election_candidate_count = 4 WHERE asset_id = 6")
+        .execute(&pool)
+        .await
+        .expect("leave agent candidate slot");
+    assert_eq!(
+        eligibility(&pool).await,
+        juniper::graphql_value!({"propertyRoleContexts": [
+            {"listingId": "5", "canClaimSpvCase": true, "canClaimProperty": false},
+            {"listingId": "6", "canClaimSpvCase": false, "canClaimProperty": true},
+        ]}),
+    );
+}
