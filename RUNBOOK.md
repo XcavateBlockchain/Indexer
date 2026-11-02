@@ -331,6 +331,7 @@ table — one optional env var per event type, each independently switchable:
 | --- | --- | --- | --- |
 | `property_asset_registered` | `INIT_PROPERTY_ASSET_WEBHOOK_URL` | marketplace `init_property_assets` (the `PropertyAsset` PDA gets name + metadata_uri + share mint) | the asset PDA (once per asset) |
 | `property_claim_started` | `PROPERTY_CLAIM_STARTED_WEBHOOK_URL` | the FIRST marketplace `claim_shares` on a listing | the listing PDA (once per listing) |
+| `spv_lawyer_vote_cast` | `SPV_LAWYER_VOTE_CAST_WEBHOOK_URL` | marketplace `vote_on_spv_lawyer` | the transaction + instruction path |
 | `spv_lawyer_elected` | `SPV_LAWYER_ELECTED_WEBHOOK_URL` | marketplace `finalize_spv_election` | the transaction + instruction path |
 | `developer_lawyer_assigned` | `DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL` | marketplace `assign_developer_lawyer` | the transaction + instruction path |
 | `deal_executed` | `DEAL_EXECUTED_WEBHOOK_URL` | marketplace `execute_deal` | the transaction + instruction path |
@@ -392,6 +393,12 @@ repeatable events).
     { "event": "property_claim_started",
       "listing": "<base58 Listing PDA>", "property": "<base58 PropertyAsset PDA>",
       "listing_id": 12, "investor": "<base58 wallet of the first claimer>", ... }
+
+    { "event": "spv_lawyer_vote_cast",
+      "property_id": 12, "voter": "<base58 voter wallet>",
+      "candidacy": "<base58 LawyerCandidacy PDA>", "amount": 25,
+      "listing": "<base58 Listing PDA>", "cluster": "devnet",
+      "instruction_path": "0", ... }
 
     { "event": "spv_lawyer_elected",
       "listing_id": 12, "property_id": 12, "cluster": "devnet",

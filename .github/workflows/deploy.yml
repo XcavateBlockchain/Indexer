@@ -161,6 +161,7 @@ jobs:
           # ADR-36/ADR-48: the other six property-lifecycle webhook routes, each independently
           # optional (unset = that event type accumulates undelivered in webhook_events).
           PROPERTY_CLAIM_STARTED_WEBHOOK_URL: ${{ secrets.PROPERTY_CLAIM_STARTED_WEBHOOK_URL }}
+          SPV_LAWYER_VOTE_CAST_WEBHOOK_URL: ${{ secrets.SPV_LAWYER_VOTE_CAST_WEBHOOK_URL }}
           SPV_LAWYER_ELECTED_WEBHOOK_URL: ${{ secrets.SPV_LAWYER_ELECTED_WEBHOOK_URL }}
           DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL: ${{ secrets.DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL }}
           DEAL_EXECUTED_WEBHOOK_URL: ${{ secrets.DEAL_EXECUTED_WEBHOOK_URL }}
@@ -283,6 +284,7 @@ jobs:
             fi
             dotenv_optional INIT_PROPERTY_ASSET_WEBHOOK_URL "$INIT_PROPERTY_ASSET_WEBHOOK_URL"
             dotenv_optional PROPERTY_CLAIM_STARTED_WEBHOOK_URL "$PROPERTY_CLAIM_STARTED_WEBHOOK_URL"
+            dotenv_optional SPV_LAWYER_VOTE_CAST_WEBHOOK_URL "$SPV_LAWYER_VOTE_CAST_WEBHOOK_URL"
             dotenv_optional SPV_LAWYER_ELECTED_WEBHOOK_URL "$SPV_LAWYER_ELECTED_WEBHOOK_URL"
             dotenv_optional DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL "$DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL"
             dotenv_optional DEAL_EXECUTED_WEBHOOK_URL "$DEAL_EXECUTED_WEBHOOK_URL"

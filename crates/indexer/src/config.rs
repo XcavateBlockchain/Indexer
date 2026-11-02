@@ -412,6 +412,10 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             event_type::PROPERTY_CLAIM_STARTED,
         ),
         (
+            "SPV_LAWYER_VOTE_CAST_WEBHOOK_URL",
+            event_type::SPV_LAWYER_VOTE_CAST,
+        ),
+        (
             "SPV_LAWYER_ELECTED_WEBHOOK_URL",
             event_type::SPV_LAWYER_ELECTED,
         ),
@@ -692,7 +696,24 @@ pub fn redact_url_password(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{notifications_api_from_parts, redact_key, redact_url_password};
+    use super::{
+        notifications_api_from_parts, redact_key, redact_url_password, webhook_routes_from_env,
+    };
+
+    #[test]
+    fn spv_lawyer_vote_cast_route_uses_its_dedicated_environment_variable() {
+        const VAR: &str = "SPV_LAWYER_VOTE_CAST_WEBHOOK_URL";
+        const URL: &str = "https://profile.example/webhooks/spv_lawyer_vote_cast_devnet";
+        std::env::set_var(VAR, URL);
+        let routes = webhook_routes_from_env();
+        std::env::remove_var(VAR);
+
+        let route = routes
+            .iter()
+            .find(|route| route.event_type == "spv_lawyer_vote_cast")
+            .expect("the vote event must have a route");
+        assert_eq!(route.url, URL);
+    }
 
     // --- notifications_api_from_parts: the all-or-nothing pair (ADR-35) ------------------
 

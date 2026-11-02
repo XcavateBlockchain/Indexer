@@ -37,8 +37,9 @@
 //! `relist_shares` / `send_property_shares` close nothing.
 //!
 //! This is also the program that produces most webhook events (ADR-28/ADR-36):
-//! `init_property_assets`, `claim_shares`, `claim_spv_case`, `assign_developer_lawyer`,
-//! `finalize_spv_election`, `execute_deal`, and the three secondary-market transfers each record one durable
+//! `init_property_assets`, `claim_shares`, `claim_spv_case`, `vote_on_spv_lawyer`,
+//! `assign_developer_lawyer`, `finalize_spv_election`, `execute_deal`, and the three
+//! secondary-market transfers each record one durable
 //! `webhook_events` row -- see the table above the `webhook_events` match below.
 //! `send_property_shares` additionally records the narrow `shares_transferred`
 //! notification event (ADR-41) alongside its ADR-36 transfer event.
@@ -312,6 +313,7 @@ pub fn map_instruction(
     // |---|---|---|
     // | `init_property_assets` | `property_asset_registered` | the PropertyAsset PDA (once per asset) |
     // | `claim_shares` | `property_claim_started` | the Listing PDA (only the FIRST claim records) |
+    // | `vote_on_spv_lawyer` | `spv_lawyer_vote_cast` | the transaction + instruction path |
     // | `finalize_spv_election` | `spv_lawyer_elected` | the transaction + instruction path |
     // | `execute_deal` | `deal_executed` | the transaction + instruction path |
     // | `buy_relisted_shares` / `accept_offer` / `send_property_shares` | `property_shares_transferred` | the transaction + instruction path |
@@ -451,6 +453,31 @@ pub fn map_instruction(
                     "cluster": cluster(),
                     "slot": slot,
                     "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // A voter backs one lawyer's terms (accounts: voter 0, listing 3, candidacy 6). The
+        // instruction path keeps separate votes in one transaction distinct on redelivery.
+        MarketplaceInstruction::VoteOnSpvLawyer(args) => {
+            vec![WebhookEvent {
+                event_id: format!("spv_lawyer_vote_cast:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::SPV_LAWYER_VOTE_CAST,
+                payload: serde_json::json!({
+                    "event": event_type::SPV_LAWYER_VOTE_CAST,
+                    "property_id": args.listing_id,
+                    "voter": account_at(accounts, 0, name)?,
+                    "candidacy": account_at(accounts, 6, name)?,
+                    "amount": args.amount,
+                    "listing": account_at(accounts, 3, name)?,
+                    "cluster": cluster(),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "instruction_path": &ctx.index_str,
                     "block_time": block_time.to_rfc3339(),
                     "program": "marketplace",
                 }),

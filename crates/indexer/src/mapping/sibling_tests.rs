@@ -552,8 +552,8 @@ mod marketplace {
         ClaimShares, ClaimSpvCase, CloseCancelledPosition, CloseCase, CloseDeadListing,
         CloseShareHolding, DelistShares, ExecuteDeal, FinalizeSpvElection, InitPropertyAssets,
         MakeOffer, MarketplaceInstruction, RejectOffer, ReleaseReservation, RelistShares,
-        ReserveShares, SendPropertyShares, UnregisterLawyer, UnreserveShares, WithdrawCancelled,
-        WithdrawExpired, WithdrawLegalProcessExpired,
+        ReserveShares, SendPropertyShares, UnregisterLawyer, UnreserveShares, VoteOnSpvLawyer,
+        WithdrawCancelled, WithdrawExpired, WithdrawLegalProcessExpired,
     };
     use carbon_marketplace_decoder::PROGRAM_ID;
 
@@ -1020,6 +1020,40 @@ mod marketplace {
         assert_eq!(p["cluster"], "devnet");
         assert_eq!(p["slot"], serde_json::json!(SLOT as i64));
         assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["block_time"], block_time().to_rfc3339());
+        assert_eq!(p["program"], "marketplace");
+    }
+
+    #[test]
+    fn vote_on_spv_lawyer_emits_the_voter_and_candidacy_event() {
+        let m = map(
+            MarketplaceInstruction::VoteOnSpvLawyer(VoteOnSpvLawyer {
+                listing_id: 7,
+                amount: 25,
+            }),
+            9,
+        );
+
+        assert_eq!(m.instruction.ix_name, "vote_on_spv_lawyer");
+        assert!(m.closes.is_empty());
+        assert_eq!(m.webhook_events.len(), 1);
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "spv_lawyer_vote_cast");
+        assert_eq!(ev.event_id, format!("spv_lawyer_vote_cast:{}:0", sig()));
+        assert_eq!(ev.slot, SLOT as i64);
+        assert_eq!(ev.tx_signature, sig().to_string());
+        assert_eq!(ev.block_time, block_time());
+        let p = &ev.payload;
+        assert_eq!(p["event"], "spv_lawyer_vote_cast");
+        assert_eq!(p["property_id"], serde_json::json!(7));
+        assert_eq!(p["voter"], pk(1).to_string()); // account 0, not payer account 1
+        assert_eq!(p["candidacy"], pk(7).to_string()); // account index 6
+        assert_eq!(p["amount"], serde_json::json!(25));
+        assert_eq!(p["listing"], pk(4).to_string()); // account index 3
+        assert_eq!(p["cluster"], "devnet");
+        assert_eq!(p["slot"], serde_json::json!(SLOT as i64));
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["instruction_path"], "0");
         assert_eq!(p["block_time"], block_time().to_rfc3339());
         assert_eq!(p["program"], "marketplace");
     }
