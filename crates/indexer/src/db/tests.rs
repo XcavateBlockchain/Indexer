@@ -2171,11 +2171,11 @@ async fn webhook_work_set_delivers_unconfirmed_review_events(pool: PgPool) -> sq
 /// if its `*_WEBHOOK_URL` is ever set.
 #[sqlx::test(migrations = "../../migrations")]
 async fn webhook_work_set_is_filtered_to_the_configured_types(pool: PgPool) -> sqlx::Result<()> {
-    let payload = &serde_json::json!({ "event": "property_claim_started" });
+    let payload = &serde_json::json!({ "event": "retired_legal_process_event" });
     record_event(
         &pool,
-        "property_claim_started:CCC",
-        "property_claim_started",
+        "retired_legal_process_event:CCC",
+        "retired_legal_process_event",
         payload,
         100,
         "sig",
@@ -2183,7 +2183,7 @@ async fn webhook_work_set_is_filtered_to_the_configured_types(pool: PgPool) -> s
     )
     .await?;
 
-    // No route for `property_claim_started` configured: the event is neither in the work
+    // No route for `retired_legal_process_event` configured: the event is neither in the work
     // set nor in the pending gauge.
     assert!(pending_events(&pool, 10, &["property_asset_registered"])
         .await?
@@ -2197,15 +2197,15 @@ async fn webhook_work_set_is_filtered_to_the_configured_types(pool: PgPool) -> s
     let pending = pending_events(
         &pool,
         10,
-        &["property_asset_registered", "property_claim_started"],
+        &["property_asset_registered", "retired_legal_process_event"],
     )
     .await?;
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].event_id, "property_claim_started:CCC");
+    assert_eq!(pending[0].event_id, "retired_legal_process_event:CCC");
     assert_eq!(
         count_webhook_pending(
             &pool,
-            &["property_asset_registered", "property_claim_started"]
+            &["property_asset_registered", "retired_legal_process_event"]
         )
         .await?,
         1

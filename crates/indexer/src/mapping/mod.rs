@@ -44,18 +44,9 @@ pub struct MappedInstruction {
     /// Slot-guarded soft closes implied by this instruction (ruling R11). Usually empty or
     /// one entry; marketplace has instructions that close two PDAs at once.
     pub closes: Vec<PendingClose>,
-    /// Outbound webhook events this instruction records (ADR-28/ADR-36). Usually empty; the
-    /// producers are marketplace's `init_property_assets` (a new property asset registered),
-    /// `claim_shares` (the first claim on a sold-out listing), `claim_spv_case` (an SPV
-    /// candidacy), `vote_on_spv_lawyer`, `assign_developer_lawyer`, `finalize_spv_election`,
-    /// `lawyer_confirm_documents`, `resolve_silent_verdict`, `execute_deal`, and the three
-    /// secondary-market transfer instructions, plus property's
-    /// `finalize_agent_election`,
-    /// `claim_property`,
-    /// `propose`/`finalize_proposal`, and `challenge_agent`/`finalize_challenge` -- see
-    /// [`event_type`]. `distribute_income` joins them as `income_distributed` (ADR-40), and
-    /// `send_property_shares` additionally records the narrow `shares_transferred`
-    /// notification event (ADR-41). The batcher commits each as a durable `webhook_events`
+    /// Outbound webhook events this instruction records. Usually empty; the producers cover
+    /// property/offers namespaces, SPV lawyer terms and document review, rental income, and
+    /// direct-share notifications. The batcher commits each as a durable `webhook_events`
     /// row (`WriteOp::RecordWebhookEvent`) and a background loop delivers it.
     pub webhook_events: Vec<WebhookEvent>,
 }
@@ -68,9 +59,6 @@ pub struct MappedInstruction {
 pub mod event_type {
     /// marketplace `init_property_assets` -- a property asset (and its namespace) is born.
     pub const PROPERTY_ASSET_REGISTERED: &str = "property_asset_registered";
-    /// The FIRST marketplace `claim_shares` on a listing -- the token-claim phase starts
-    /// (deduped by the listing PDA, so later claims re-record nothing).
-    pub const PROPERTY_CLAIM_STARTED: &str = "property_claim_started";
     /// marketplace `vote_on_spv_lawyer` -- a voter approved one SPV lawyer's terms.
     pub const SPV_LAWYER_VOTE_CAST: &str = "spv_lawyer_vote_cast";
     /// marketplace `finalize_spv_election` -- the SPV lawyer election has a winner.
@@ -85,43 +73,15 @@ pub mod event_type {
     pub const SILENT_VERDICT_RESOLVED: &str = "silent_verdict_resolved";
     /// marketplace `execute_deal` -- the sale is agreed and settled on-chain.
     pub const DEAL_EXECUTED: &str = "deal_executed";
-    /// property `finalize_agent_election` -- a letting agent is appointed to the property.
-    pub const LETTING_AGENT_APPOINTED: &str = "letting_agent_appointed";
-    /// One property-token transfer on the secondary market (`buy_relisted_shares`,
-    /// `accept_offer`, or `send_property_shares`); the payload's `kind` says which.
-    pub const PROPERTY_SHARES_TRANSFERRED: &str = "property_shares_transferred";
     /// marketplace `claim_spv_case` -- a lawyer stood for the listing's SPV case (the
     /// candidacy investors then vote on). Fires per CANDIDACY -- the pure mapper cannot
     /// tell the first claim of a round from later joins; the endpoint collapses per round.
     pub const SPV_CASE_CLAIMED: &str = "spv_case_claimed";
-    /// property `claim_property` -- a letting agent stood for the property's election
-    /// round named in the payload (fires per candidacy, not just on round open).
-    pub const AGENT_ELECTION_OPENED: &str = "agent_election_opened";
-    /// property `propose` -- the letting agent submitted a spending request. Also fires
-    /// on the auto-approval path (no Proposal PDA survives it; see the mapping comment).
-    pub const PROPOSAL_CREATED: &str = "proposal_created";
-    /// property `finalize_proposal` -- a proposal vote closed and the PDA was closed;
-    /// the endpoint resolves the outcome from the frozen proposal row.
-    pub const PROPOSAL_FINALIZED: &str = "proposal_finalized";
-    /// property `challenge_agent` -- an investor challenged the seated letting agent.
-    pub const CHALLENGE_CREATED: &str = "challenge_created";
-    /// property `finalize_challenge` -- a challenge vote closed and the PDA was closed;
-    /// the endpoint resolves the outcome from the frozen challenge row.
-    pub const CHALLENGE_FINALIZED: &str = "challenge_finalized";
-    /// A wallet entered or left a listing's holder set on the PRIMARY market
-    /// (`reserve_shares` / `buy_property_shares` add; `unreserve_shares`,
-    /// `release_reservation`, `close_cancelled_position`, and the three `withdraw_*`
-    /// exit paths remove); the payload's `action` says which, `reason` names the
-    /// instruction (ADR-38).
-    pub const PROPERTY_HOLDER_CHANGED: &str = "property_holder_changed";
     /// property `distribute_income` -- the letting agent paid rental income into the
     /// property's vault (ADR-40); the payload names the mint and the amount.
     pub const INCOME_DISTRIBUTED: &str = "income_distributed";
     /// marketplace `send_property_shares` -- a wallet directly sent property shares to
     /// another wallet (ADR-41); the payload names sender, receiver, and the share amount.
-    /// A NARROW duplicate of the ADR-36 `property_shares_transferred` `direct_send` event,
-    /// recorded alongside it so the notification endpoint gets its own route without
-    /// touching the bucket-access consumer.
     pub const SHARES_TRANSFERRED: &str = "shares_transferred";
     /// marketplace `claim_shares` (first claim) or `relist_shares` -- a property became
     /// eligible for secondary-market offers and its "<property> offers" namespace should

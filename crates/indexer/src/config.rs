@@ -83,8 +83,8 @@ pub struct Config {
     /// `METADATA_FETCH_INTERVAL` (seconds), default
     /// [`DEFAULT_METADATA_FETCH_INTERVAL_SECS`].
     pub metadata_fetch_interval: Duration,
-    /// The `*_WEBHOOK_URL` variables, one per webhook event type (ADR-28/ADR-36/ADR-37/
-    /// ADR-38/ADR-40/ADR-41/ADR-52): each the full endpoint that type's payloads POST to. An
+    /// The `*_WEBHOOK_URL` variables, one per webhook event type (ADR-28/ADR-40/ADR-41/
+    /// ADR-48/ADR-51/ADR-52): each the full endpoint that type's payloads POST to. An
     /// unset/empty variable disables just that type -- its durable `webhook_events` rows are
     /// still recorded and drain when the variable is later set; with NO routes at all the
     /// delivery loop is never spawned and no external call is ever made. URLs are never
@@ -408,10 +408,6 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             event_type::PROPERTY_ASSET_REGISTERED,
         ),
         (
-            "PROPERTY_CLAIM_STARTED_WEBHOOK_URL",
-            event_type::PROPERTY_CLAIM_STARTED,
-        ),
-        (
             "SPV_LAWYER_VOTE_CAST_WEBHOOK_URL",
             event_type::SPV_LAWYER_VOTE_CAST,
         ),
@@ -432,44 +428,12 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             event_type::SILENT_VERDICT_RESOLVED,
         ),
         ("DEAL_EXECUTED_WEBHOOK_URL", event_type::DEAL_EXECUTED),
-        (
-            "LETTING_AGENT_APPOINTED_WEBHOOK_URL",
-            event_type::LETTING_AGENT_APPOINTED,
-        ),
-        (
-            "SHARES_TRANSFERRED_WEBHOOK_URL",
-            event_type::PROPERTY_SHARES_TRANSFERRED,
-        ),
         ("SPV_CASE_CLAIMED_WEBHOOK_URL", event_type::SPV_CASE_CLAIMED),
-        (
-            "AGENT_ELECTION_OPENED_WEBHOOK_URL",
-            event_type::AGENT_ELECTION_OPENED,
-        ),
-        ("PROPOSAL_CREATED_WEBHOOK_URL", event_type::PROPOSAL_CREATED),
-        (
-            "PROPOSAL_FINALIZED_WEBHOOK_URL",
-            event_type::PROPOSAL_FINALIZED,
-        ),
-        (
-            "CHALLENGE_CREATED_WEBHOOK_URL",
-            event_type::CHALLENGE_CREATED,
-        ),
-        (
-            "CHALLENGE_FINALIZED_WEBHOOK_URL",
-            event_type::CHALLENGE_FINALIZED,
-        ),
-        (
-            "HOLDER_CHANGED_WEBHOOK_URL",
-            event_type::PROPERTY_HOLDER_CHANGED,
-        ),
         (
             "INCOME_DISTRIBUTED_WEBHOOK_URL",
             event_type::INCOME_DISTRIBUTED,
         ),
         (
-            // ADR-41: the natural `SHARES_TRANSFERRED_WEBHOOK_URL` spelling is already the
-            // ADR-36 `property_shares_transferred` route (above), so the receiver-push
-            // route is named for what the endpoint does with the event.
             "SHARES_RECEIVED_WEBHOOK_URL",
             event_type::SHARES_TRANSFERRED,
         ),

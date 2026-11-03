@@ -333,24 +333,15 @@ key** below the table.
 | Event type | Env var | Fires on | Dedup subject |
 | --- | --- | --- | --- |
 | `property_asset_registered` | `INIT_PROPERTY_ASSET_WEBHOOK_URL` | marketplace `init_property_assets` (the `PropertyAsset` PDA gets name + metadata_uri + share mint) | the asset PDA (once per asset) |
-| `property_claim_started` | `PROPERTY_CLAIM_STARTED_WEBHOOK_URL` | the FIRST marketplace `claim_shares` on a listing | the listing PDA (once per listing) |
 | `spv_lawyer_vote_cast` | `SPV_LAWYER_VOTE_CAST_WEBHOOK_URL` | marketplace `vote_on_spv_lawyer` | the transaction + instruction path |
 | `spv_lawyer_elected` | `SPV_LAWYER_ELECTED_WEBHOOK_URL` | marketplace `finalize_spv_election` | the transaction + instruction path |
 | `developer_lawyer_assigned` | `DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL` | marketplace `assign_developer_lawyer` | the transaction + instruction path |
 | `documents_confirmed` | `DOCUMENTS_CONFIRMED_WEBHOOK_URL` | marketplace `lawyer_confirm_documents`; status comes from its real `DocumentsConfirmed` log event when available | the transaction + instruction path |
 | `silent_verdict_resolved` | `SILENT_VERDICT_RESOLVED_WEBHOOK_URL` | marketplace `resolve_silent_verdict`; the sale is `Cancelled` | the transaction + instruction path |
 | `deal_executed` | `DEAL_EXECUTED_WEBHOOK_URL` | marketplace `execute_deal`; the sale is `Finalized` | the transaction + instruction path |
-| `letting_agent_appointed` | `LETTING_AGENT_APPOINTED_WEBHOOK_URL` | property `finalize_agent_election` | the transaction + instruction path |
-| `property_shares_transferred` | `SHARES_TRANSFERRED_WEBHOOK_URL` | marketplace `buy_relisted_shares` / `accept_offer` / `send_property_shares` | the transaction + instruction path |
 | `spv_case_claimed` | `SPV_CASE_CLAIMED_WEBHOOK_URL` | marketplace `claim_spv_case` (fires per CANDIDACY; the endpoint collapses per round) | the transaction + instruction path |
-| `agent_election_opened` | `AGENT_ELECTION_OPENED_WEBHOOK_URL` | property `claim_property` (fires per CANDIDACY; the endpoint collapses per round) | the transaction + instruction path |
-| `proposal_created` | `PROPOSAL_CREATED_WEBHOOK_URL` | property `propose` (also fires on the auto-approval path — no proposal row then) | the transaction + instruction path |
-| `proposal_finalized` | `PROPOSAL_FINALIZED_WEBHOOK_URL` | property `finalize_proposal` (outcome/tallies resolved from the frozen proposal row) | the transaction + instruction path |
-| `challenge_created` | `CHALLENGE_CREATED_WEBHOOK_URL` | property `challenge_agent` | the transaction + instruction path |
-| `challenge_finalized` | `CHALLENGE_FINALIZED_WEBHOOK_URL` | property `finalize_challenge` (outcome/tallies resolved from the frozen challenge row) | the transaction + instruction path |
-| `property_holder_changed` | `HOLDER_CHANGED_WEBHOOK_URL` | marketplace `reserve_shares` / `buy_property_shares` (added) and `unreserve_shares` / `release_reservation` / `close_cancelled_position` / `withdraw_expired` / `withdraw_cancelled` / `withdraw_legal_process_expired` (removed) | the transaction + instruction path |
 | `income_distributed` | `INCOME_DISTRIBUTED_WEBHOOK_URL` | property `distribute_income` (the letting agent paid rental income into the property's vault) | the transaction + instruction path |
-| `shares_transferred` | `SHARES_RECEIVED_WEBHOOK_URL` | marketplace `send_property_shares` (a wallet directly sent shares to another wallet; recorded ALONGSIDE the ADR-36 `property_shares_transferred` event) | the transaction + instruction path |
+| `shares_transferred` | `SHARES_RECEIVED_WEBHOOK_URL` | marketplace `send_property_shares` (a wallet directly sent shares to another wallet) | the transaction + instruction path |
 | `offers_namespace_created` | `OFFERS_NAMESPACE_CREATED_WEBHOOK_URL` | marketplace `claim_shares` (first claim per listing) and `relist_shares` (transaction-scoped) | the listing PDA for `claim_shares`; the transaction + instruction path for `relist_shares` |
 
 **Enable it.** Set any of the `*_WEBHOOK_URL` variables to an http(s) endpoint the
@@ -392,15 +383,12 @@ that is the key a consumer must dedupe on:
   `silent_verdict_resolved` and `spv_lawyer_vote_cast` carry all three fields
   (`event`, `tx_signature`, `instruction_path`) and are therefore fully identifiable
   from the body alone;
-* the older transaction-scoped types (e.g. `deal_executed`,
-  `developer_lawyer_assigned`, `property_shares_transferred`) carry `event` and
-  `tx_signature` but no `instruction_path` field, so from the body alone two same-type
-  instructions inside ONE transaction are indistinguishable. That is accepted for them
-  (one transaction performs at most one of each), and it is precisely why the ADR-52
-  verdict events carry the path;
-* the two once-per-subject events (`property_asset_registered` on the asset PDA,
-  `property_claim_started` on the listing PDA) are unique on their subject and identify
-  themselves by `pubkey` / `listing`.
+* the older transaction-scoped types (e.g. `deal_executed` and
+  `developer_lawyer_assigned`) carry `event` and `tx_signature` but no
+  `instruction_path` field, so from the body alone two same-type instructions inside ONE
+  transaction are indistinguishable. That is accepted for them (one transaction performs
+  at most one of each), and it is precisely why the ADR-52 verdict events carry the path;
+* `property_asset_registered` is unique on its asset PDA and identifies itself by `pubkey`.
 
 **Payload contract** (POSTed verbatim as `application/json`; every payload also carries
 `slot`, `tx_signature`, `block_time` (ISO-8601), and `program`):
@@ -417,10 +405,6 @@ that is the key a consumer must dedupe on:
       "block_time": "2026-08-26T10:12:34+00:00",
       "program": "marketplace"
     }
-
-    { "event": "property_claim_started",
-      "listing": "<base58 Listing PDA>", "property": "<base58 PropertyAsset PDA>",
-      "listing_id": 12, "investor": "<base58 wallet of the first claimer>", ... }
 
     { "event": "spv_lawyer_vote_cast",
       "property_id": 12, "voter": "<base58 voter wallet>",
@@ -482,33 +466,6 @@ that is the key a consumer must dedupe on:
       // Consumers therefore accept the old shape (property_id = listing_id, and the
       // property-only payloads of the earliest rows); no historical redrive is required.
 
-    { "event": "letting_agent_appointed",
-      "asset_id": 12, "letting": "<base58 PropertyLetting PDA>", "property": "...",
-      "winner_entry": "<base58 LettingAgent ENTRY PDA — not the agent's wallet> | null",
-      "program": "property", ... }
-
-    { "event": "property_shares_transferred",
-      "kind": "relisted_purchase | offer_accepted | direct_send",
-      "property": "...", "listing": "...",
-      "from": "<base58 seller/sender wallet>", "to": "<base58 buyer/receiver wallet>",
-      "amount": 3, "asset_id": 12,
-      "offer": "<base58 Offer PDA, offer_accepted only> | null", ... }
-      // note: "amount" and "asset_id" are null for offer_accepted (the amount lives in
-      // the on-chain Offer account, which the instruction mapper cannot read).
-
-    { "event": "property_holder_changed",
-      "action": "added | removed",
-      "reason": "reserve_shares | buy_property_shares | unreserve_shares |
-                 release_reservation | close_cancelled_position | withdraw_expired |
-                 withdraw_cancelled | withdraw_legal_process_expired",
-      "investor": "<base58 wallet whose membership changed>",
-      "listing": "...", "property": "... | null",
-      "listing_id": 12, "amount": 5, ... }
-      // note: "amount" is set only on the two add paths; "property" is null on
-      // unreserve_shares / release_reservation / close_cancelled_position (no such
-      // account in the instruction). The crank closes that never name the investor
-      // (close_reservation, close_share_holding) produce NO event.
-
     { "event": "income_distributed",
       "asset_id": 12, "mint": "<base58 payment mint>", "amount": 1500000,
       "agent": "<base58 letting-agent wallet that paid>",
@@ -524,11 +481,8 @@ that is the key a consumer must dedupe on:
       "sender": "<base58 wallet the shares left>",
       "receiver": "<base58 wallet the shares landed with>",
       "program": "marketplace", ... }
-      // note: ADR-41. "amount" is the u32 share count (a JSON number). The narrow,
-      // notification-shaped sibling of property_shares_transferred's "direct_send" —
-      // sender/receiver are that event's "from"/"to". Routed by
-      // SHARES_RECEIVED_WEBHOOK_URL (the SHARES_TRANSFERRED_WEBHOOK_URL spelling is
-      // already the ADR-36 route).
+      // note: ADR-41. "amount" is the u32 share count (a JSON number). Routed by
+      // SHARES_RECEIVED_WEBHOOK_URL.
 
     { "event": "offers_namespace_created",
       "listing_id": 12, "listing": "<base58 Listing PDA>",
@@ -565,6 +519,12 @@ that is the key a consumer must dedupe on:
 4. Force one specific stuck row to retry immediately (bypasses its backoff):
    `UPDATE webhook_events SET next_attempt_at = now() WHERE event_id =
    'property_asset_registered:<PDA>';`
+5. After ADR-53, pending rows for retired event types have no consumer and stay pending
+   forever (they are excluded from the work-set gauge). Retire them explicitly:
+   `DELETE FROM webhook_events WHERE delivered_at IS NULL AND event_type IN
+   ('property_claim_started', 'letting_agent_appointed', 'property_shares_transferred',
+   'property_holder_changed', 'agent_election_opened', 'proposal_created',
+   'proposal_finalized', 'challenge_created', 'challenge_finalized');`
 
 **Backlog on a fresh index.** A fresh database (first deploy, devnet volume wipe) gets
 the backfill re-walk recording every historical `init_property_assets`, and the loop

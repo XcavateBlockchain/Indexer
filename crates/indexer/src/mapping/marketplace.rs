@@ -36,13 +36,9 @@
 //! conditional ops decided by the batcher's SQL (`db::marketplace`). `make_offer` /
 //! `relist_shares` / `send_property_shares` close nothing.
 //!
-//! This is also the program that produces most webhook events (ADR-28/ADR-36):
-//! `init_property_assets`, `claim_shares`, `claim_spv_case`, `vote_on_spv_lawyer`,
-//! `assign_developer_lawyer`, `finalize_spv_election`, `lawyer_confirm_documents`,
-//! `resolve_silent_verdict`, `execute_deal`, and the three secondary-market transfers each
-//! record one durable `webhook_events` row -- see the table above the `webhook_events` match below.
-//! `send_property_shares` additionally records the narrow `shares_transferred`
-//! notification event (ADR-41) alongside its ADR-36 transfer event.
+//! This is also the program that produces most webhook events: property/offers namespaces,
+//! SPV lawyer terms, and document review. `send_property_shares` records the narrow
+//! `shares_transferred` receiver-notification event (ADR-41).
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
 use carbon_core::deserialize::CarbonDeserialize;
@@ -63,7 +59,7 @@ use solana_account::Account;
 use solana_pubkey::Pubkey;
 
 use super::{
-    account_at, account_bytes_at, close_at, event_type, instruction_row, ix_context, IxContext,
+    account_at, account_bytes_at, close_at, event_type, instruction_row, ix_context,
     MappedInstruction, MappingError, PendingClose, ProgramMapper, WebhookEvent,
 };
 use crate::batcher::WriteOp;
@@ -367,27 +363,9 @@ pub fn map_instruction(
         _ => vec![],
     };
 
-    // ADR-28/ADR-36: the webhook producers. Each records a durable, idempotent event that the
-    // background loop routes by `event_type` to its configured endpoint:
-    //
-    // | instruction | event_type | dedup subject |
-    // |---|---|---|
-    // | `init_property_assets` | `property_asset_registered` | the PropertyAsset PDA (once per asset) |
-    // | `claim_shares` | `property_claim_started` | the Listing PDA (only the FIRST claim records) |
-    // | `vote_on_spv_lawyer` | `spv_lawyer_vote_cast` | the transaction + instruction path |
-    // | `finalize_spv_election` | `spv_lawyer_elected` | the transaction + instruction path |
-    // | `lawyer_confirm_documents` | `documents_confirmed` | the transaction + instruction path |
-    // | `resolve_silent_verdict` | `silent_verdict_resolved` | the transaction + instruction path |
-    // | `execute_deal` | `deal_executed` | the transaction + instruction path |
-    // | `buy_relisted_shares` / `accept_offer` / `send_property_shares` | `property_shares_transferred` | the transaction + instruction path |
-    // | `send_property_shares` | `shares_transferred` | the transaction + instruction path |
-    // | `claim_spv_case` | `spv_case_claimed` | the transaction + instruction path |
-    // | `reserve_shares` / `buy_property_shares` / `unreserve_shares` / `release_reservation` / `close_cancelled_position` / `withdraw_*` | `property_holder_changed` | the transaction + instruction path |
-    //
-    // Elections, deals, and transfers may legitimately repeat for one subject (a second
-    // election round after a failed legal process, another resale), so their event_ids are
-    // transaction-scoped (`<type>:<signature>:<instruction path>`) -- unique per real-world
-    // occurrence, still an `ON CONFLICT` no-op when a crawl re-walks the same transaction.
+    // Each producer records a durable, idempotent event that the background loop routes by
+    // `event_type` to its configured endpoint. Namespace creation is deduped by its on-chain
+    // subject; lawyer transitions and direct sends use transaction-and-instruction-scoped ids.
     let tx_signature = ctx.tx_signature.clone();
     let webhook_events = match &decoded.data {
         // ADR-28: `init_property_assets` is the registration of a property asset -- the moment
@@ -421,51 +399,28 @@ pub fn map_instruction(
                 block_time,
             }]
         }
-        // The claim phase opens when a sold-out listing's tokens become claimable; the FIRST
-        // successful `claim_shares` is the observable start (accounts: investor 0, listing 4,
-        // property 5). Deduped by the listing PDA -- every later claim re-records nothing.
         MarketplaceInstruction::ClaimShares(args) => {
             let listing_b58 = account_at(accounts, 4, name)?;
             let property_b58 = account_at(accounts, 5, name)?;
-            vec![
-                WebhookEvent {
-                    event_id: format!("property_claim_started:{listing_b58}"),
-                    event_type: event_type::PROPERTY_CLAIM_STARTED,
-                    payload: serde_json::json!({
-                        "event": event_type::PROPERTY_CLAIM_STARTED,
-                        "listing": &listing_b58,
-                        "property": &property_b58,
-                        "listing_id": args.listing_id,
-                        "investor": account_at(accounts, 0, name)?,
-                        "slot": slot,
-                        "tx_signature": &tx_signature,
-                        "block_time": block_time.to_rfc3339(),
-                        "program": "marketplace",
-                    }),
-                    slot,
-                    tx_signature: tx_signature.clone(),
-                    block_time,
-                },
-                WebhookEvent {
-                    event_id: format!("offers_namespace_created:{listing_b58}"),
-                    event_type: event_type::OFFERS_NAMESPACE_CREATED,
-                    payload: serde_json::json!({
-                        "event": event_type::OFFERS_NAMESPACE_CREATED,
-                        "listing_id": args.listing_id,
-                        "listing": &listing_b58,
-                        "property": &property_b58,
-                        "asset_id": args.listing_id,
-                        "cluster": cluster(),
-                        "slot": slot,
-                        "tx_signature": &tx_signature,
-                        "block_time": block_time.to_rfc3339(),
-                        "program": "marketplace",
-                    }),
-                    slot,
-                    tx_signature,
-                    block_time,
-                },
-            ]
+            vec![WebhookEvent {
+                event_id: format!("offers_namespace_created:{listing_b58}"),
+                event_type: event_type::OFFERS_NAMESPACE_CREATED,
+                payload: serde_json::json!({
+                    "event": event_type::OFFERS_NAMESPACE_CREATED,
+                    "listing_id": args.listing_id,
+                    "listing": &listing_b58,
+                    "property": &property_b58,
+                    "asset_id": args.listing_id,
+                    "cluster": cluster(),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
         }
         // A seller relists owned shares on the secondary market (accounts: seller 0, payer 1,
         // config 2, seller_role 3, listing 4, holding 5, share_listing 6). Unlike claim, a
@@ -643,9 +598,6 @@ pub fn map_instruction(
                 block_time,
             }]
         }
-        // The deal settles (accounts: listing 2, property 3, developer-lawyer registry 5,
-        // spv-lawyer registry 6). The two registry PDAs name the lawyers whose bucket access
-        // the endpoint revokes.
         MarketplaceInstruction::ExecuteDeal(args) => {
             vec![WebhookEvent {
                 event_id: format!("deal_executed:{tx_signature}:{}", ctx.index_str),
@@ -670,116 +622,27 @@ pub fn map_instruction(
                 block_time,
             }]
         }
-        // Secondary-market transfers -- one event label, three kinds, unified payload:
-        // `from`/`to` are the wallets whose bucket read-access the endpoint swaps. The sold
-        // amount is an instruction arg for `buy_relisted_shares`/`send_property_shares` but
-        // lives in the Offer ACCOUNT for `accept_offer` (the pure mapper cannot read it --
-        // null there, and `offer` carries the PDA for anyone who needs to resolve it).
-        MarketplaceInstruction::BuyRelistedShares(args) => {
-            vec![WebhookEvent {
-                event_id: format!(
-                    "property_shares_transferred:{tx_signature}:{}",
-                    ctx.index_str
-                ),
-                event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
-                payload: serde_json::json!({
-                    "event": event_type::PROPERTY_SHARES_TRANSFERRED,
-                    "kind": "relisted_purchase",
-                    "property": account_at(accounts, 5, name)?,
-                    "listing": account_at(accounts, 4, name)?,
-                    "from": account_at(accounts, 7, name)?,  // seller
-                    "to": account_at(accounts, 0, name)?,    // buyer
-                    "amount": args.amount,
-                    "asset_id": args.asset_id,
-                    "offer": serde_json::Value::Null,
-                    "slot": slot,
-                    "tx_signature": &tx_signature,
-                    "block_time": block_time.to_rfc3339(),
-                    "program": "marketplace",
-                }),
-                slot,
-                tx_signature,
-                block_time,
-            }]
-        }
-        MarketplaceInstruction::AcceptOffer(_) => {
-            vec![WebhookEvent {
-                event_id: format!(
-                    "property_shares_transferred:{tx_signature}:{}",
-                    ctx.index_str
-                ),
-                event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
-                payload: serde_json::json!({
-                    "event": event_type::PROPERTY_SHARES_TRANSFERRED,
-                    "kind": "offer_accepted",
-                    "property": account_at(accounts, 5, name)?,
-                    "listing": account_at(accounts, 4, name)?,
-                    "from": account_at(accounts, 0, name)?,  // seller
-                    "to": account_at(accounts, 8, name)?,    // offeror (buyer)
-                    "amount": serde_json::Value::Null,
-                    "asset_id": serde_json::Value::Null,
-                    "offer": account_at(accounts, 10, name)?,
-                    "slot": slot,
-                    "tx_signature": &tx_signature,
-                    "block_time": block_time.to_rfc3339(),
-                    "program": "marketplace",
-                }),
-                slot,
-                tx_signature,
-                block_time,
-            }]
-        }
+        // ADR-41: a wallet pushed shares to another wallet; the profile API turns this
+        // into a "you received shares" push for the receiver.
         MarketplaceInstruction::SendPropertyShares(args) => {
-            vec![
-                WebhookEvent {
-                    event_id: format!(
-                        "property_shares_transferred:{tx_signature}:{}",
-                        ctx.index_str
-                    ),
-                    event_type: event_type::PROPERTY_SHARES_TRANSFERRED,
-                    payload: serde_json::json!({
-                        "event": event_type::PROPERTY_SHARES_TRANSFERRED,
-                        "kind": "direct_send",
-                        "property": account_at(accounts, 6, name)?,
-                        "listing": account_at(accounts, 5, name)?,
-                        "from": account_at(accounts, 0, name)?,  // sender
-                        "to": account_at(accounts, 3, name)?,    // receiver
-                        "amount": args.amount,
-                        "asset_id": args.asset_id,
-                        "offer": serde_json::Value::Null,
-                        "slot": slot,
-                        "tx_signature": &tx_signature,
-                        "block_time": block_time.to_rfc3339(),
-                        "program": "marketplace",
-                    }),
-                    slot,
-                    tx_signature: tx_signature.clone(),
-                    block_time,
-                },
-                // ADR-41: the narrow notification event for the same direct send -- a wallet
-                // pushed shares to another wallet, and the profile API turns this into a
-                // "you received shares" push for the receiver. Recorded ALONGSIDE the ADR-36
-                // transfer event above (whose bucket-access consumer keeps its contract);
-                // tx-scoped event id, since direct sends legitimately repeat per pair.
-                WebhookEvent {
-                    event_id: format!("shares_transferred:{tx_signature}:{}", ctx.index_str),
-                    event_type: event_type::SHARES_TRANSFERRED,
-                    payload: serde_json::json!({
-                        "event": event_type::SHARES_TRANSFERRED,
-                        "asset_id": args.asset_id,
-                        "amount": args.amount,
-                        "sender": account_at(accounts, 0, name)?,
-                        "receiver": account_at(accounts, 3, name)?,
-                        "slot": slot,
-                        "tx_signature": &tx_signature,
-                        "block_time": block_time.to_rfc3339(),
-                        "program": "marketplace",
-                    }),
-                    slot,
-                    tx_signature,
-                    block_time,
-                },
-            ]
+            vec![WebhookEvent {
+                event_id: format!("shares_transferred:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::SHARES_TRANSFERRED,
+                payload: serde_json::json!({
+                    "event": event_type::SHARES_TRANSFERRED,
+                    "asset_id": args.asset_id,
+                    "amount": args.amount,
+                    "sender": account_at(accounts, 0, name)?,
+                    "receiver": account_at(accounts, 3, name)?,
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
         }
         // A lawyer stood for the listing's SPV case (accounts: lawyer 0, listing 4,
         // property 5, candidacy 6). Investors then vote on the candidacy -- this is the
@@ -811,104 +674,6 @@ pub fn map_instruction(
                 block_time,
             }]
         }
-        // ADR-38: primary-market holder changes -- a wallet enters (`reserve_shares`,
-        // `buy_property_shares`) or leaves (`unreserve_shares`, the crank's
-        // `release_reservation` / `close_cancelled_position`, and the three `withdraw_*`
-        // exit paths of a dead listing) the listing's holder set, which the endpoint
-        // mirrors as bucket read access. The two crank closes that do NOT name the
-        // investor (`close_reservation`, `close_share_holding` -- the wallet lives in the
-        // account data the pure mapper cannot read) produce no event; see the helper.
-        MarketplaceInstruction::ReserveShares(args) => vec![holder_membership_event(
-            "added",
-            name,
-            account_at(accounts, 0, name)?,
-            Some(account_at(accounts, 4, name)?),
-            Some(account_at(accounts, 5, name)?),
-            args.listing_id,
-            Some(args.amount),
-            &ctx,
-            block_time,
-        )?],
-        MarketplaceInstruction::BuyPropertyShares(args) => vec![holder_membership_event(
-            "added",
-            name,
-            account_at(accounts, 0, name)?,
-            Some(account_at(accounts, 4, name)?),
-            Some(account_at(accounts, 5, name)?),
-            args.listing_id,
-            Some(args.amount),
-            &ctx,
-            block_time,
-        )?],
-        MarketplaceInstruction::UnreserveShares(args) => vec![holder_membership_event(
-            "removed",
-            name,
-            account_at(accounts, 0, name)?,
-            Some(account_at(accounts, 1, name)?),
-            None,
-            args.listing_id,
-            None,
-            &ctx,
-            block_time,
-        )?],
-        // The crank paths name the investor in the ARGS, not the account list.
-        MarketplaceInstruction::ReleaseReservation(args) => vec![holder_membership_event(
-            "removed",
-            name,
-            args.investor.to_string(),
-            Some(account_at(accounts, 3, name)?),
-            None,
-            args.listing_id,
-            None,
-            &ctx,
-            block_time,
-        )?],
-        MarketplaceInstruction::CloseCancelledPosition(args) => vec![holder_membership_event(
-            "removed",
-            name,
-            args.investor.to_string(),
-            Some(account_at(accounts, 3, name)?),
-            None,
-            args.listing_id,
-            None,
-            &ctx,
-            block_time,
-        )?],
-        MarketplaceInstruction::WithdrawExpired(args) => vec![holder_membership_event(
-            "removed",
-            name,
-            account_at(accounts, 0, name)?,
-            Some(account_at(accounts, 3, name)?),
-            Some(account_at(accounts, 4, name)?),
-            args.listing_id,
-            None,
-            &ctx,
-            block_time,
-        )?],
-        MarketplaceInstruction::WithdrawCancelled(args) => vec![holder_membership_event(
-            "removed",
-            name,
-            account_at(accounts, 0, name)?,
-            Some(account_at(accounts, 3, name)?),
-            Some(account_at(accounts, 4, name)?),
-            args.listing_id,
-            None,
-            &ctx,
-            block_time,
-        )?],
-        MarketplaceInstruction::WithdrawLegalProcessExpired(args) => {
-            vec![holder_membership_event(
-                "removed",
-                name,
-                account_at(accounts, 0, name)?,
-                Some(account_at(accounts, 3, name)?),
-                Some(account_at(accounts, 4, name)?),
-                args.listing_id,
-                None,
-                &ctx,
-                block_time,
-            )?]
-        }
         _ => vec![],
     };
 
@@ -918,51 +683,6 @@ pub fn map_instruction(
         closes,
         webhook_events,
     }))
-}
-
-/// Builds one `property_holder_changed` event (ADR-38): the primary-market counterpart to
-/// the secondary market's `property_shares_transferred` swap. `action` is `added` or
-/// `removed`; `reason` is the instruction name (the endpoint logs it, and an operator
-/// reading `webhook_events` can tell a reserve from a crank release). The two crank closes
-/// that reference the investor only through account DATA (`close_reservation`,
-/// `close_share_holding`) are deliberately NOT produced here: the pure mapper cannot read
-/// that wallet, and a `removed` event addressed to the wrong subject would kick an
-/// innocent holder out of the bucket -- the mirror's own close handling knows the wallet,
-/// so a future batcher-side hook could cover them (see the API repo's uncertainties doc).
-#[allow(clippy::too_many_arguments)]
-fn holder_membership_event(
-    action: &'static str,
-    reason: &'static str,
-    investor: String,
-    listing: Option<String>,
-    property: Option<String>,
-    listing_id: u64,
-    amount: Option<u32>,
-    ctx: &IxContext,
-    block_time: DateTime<Utc>,
-) -> Result<WebhookEvent, MappingError> {
-    let tx_signature = ctx.tx_signature.clone();
-    Ok(WebhookEvent {
-        event_id: format!("property_holder_changed:{tx_signature}:{}", ctx.index_str),
-        event_type: event_type::PROPERTY_HOLDER_CHANGED,
-        payload: serde_json::json!({
-            "event": event_type::PROPERTY_HOLDER_CHANGED,
-            "action": action,
-            "reason": reason,
-            "investor": &investor,
-            "listing": listing,
-            "property": property,
-            "listing_id": listing_id,
-            "amount": amount,
-            "slot": ctx.slot,
-            "tx_signature": &tx_signature,
-            "block_time": block_time.to_rfc3339(),
-            "program": "marketplace",
-        }),
-        slot: ctx.slot,
-        tx_signature,
-        block_time,
-    })
 }
 
 fn listing_status_from_chain(status: &ChainListingStatus) -> ListingStatus {
