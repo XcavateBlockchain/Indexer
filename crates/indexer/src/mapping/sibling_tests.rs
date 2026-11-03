@@ -551,15 +551,62 @@ mod marketplace {
         AcceptOffer, AssignDeveloperLawyer, BuyPropertyShares, BuyRelistedShares, CancelOffer,
         ClaimShares, ClaimSpvCase, CloseCancelledPosition, CloseCase, CloseDeadListing,
         CloseShareHolding, DelistShares, ExecuteDeal, FinalizeSpvElection, InitPropertyAssets,
-        MakeOffer, MarketplaceInstruction, RejectOffer, ReleaseReservation, RelistShares,
-        ReserveShares, SendPropertyShares, UnregisterLawyer, UnreserveShares, VoteOnSpvLawyer,
-        WithdrawCancelled, WithdrawExpired, WithdrawLegalProcessExpired,
+        LawyerConfirmDocuments, MakeOffer, MarketplaceInstruction, RejectOffer, ReleaseReservation,
+        RelistShares, ReserveShares, ResolveSilentVerdict, SendPropertyShares, UnregisterLawyer,
+        UnreserveShares, VoteOnSpvLawyer, WithdrawCancelled, WithdrawExpired,
+        WithdrawLegalProcessExpired,
     };
     use carbon_marketplace_decoder::PROGRAM_ID;
 
     fn map(data: MarketplaceInstruction, n_accounts: usize) -> MappedInstruction {
         map_instruction(
             &metadata(),
+            &decoded_for(PROGRAM_ID, data, &pks(n_accounts)),
+            block_time(),
+        )
+        .expect("mapping must succeed")
+        .expect("this variant must produce rows")
+    }
+
+    fn map_with_event_log(
+        data: MarketplaceInstruction,
+        n_accounts: usize,
+        event_data: &str,
+    ) -> MappedInstruction {
+        map_with_event_log_at_path(data, n_accounts, event_data, &[0])
+    }
+
+    fn map_with_event_log_at_path(
+        data: MarketplaceInstruction,
+        n_accounts: usize,
+        event_data: &str,
+        path: &[u8],
+    ) -> MappedInstruction {
+        let mut logs = Vec::new();
+        for top_level in 0..=path[0] {
+            logs.push(format!("Program {PROGRAM_ID} invoke [1]"));
+            if top_level == path[0] {
+                if path.len() == 1 {
+                    logs.push(format!("Program data: {event_data}"));
+                } else {
+                    for nested in 0..=path[1] {
+                        logs.push(format!("Program {PROGRAM_ID} invoke [2]"));
+                        if nested == path[1] {
+                            logs.push(format!("Program data: {event_data}"));
+                        }
+                        logs.push(format!("Program {PROGRAM_ID} success"));
+                    }
+                }
+            }
+            logs.push(format!("Program {PROGRAM_ID} success"));
+        }
+        let mut transaction = tx_metadata(sig(), SLOT, None);
+        std::sync::Arc::get_mut(&mut transaction)
+            .expect("the fixture owns its transaction metadata")
+            .meta
+            .log_messages = Some(logs);
+        map_instruction(
+            &instruction_metadata(transaction, path),
             &decoded_for(PROGRAM_ID, data, &pks(n_accounts)),
             block_time(),
         )
@@ -1094,6 +1141,470 @@ mod marketplace {
         assert_eq!(ev.payload["winner_registry"], serde_json::Value::Null);
     }
 
+    /// Map one instruction against a caller-supplied log list, so a test can place an
+    /// unrelated or nested log line inside the SAME instruction's logs.
+    fn map_with_logs(
+        data: MarketplaceInstruction,
+        n_accounts: usize,
+        path: &[u8],
+        logs: Vec<String>,
+    ) -> MappedInstruction {
+        let mut transaction = tx_metadata(sig(), SLOT, None);
+        std::sync::Arc::get_mut(&mut transaction)
+            .expect("the fixture owns its transaction metadata")
+            .meta
+            .log_messages = Some(logs);
+        map_instruction(
+            &instruction_metadata(transaction, path),
+            &decoded_for(PROGRAM_ID, data, &pks(n_accounts)),
+            block_time(),
+        )
+        .expect("mapping must succeed")
+        .expect("this variant must produce rows")
+    }
+
+    /// The same `lawyer_confirm_documents` instruction twice in ONE transaction, each emit
+    /// inside its own invoke frame. ADR-52: the transaction signature alone cannot identify a
+    /// verdict, so the two mappings must produce two distinct outbox rows.
+    fn map_two_confirmations_in_one_transaction(
+        first_event: &str,
+        second_event: &str,
+    ) -> (MappedInstruction, MappedInstruction) {
+        let logs = vec![
+            format!("Program {PROGRAM_ID} invoke [1]"),
+            format!("Program data: {first_event}"),
+            format!("Program {PROGRAM_ID} success"),
+            format!("Program {PROGRAM_ID} invoke [1]"),
+            format!("Program data: {second_event}"),
+            format!("Program {PROGRAM_ID} success"),
+        ];
+        let mut transaction = tx_metadata(sig(), SLOT, None);
+        std::sync::Arc::get_mut(&mut transaction)
+            .expect("the fixture owns its transaction metadata")
+            .meta
+            .log_messages = Some(logs);
+        let map_at = |path: &[u8]| {
+            map_instruction(
+                &instruction_metadata(std::sync::Arc::clone(&transaction), path),
+                &decoded_for(
+                    PROGRAM_ID,
+                    MarketplaceInstruction::LawyerConfirmDocuments(LawyerConfirmDocuments {
+                        listing_id: 7,
+                        approve: true,
+                        documents_hash: [9; 32],
+                    }),
+                    &pks(3),
+                ),
+                block_time(),
+            )
+            .expect("mapping must succeed")
+            .expect("this variant must produce rows")
+        };
+        (map_at(&[0]), map_at(&[1]))
+    }
+
+    /// The pinned v2 key set (`sorted`), so a payload field can only change by an explicit
+    /// contract edit -- in particular the removed `resolution_required` / `post_state` can
+    /// never silently return.
+    fn sorted_keys(payload: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = payload
+            .as_object()
+            .expect("a webhook payload is a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    const DOCUMENTS_CONFIRMED_KEYS: [&str; 17] = [
+        "approve",
+        "block_time",
+        "cluster",
+        "documents_hash",
+        "event",
+        "instruction_path",
+        "lawyer",
+        "listing",
+        "listing_id",
+        "log_evidence",
+        "payload_version",
+        "program",
+        "property_id",
+        "review_outcome",
+        "slot",
+        "status",
+        "tx_signature",
+    ];
+
+    const SILENT_VERDICT_RESOLVED_KEYS: [&str; 15] = [
+        "block_time",
+        "cluster",
+        "event",
+        "instruction_path",
+        "listing",
+        "listing_id",
+        "log_evidence",
+        "payload_version",
+        "program",
+        "property_id",
+        "review_outcome",
+        "silent_lawyer",
+        "slot",
+        "status",
+        "tx_signature",
+    ];
+
+    /// The `DocumentsConfirmed` log emits, base64-encoded (discriminator + listing_id 7 +
+    /// lawyer `[1; 32]` + approve + hash `[9; 32]` + the resulting `ListingStatus`).
+    const LEGAL_LOG: &str = "V1Jwgqou52IHAAAAAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAw==";
+    const SOLD_OUT_LOG: &str = "V1Jwgqou52IHAAAAAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAg==";
+    const CANCELLED_LOG: &str = "V1Jwgqou52IHAAAAAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJBg==";
+
+    fn confirm_documents() -> MarketplaceInstruction {
+        MarketplaceInstruction::LawyerConfirmDocuments(LawyerConfirmDocuments {
+            listing_id: 7,
+            approve: true,
+            documents_hash: [9; 32],
+        })
+    }
+
+    /// The whole v2 `documents_confirmed` payload, pinned by value (not field by field) so the
+    /// ProfileApi contract fixture can be aligned byte-for-byte. Field order is irrelevant on
+    /// the wire; the KEY SET and every value are the contract.
+    #[test]
+    fn documents_confirmed_v2_payload_is_pinned_whole() {
+        let m = map_with_event_log(confirm_documents(), 3, LEGAL_LOG);
+        assert_eq!(
+            m.webhook_events[0].payload,
+            serde_json::json!({
+                "event": "documents_confirmed",
+                "payload_version": 2,
+                "log_evidence": "decoded",
+                "review_outcome": "approved",
+                "listing_id": 7,
+                "property_id": 7,
+                "cluster": "devnet",
+                "lawyer": pk(1).to_string(),
+                "approve": true,
+                "documents_hash": bs58::encode([9u8; 32]).into_string(),
+                "status": "Legal",
+                "listing": pk(3).to_string(),
+                "slot": SLOT as i64,
+                "tx_signature": sig().to_string(),
+                "instruction_path": "0",
+                "block_time": block_time().to_rfc3339(),
+                "program": "marketplace",
+            })
+        );
+    }
+
+    /// The whole v2 `silent_verdict_resolved` payload, pinned by value for the same reason.
+    #[test]
+    fn silent_verdict_resolved_v2_payload_is_pinned_whole() {
+        let m = map_with_event_log(
+            MarketplaceInstruction::ResolveSilentVerdict(ResolveSilentVerdict { listing_id: 7 }),
+            2,
+            "Js+sjGC2z3MHAAAAAAAAABUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUV",
+        );
+        assert_eq!(
+            m.webhook_events[0].payload,
+            serde_json::json!({
+                "event": "silent_verdict_resolved",
+                "payload_version": 2,
+                "log_evidence": "decoded",
+                "review_outcome": "cancelled",
+                "listing_id": 7,
+                "property_id": 7,
+                "cluster": "devnet",
+                "silent_lawyer": pk(21).to_string(),
+                "status": "Cancelled",
+                "listing": pk(2).to_string(),
+                "slot": SLOT as i64,
+                "tx_signature": sig().to_string(),
+                "instruction_path": "0",
+                "block_time": block_time().to_rfc3339(),
+                "program": "marketplace",
+            })
+        );
+    }
+
+    #[test]
+    fn lawyer_confirm_documents_emits_a_redelivery_safe_verdict_event() {
+        let m = map(confirm_documents(), 3);
+        assert_eq!(m.instruction.ix_name, "lawyer_confirm_documents");
+        assert_eq!(m.webhook_events.len(), 1);
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "documents_confirmed");
+        assert_eq!(ev.event_id, format!("documents_confirmed:{}:0", sig()));
+        assert_eq!(ev.slot, SLOT as i64);
+        assert_eq!(ev.tx_signature, sig().to_string());
+        assert_eq!(ev.block_time, block_time());
+        let p = &ev.payload;
+        assert_eq!(
+            sorted_keys(p),
+            DOCUMENTS_CONFIRMED_KEYS,
+            "the pinned v2 documents_confirmed key set"
+        );
+        assert_eq!(p["event"], "documents_confirmed");
+        assert_eq!(p["listing_id"], serde_json::json!(7));
+        assert_eq!(p["property_id"], serde_json::json!(7));
+        assert_eq!(p["lawyer"], pk(1).to_string()); // account index 0
+        assert_eq!(p["approve"], serde_json::json!(true));
+        // The wire form is base58 of the 32 instruction bytes, never hex.
+        assert_eq!(p["documents_hash"], bs58::encode([9; 32]).into_string());
+        assert_eq!(p["listing"], pk(3).to_string()); // account index 2
+        assert_eq!(p["cluster"], "devnet");
+        assert!(
+            p.get("status").is_some(),
+            "status must be present even when null"
+        );
+        assert_eq!(p["status"], serde_json::Value::Null);
+        assert_eq!(p["payload_version"], 2);
+        assert_eq!(p["log_evidence"], "missing");
+        assert_eq!(p["review_outcome"], "unresolved");
+        assert_eq!(p["instruction_path"], "0");
+        assert_eq!(p["slot"], serde_json::json!(SLOT as i64));
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["block_time"], block_time().to_rfc3339());
+        assert_eq!(p["program"], "marketplace");
+
+        let redelivered = map(confirm_documents(), 3);
+        assert_eq!(redelivered.webhook_events[0].event_id, ev.event_id);
+    }
+
+    #[test]
+    fn lawyer_confirm_documents_preserves_the_resulting_chain_status() {
+        // ADR-52: `status` is the program's own post-instruction ListingStatus and
+        // `review_outcome` is its label. SoldOut is reported as-is -- it covers BOTH a pending
+        // second seat and the first split reset, which only the consumer's ordered verdict
+        // ledger can tell apart -- and it is delivered like any other event.
+        for (event_data, expected_status, expected_outcome) in [
+            (LEGAL_LOG, "Legal", "approved"),
+            (SOLD_OUT_LOG, "SoldOut", "unresolved"),
+            (CANCELLED_LOG, "Cancelled", "cancelled"),
+        ] {
+            let m = map_with_event_log(confirm_documents(), 3, event_data);
+            assert_eq!(m.webhook_events.len(), 1);
+            let p = &m.webhook_events[0].payload;
+            assert_eq!(
+                sorted_keys(p),
+                DOCUMENTS_CONFIRMED_KEYS,
+                "the pinned v2 documents_confirmed key set"
+            );
+            assert_eq!(p["status"], expected_status);
+            assert_eq!(p["payload_version"], 2);
+            assert_eq!(p["log_evidence"], "decoded");
+            assert_eq!(p["review_outcome"], expected_outcome);
+        }
+    }
+
+    #[test]
+    fn two_verdicts_in_one_transaction_are_two_distinct_events() {
+        // Two assigned lawyers can rule in one transaction. The outbox id and the consumer's
+        // dedupe key are therefore (event, tx_signature, instruction_path) -- one signature
+        // carrying two verdicts must not collapse into one row.
+        let (first, second) = map_two_confirmations_in_one_transaction(LEGAL_LOG, CANCELLED_LOG);
+        assert_eq!(first.webhook_events.len(), 1);
+        assert_eq!(second.webhook_events.len(), 1);
+        let first = &first.webhook_events[0];
+        let second = &second.webhook_events[0];
+
+        assert_eq!(first.event_id, format!("documents_confirmed:{}:0", sig()));
+        assert_eq!(second.event_id, format!("documents_confirmed:{}:1", sig()));
+        assert_ne!(first.event_id, second.event_id);
+        // Same transaction identity, different instruction path and different log status.
+        assert_eq!(first.tx_signature, second.tx_signature);
+        assert_eq!(
+            first.payload["tx_signature"],
+            second.payload["tx_signature"]
+        );
+        assert_eq!(first.payload["instruction_path"], "0");
+        assert_eq!(second.payload["instruction_path"], "1");
+        assert_eq!(first.payload["log_evidence"], "decoded");
+        assert_eq!(second.payload["log_evidence"], "decoded");
+        assert_eq!(first.payload["status"], "Legal");
+        assert_eq!(second.payload["status"], "Cancelled");
+        assert_eq!(first.payload["review_outcome"], "approved");
+        assert_eq!(second.payload["review_outcome"], "cancelled");
+        assert_ne!(first.payload, second.payload);
+    }
+
+    #[test]
+    fn resolve_silent_verdict_emits_the_silent_lawyer_and_cancellation() {
+        let m = map_with_event_log(
+            MarketplaceInstruction::ResolveSilentVerdict(ResolveSilentVerdict { listing_id: 7 }),
+            2,
+            "Js+sjGC2z3MHAAAAAAAAABUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUV",
+        );
+        assert_eq!(m.instruction.ix_name, "resolve_silent_verdict");
+        assert_eq!(m.webhook_events.len(), 1);
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_type, "silent_verdict_resolved");
+        assert_eq!(ev.event_id, format!("silent_verdict_resolved:{}:0", sig()));
+        let p = &ev.payload;
+        assert_eq!(
+            sorted_keys(p),
+            SILENT_VERDICT_RESOLVED_KEYS,
+            "the pinned v2 silent_verdict_resolved key set"
+        );
+        assert_eq!(p["event"], "silent_verdict_resolved");
+        assert_eq!(p["listing_id"], serde_json::json!(7));
+        assert_eq!(p["property_id"], serde_json::json!(7));
+        assert_eq!(p["silent_lawyer"], pk(21).to_string());
+        assert_eq!(p["status"], "Cancelled");
+        assert_eq!(p["payload_version"], 2);
+        assert_eq!(p["log_evidence"], "decoded");
+        assert_eq!(p["review_outcome"], "cancelled");
+        assert_eq!(p["listing"], pk(2).to_string()); // account index 1
+        assert_eq!(p["cluster"], "devnet");
+        assert_eq!(p["instruction_path"], "0");
+        assert_eq!(p["tx_signature"], sig().to_string());
+        assert_eq!(p["program"], "marketplace");
+    }
+
+    #[test]
+    fn a_logless_silent_verdict_is_recorded_with_a_null_silent_seat() {
+        // Truncated log messages are a normal Solana outcome. The cancellation is
+        // chain-guaranteed, so it is still announced with `status: "Cancelled"`; only
+        // `silent_lawyer` degrades to null, marked by `log_evidence: "missing"` (ADR-52).
+        let m = map(
+            MarketplaceInstruction::ResolveSilentVerdict(ResolveSilentVerdict { listing_id: 7 }),
+            2,
+        );
+        assert_eq!(m.webhook_events.len(), 1, "the trigger is still recorded");
+        let p = &m.webhook_events[0].payload;
+        assert_eq!(
+            sorted_keys(p),
+            SILENT_VERDICT_RESOLVED_KEYS,
+            "the pinned v2 silent_verdict_resolved key set"
+        );
+        assert_eq!(p["silent_lawyer"], serde_json::Value::Null);
+        assert_eq!(p["status"], "Cancelled");
+        assert_eq!(p["payload_version"], 2);
+        assert_eq!(p["log_evidence"], "missing");
+        assert_eq!(p["review_outcome"], "cancelled");
+    }
+
+    #[test]
+    fn a_logless_document_verdict_is_recorded_as_unresolved_not_guessed() {
+        let m = map(confirm_documents(), 3);
+        let p = &m.webhook_events[0].payload;
+        assert_eq!(p["log_evidence"], "missing");
+        assert_eq!(p["status"], serde_json::Value::Null);
+        assert_eq!(p["review_outcome"], "unresolved");
+        // The instruction's own facts still ride along, so the consumer can record the verdict.
+        assert_eq!(p["lawyer"], pk(1).to_string());
+        assert_eq!(p["approve"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn an_unrelated_log_line_in_the_same_instruction_is_never_a_false_decode() {
+        // Three shapes of noise inside the mapped instruction's own logs: an Anchor
+        // "Instruction:" log line, a nested CPI frame that emitted the event one path DEEPER
+        // than this instruction, and a sibling event type's payload. None may decode into a
+        // status; the row says "missing" or "malformed" and carries a null status.
+        let noise: [(&str, Vec<String>); 3] = [
+            (
+                "an anchor instruction log line",
+                vec![
+                    format!("Program {PROGRAM_ID} invoke [1]"),
+                    "Program log: Instruction: LawyerConfirmDocuments.".to_string(),
+                    "Program log: 4 times the fee, 12 shares.".to_string(),
+                    format!("Program {PROGRAM_ID} success"),
+                ],
+            ),
+            (
+                "an event emitted one nested frame deeper",
+                vec![
+                    format!("Program {PROGRAM_ID} invoke [1]"),
+                    format!("Program {PROGRAM_ID} invoke [2]"),
+                    format!("Program data: {LEGAL_LOG}"),
+                    format!("Program {PROGRAM_ID} success"),
+                    format!("Program {PROGRAM_ID} success"),
+                ],
+            ),
+            (
+                "another event type's payload",
+                vec![
+                    format!("Program {PROGRAM_ID} invoke [1]"),
+                    // SilentVerdictResolved's emit, not DocumentsConfirmed's.
+                    "Program data: Js+sjGC2z3MHAAAAAAAAABUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUV".to_string(),
+                    format!("Program {PROGRAM_ID} success"),
+                ],
+            ),
+        ];
+        for (label, logs) in noise {
+            let m = map_with_logs(confirm_documents(), 3, &[0], logs);
+            let p = &m.webhook_events[0].payload;
+            assert_ne!(p["log_evidence"], "decoded", "{label} must not decode");
+            assert!(
+                matches!(
+                    p["log_evidence"].as_str(),
+                    Some("missing") | Some("malformed")
+                ),
+                "{label}: unexpected log_evidence {:?}",
+                p["log_evidence"]
+            );
+            assert_eq!(p["status"], serde_json::Value::Null, "{label}");
+            assert_eq!(p["review_outcome"], "unresolved", "{label}");
+            assert_eq!(p["listing_id"], serde_json::json!(7), "{label}");
+        }
+    }
+
+    #[test]
+    fn a_wrong_discriminator_or_truncated_event_body_is_malformed_evidence() {
+        // Both shapes reach the generated decoder and fail there, which is exactly what
+        // `log_evidence: "malformed"` means: logs existed, none was this event.
+        for (label, event_data) in [
+            (
+                "a wrong discriminator",
+                // Every field intact, but the discriminator is [0; 8] instead of
+                // DocumentsConfirmed's.
+                "AAAAAAAAAAAHAAAAAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAw==",
+            ),
+            (
+                "a truncated body",
+                // DocumentsConfirmed's discriminator, then the fields cut off mid-wallet.
+                "V1Jwgqou52IHAAAAAAAAAAEBAQE=",
+            ),
+            (
+                "a short junk line",
+                "AAECAwQFBgc=",
+            ),
+        ] {
+            let m = map_with_event_log(confirm_documents(), 3, event_data);
+            let p = &m.webhook_events[0].payload;
+            assert_eq!(p["log_evidence"], "malformed", "{label}");
+            assert_eq!(p["status"], serde_json::Value::Null, "{label}");
+            assert_eq!(p["review_outcome"], "unresolved", "{label}");
+        }
+    }
+
+    #[test]
+    fn document_event_ids_and_log_decoding_are_scoped_to_each_instruction_path() {
+        for path in [vec![0], vec![1]] {
+            let m = map_with_event_log_at_path(confirm_documents(), 3, LEGAL_LOG, &path);
+            let ev = &m.webhook_events[0];
+            let path = path.iter().map(u8::to_string).collect::<Vec<_>>().join(".");
+            assert_eq!(ev.event_id, format!("documents_confirmed:{}:{path}", sig()));
+            assert_eq!(ev.payload["instruction_path"], path);
+            assert_eq!(ev.payload["log_evidence"], "decoded");
+            assert_eq!(ev.payload["status"], "Legal");
+        }
+    }
+
+    #[test]
+    fn nested_document_event_uses_its_own_log_and_full_instruction_path() {
+        let m = map_with_event_log_at_path(confirm_documents(), 3, SOLD_OUT_LOG, &[0, 0]);
+        let ev = &m.webhook_events[0];
+        assert_eq!(ev.event_id, format!("documents_confirmed:{}:0.0", sig()));
+        assert_eq!(ev.payload["instruction_path"], "0.0");
+        assert_eq!(ev.payload["log_evidence"], "decoded");
+        assert_eq!(ev.payload["status"], "SoldOut");
+        assert_eq!(ev.payload["review_outcome"], "unresolved");
+    }
+
     #[test]
     fn execute_deal_emits_the_deal_executed_event() {
         // ADR-36: accounts 2/3 are the listing + property PDAs, 5/6 the two lawyer registry
@@ -1110,6 +1621,9 @@ mod marketplace {
         let p = &ev.payload;
         assert_eq!(p["event"], "deal_executed");
         assert_eq!(p["listing_id"], serde_json::json!(7));
+        assert_eq!(p["property_id"], serde_json::json!(7));
+        assert_eq!(p["cluster"], "devnet");
+        assert_eq!(p["status"], "Finalized");
         assert_eq!(p["listing"], pk(3).to_string()); // account index 2
         assert_eq!(p["property"], pk(4).to_string()); // account index 3
         assert_eq!(p["developer_lawyer_registry"], pk(6).to_string()); // index 5

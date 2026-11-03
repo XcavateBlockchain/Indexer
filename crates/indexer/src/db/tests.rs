@@ -2097,6 +2097,75 @@ async fn webhook_record_is_idempotent_and_immediately_pending(pool: PgPool) -> s
     Ok(())
 }
 
+/// ADR-52: the delivery work set is keyed only on delivery state and the configured route --
+/// a v2 review event recorded with `log_evidence: "missing"` and `review_outcome:
+/// "unresolved"` (the FIRST verdict of every review, and every split-verdict reset) is
+/// immediately deliverable. Nothing in the payload may withhold a row: no writer ever revises
+/// a recorded payload, so a payload-shaped gate would make the review bucket permanently
+/// silent rather than temporarily unconfirmed.
+#[sqlx::test(migrations = "../../migrations")]
+async fn webhook_work_set_delivers_unconfirmed_review_events(pool: PgPool) -> sqlx::Result<()> {
+    let unconfirmed = serde_json::json!({
+        "event": "documents_confirmed",
+        "payload_version": 2,
+        "log_evidence": "missing",
+        "review_outcome": "unresolved",
+        "status": serde_json::Value::Null
+    });
+    record_event(
+        &pool,
+        "documents_confirmed:sig:0",
+        "documents_confirmed",
+        &unconfirmed,
+        100,
+        "sig",
+        bt(100),
+    )
+    .await?;
+
+    let pending = pending_events(&pool, 10, &["documents_confirmed"]).await?;
+    assert_eq!(
+        pending.len(),
+        1,
+        "an unresolved/missing-evidence verdict is still delivery work"
+    );
+    assert_eq!(pending[0].event_id, "documents_confirmed:sig:0");
+    assert_eq!(pending[0].payload["log_evidence"], "missing");
+    assert_eq!(pending[0].payload["review_outcome"], "unresolved");
+    assert_eq!(
+        count_webhook_pending(&pool, &["documents_confirmed"]).await?,
+        1,
+        "and it is counted as pending operational work"
+    );
+
+    // A malformed-evidence verdict and a legacy (pre-v2) row drain on the same terms.
+    for (event_id, event_type, payload) in [
+        (
+            "documents_confirmed:sig:1",
+            "documents_confirmed",
+            serde_json::json!({
+                "event": "documents_confirmed",
+                "payload_version": 2,
+                "log_evidence": "malformed",
+                "review_outcome": "unresolved"
+            }),
+        ),
+        (
+            "deal_executed:legacy:0",
+            "deal_executed",
+            serde_json::json!({ "event": "deal_executed", "property": "legacy-property" }),
+        ),
+    ] {
+        record_event(&pool, event_id, event_type, &payload, 100, "sig", bt(100)).await?;
+        let pending = pending_events(&pool, 10, &[event_type]).await?;
+        assert!(
+            pending.iter().any(|e| e.event_id == event_id),
+            "{event_id} must be deliverable"
+        );
+    }
+    Ok(())
+}
+
 /// ADR-36: the work set is filtered to the CONFIGURED event types -- an event of an
 /// unconfigured type stays pending but invisible to both the cycle and the gauge, and drains
 /// if its `*_WEBHOOK_URL` is ever set.

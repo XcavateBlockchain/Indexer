@@ -78,6 +78,11 @@ pub const WEBHOOKS_DELIVERED_TOTAL: &str = "webhooks_delivered_total";
 /// persistently non-zero value means the loop is losing to the endpoint (or the network) --
 /// the per-event reason is `last_error` in `webhook_events`.
 pub const WEBHOOKS_PENDING: &str = "webhooks_pending";
+/// Counter: lawyer-review events whose expected log event was absent or malformed (ADR-52).
+/// Labelled by event type and `reason` = `missing` / `malformed`. The row is still recorded and
+/// delivered; the counter is how an operator notices that the payload's `status` /
+/// `silent_lawyer` arrived unconfirmed (the indexer never backfills them from later state).
+pub const WEBHOOK_LOG_EVIDENCE_FAILURES_TOTAL: &str = "webhook_log_evidence_failures_total";
 /// Counter: sold-out claim notification deliveries by outcome (ADR-35), labelled `result` =
 /// `success` / `failure` (per EVENT, not per investor push -- the per-investor detail is in
 /// the loop's log lines and the row's `last_error`). A rising `failure` series (with
@@ -185,6 +190,10 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         "Webhook delivery work-set size after the last cycle: events recorded but not yet delivered"
     );
     metrics::describe_counter!(
+        WEBHOOK_LOG_EVIDENCE_FAILURES_TOTAL,
+        "Lawyer-review events with missing or malformed expected log evidence"
+    );
+    metrics::describe_counter!(
         NOTIFICATIONS_DELIVERED_TOTAL,
         "Sold-out claim notification deliveries by outcome (ADR-35)"
     );
@@ -219,6 +228,16 @@ pub fn install(addr: SocketAddr) -> Result<()> {
         metrics::counter!(WEBHOOKS_DELIVERED_TOTAL, "result" => result).increment(0);
         metrics::counter!(NOTIFICATIONS_DELIVERED_TOTAL, "result" => result).increment(0);
         metrics::counter!(PROPERTY_IMAGES_MIRRORED_TOTAL, "result" => result).increment(0);
+    }
+    for event_type in ["documents_confirmed", "silent_verdict_resolved"] {
+        for reason in ["missing", "malformed"] {
+            metrics::counter!(
+                WEBHOOK_LOG_EVIDENCE_FAILURES_TOTAL,
+                "event_type" => event_type,
+                "reason" => reason
+            )
+            .increment(0);
+        }
     }
     // WEBHOOKS_PENDING is deliberately not pre-registered (same convention as the slot gauges
     // and property_metadata_pending): an absent series reads as "this process has not run a
@@ -366,6 +385,17 @@ pub fn inc_webhook_delivery(result: &'static str) {
 /// The webhook delivery work-set size after one delivery cycle (ADR-28).
 pub fn set_webhooks_pending(n: i64) {
     metrics::gauge!(WEBHOOKS_PENDING).set(n as f64);
+}
+
+/// A lawyer-review instruction whose expected log event was missing or malformed (ADR-52).
+/// `event_type` and `reason` are low-cardinality payload values, never signatures or pubkeys.
+pub fn inc_webhook_log_evidence_failure(event_type: &'static str, reason: &'static str) {
+    metrics::counter!(
+        WEBHOOK_LOG_EVIDENCE_FAILURES_TOTAL,
+        "event_type" => event_type,
+        "reason" => reason
+    )
+    .increment(1);
 }
 
 /// One sold-out claim notification event's outcome (ADR-35). `result` is `success` or

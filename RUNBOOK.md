@@ -325,7 +325,10 @@ URIs — no other step is needed.
 
 When property-lifecycle state changes happen on-chain, the indexer POSTs one JSON
 document per event to the endpoint configured for its type (ADR-28/ADR-36). The route
-table — one optional env var per event type, each independently switchable:
+table — one optional env var per event type, each independently switchable. The
+"Dedup subject" column is the outbox row's subject; the consumer-facing identity of
+every event is the triple `(event, tx_signature, instruction_path)` — see **Dedupe
+key** below the table.
 
 | Event type | Env var | Fires on | Dedup subject |
 | --- | --- | --- | --- |
@@ -334,7 +337,9 @@ table — one optional env var per event type, each independently switchable:
 | `spv_lawyer_vote_cast` | `SPV_LAWYER_VOTE_CAST_WEBHOOK_URL` | marketplace `vote_on_spv_lawyer` | the transaction + instruction path |
 | `spv_lawyer_elected` | `SPV_LAWYER_ELECTED_WEBHOOK_URL` | marketplace `finalize_spv_election` | the transaction + instruction path |
 | `developer_lawyer_assigned` | `DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL` | marketplace `assign_developer_lawyer` | the transaction + instruction path |
-| `deal_executed` | `DEAL_EXECUTED_WEBHOOK_URL` | marketplace `execute_deal` | the transaction + instruction path |
+| `documents_confirmed` | `DOCUMENTS_CONFIRMED_WEBHOOK_URL` | marketplace `lawyer_confirm_documents`; status comes from its real `DocumentsConfirmed` log event when available | the transaction + instruction path |
+| `silent_verdict_resolved` | `SILENT_VERDICT_RESOLVED_WEBHOOK_URL` | marketplace `resolve_silent_verdict`; the sale is `Cancelled` | the transaction + instruction path |
+| `deal_executed` | `DEAL_EXECUTED_WEBHOOK_URL` | marketplace `execute_deal`; the sale is `Finalized` | the transaction + instruction path |
 | `letting_agent_appointed` | `LETTING_AGENT_APPOINTED_WEBHOOK_URL` | property `finalize_agent_election` | the transaction + instruction path |
 | `property_shares_transferred` | `SHARES_TRANSFERRED_WEBHOOK_URL` | marketplace `buy_relisted_shares` / `accept_offer` / `send_property_shares` | the transaction + instruction path |
 | `spv_case_claimed` | `SPV_CASE_CLAIMED_WEBHOOK_URL` | marketplace `claim_spv_case` (fires per CANDIDACY; the endpoint collapses per round) | the transaction + instruction path |
@@ -369,10 +374,33 @@ the work set (undelivered rows OF THE CONFIGURED TYPES whose backoff has elapsed
 POSTs each `payload` to its type's URL. A 2xx marks the row delivered; a failure
 records `last_error` and backs off per event (30 s, doubling, 1 h cap) and retries. A
 dead endpoint degrades to lagging, retried-and-logged rows — never to a stalled
-ingest, never to a lost notification. Delivery is AT LEAST ONCE: a POST that reached
-the endpoint but whose success response was lost is re-POSTed — dedupe on the
-payload's subject keys (`pubkey`/`listing`/`property`, plus `tx_signature` for the
-repeatable events).
+ingest, never to a lost notification. Nothing inside a payload can hold a row back:
+every recorded row is deliverable, whatever its `log_evidence` / `review_outcome`
+say (ADR-52).
+
+**Dedupe key — read this before writing a consumer.** Delivery is AT LEAST ONCE: a
+POST that reached the endpoint but whose success response was lost is re-POSTed. The
+identity of an event is the triple **`(event, tx_signature, instruction_path)`**, and
+that is the key a consumer must dedupe on:
+
+* one transaction can carry **two** verdict instructions (both assigned lawyers ruling
+  in the same transaction), so `tx_signature` alone is NOT sufficient — it would
+  collapse two distinct verdicts into one;
+* the outbox `event_id` (`<event_type>:<subject>`, which for these types IS that same
+  triple) is **not itself POSTed** — the HTTP body is exactly the `payload` column, so
+  a consumer dedupes from payload fields. `documents_confirmed`,
+  `silent_verdict_resolved` and `spv_lawyer_vote_cast` carry all three fields
+  (`event`, `tx_signature`, `instruction_path`) and are therefore fully identifiable
+  from the body alone;
+* the older transaction-scoped types (e.g. `deal_executed`,
+  `developer_lawyer_assigned`, `property_shares_transferred`) carry `event` and
+  `tx_signature` but no `instruction_path` field, so from the body alone two same-type
+  instructions inside ONE transaction are indistinguishable. That is accepted for them
+  (one transaction performs at most one of each), and it is precisely why the ADR-52
+  verdict events carry the path;
+* the two once-per-subject events (`property_asset_registered` on the asset PDA,
+  `property_claim_started` on the listing PDA) are unique on their subject and identify
+  themselves by `pubkey` / `listing`.
 
 **Payload contract** (POSTed verbatim as `application/json`; every payload also carries
 `slot`, `tx_signature`, `block_time` (ISO-8601), and `program`):
@@ -414,9 +442,45 @@ repeatable events).
       // the same numeric value. cluster comes from CLUSTER (default devnet), which Compose and
       // the deploy workflow's server.env render pass through to the indexer.
 
+    { "event": "documents_confirmed", "payload_version": 2,
+      "log_evidence": "decoded | missing | malformed",
+      "review_outcome": "approved | cancelled | unresolved",
+      "listing_id": 12, "property_id": 12, "cluster": "devnet",
+      "lawyer": "<base58 assigned lawyer wallet>", "approve": true,
+      "documents_hash": "<base58 encoding of the 32-byte hash>",
+      "status": "Legal | SoldOut | Cancelled | null",
+      "listing": "<base58 Listing PDA>", "instruction_path": "0",
+      "slot": 487500123, "tx_signature": "<base58>", "block_time": "...", "program": "marketplace" }
+      // note: ADR-52. `status` is the program's own DocumentsConfirmed log event's RESULTING
+      // ListingStatus — event-time evidence — and is present only when log_evidence is
+      // "decoded"; otherwise it is null and never guessed. `review_outcome` is derived from it:
+      // approved iff Legal, cancelled iff Cancelled, else unresolved (SoldOut and null).
+      // `documents_hash` is base58 of exactly 32 bytes (not hex). SoldOut is ambiguous by
+      // design: it covers BOTH "the second seat is still Pending" and "the first split verdict
+      // reset both seats for revision" (second_attempt is not in the emitted event, so the
+      // event alone cannot disambiguate). The consumer's own ordered verdict ledger resolves
+      // it — do not infer a reset from `approve`/`status`. Every row is delivered whatever
+      // these two fields say; they inform the consumer, they do not gate it.
+
+    { "event": "silent_verdict_resolved", "payload_version": 2,
+      "log_evidence": "decoded | missing | malformed", "review_outcome": "cancelled",
+      "listing_id": 12, "property_id": 12, "cluster": "devnet",
+      "silent_lawyer": "<base58 silent developer lawyer> | null",
+      "status": "Cancelled", "listing": "<base58 Listing PDA>", "instruction_path": "0", ... }
+      // note: ADR-52. The cancellation itself is chain-guaranteed, so `status` is always
+      // "Cancelled"; `silent_lawyer` is event-time from the SilentVerdictResolved log event and
+      // is null (never guessed) when that log line was truncated or absent.
+
     { "event": "deal_executed",
-      "listing_id": 12, "listing": "...", "property": "...",
+      "listing_id": 12, "property_id": 12, "cluster": "devnet",
+      "status": "Finalized", "listing": "...", "property": "...",
       "developer_lawyer_registry": "...", "spv_lawyer_registry": "...", ... }
+      // note: ADR-52 keeps this event's existing id and fields and ADDS property_id, cluster
+      // and status. Rows recorded BEFORE those fields existed keep their old payload forever:
+      // the outbox insert is `ON CONFLICT (event_id) DO NOTHING`, so an already-stored row is
+      // never rewritten and never gains the new fields — even if it is still undelivered.
+      // Consumers therefore accept the old shape (property_id = listing_id, and the
+      // property-only payloads of the earliest rows); no historical redrive is required.
 
     { "event": "letting_agent_appointed",
       "asset_id": 12, "letting": "<base58 PropertyLetting PDA>", "property": "...",
@@ -491,7 +555,13 @@ repeatable events).
 3. Metrics: `webhooks_delivered_total{result}` (success vs failure) and
    `webhooks_pending` (work-set size after the last cycle; the series is absent while
    the loop is off). The `WebhookDeliveryFailing` alert fires when deliveries have
-   been failing over a 2 h window.
+   been failing over a 2 h window. For the lawyer-review events there is also
+   `webhook_log_evidence_failures_total{event_type, reason}` (ADR-52): a rising
+   `missing`/`malformed` series means those verdict payloads were recorded with a null
+   `status` (or null `silent_lawyer`) because the program's log line was truncated or
+   absent. Those rows are DELIVERED like any other — the counter is a data-quality
+   signal for the consumer and the operator, never a delivery state, and there is no
+   query that rewrites a recorded payload.
 4. Force one specific stuck row to retry immediately (bypasses its backoff):
    `UPDATE webhook_events SET next_attempt_at = now() WHERE event_id =
    'property_asset_registered:<PDA>';`

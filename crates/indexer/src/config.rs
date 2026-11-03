@@ -84,7 +84,7 @@ pub struct Config {
     /// [`DEFAULT_METADATA_FETCH_INTERVAL_SECS`].
     pub metadata_fetch_interval: Duration,
     /// The `*_WEBHOOK_URL` variables, one per webhook event type (ADR-28/ADR-36/ADR-37/
-    /// ADR-38/ADR-40/ADR-41): each the full endpoint that type's payloads POST to. An
+    /// ADR-38/ADR-40/ADR-41/ADR-52): each the full endpoint that type's payloads POST to. An
     /// unset/empty variable disables just that type -- its durable `webhook_events` rows are
     /// still recorded and drain when the variable is later set; with NO routes at all the
     /// delivery loop is never spawned and no external call is ever made. URLs are never
@@ -423,6 +423,14 @@ fn webhook_routes_from_env() -> Vec<WebhookRoute> {
             "DEVELOPER_LAWYER_ASSIGNED_WEBHOOK_URL",
             event_type::DEVELOPER_LAWYER_ASSIGNED,
         ),
+        (
+            "DOCUMENTS_CONFIRMED_WEBHOOK_URL",
+            event_type::DOCUMENTS_CONFIRMED,
+        ),
+        (
+            "SILENT_VERDICT_RESOLVED_WEBHOOK_URL",
+            event_type::SILENT_VERDICT_RESOLVED,
+        ),
         ("DEAL_EXECUTED_WEBHOOK_URL", event_type::DEAL_EXECUTED),
         (
             "LETTING_AGENT_APPOINTED_WEBHOOK_URL",
@@ -713,6 +721,31 @@ mod tests {
             .find(|route| route.event_type == "spv_lawyer_vote_cast")
             .expect("the vote event must have a route");
         assert_eq!(route.url, URL);
+    }
+
+    #[test]
+    fn lawyer_review_routes_use_their_dedicated_environment_variables() {
+        for (var, event_type, url) in [
+            (
+                "DOCUMENTS_CONFIRMED_WEBHOOK_URL",
+                "documents_confirmed",
+                "https://profile.example/webhooks/documents_confirmed_devnet",
+            ),
+            (
+                "SILENT_VERDICT_RESOLVED_WEBHOOK_URL",
+                "silent_verdict_resolved",
+                "https://profile.example/webhooks/silent_verdict_resolved_devnet",
+            ),
+        ] {
+            std::env::set_var(var, url);
+            let routes = webhook_routes_from_env();
+            std::env::remove_var(var);
+            let route = routes
+                .iter()
+                .find(|route| route.event_type == event_type)
+                .expect("the lawyer-review event must have a route");
+            assert_eq!(route.url, url);
+        }
     }
 
     // --- notifications_api_from_parts: the all-or-nothing pair (ADR-35) ------------------

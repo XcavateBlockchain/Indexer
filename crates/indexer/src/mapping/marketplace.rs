@@ -38,15 +38,20 @@
 //!
 //! This is also the program that produces most webhook events (ADR-28/ADR-36):
 //! `init_property_assets`, `claim_shares`, `claim_spv_case`, `vote_on_spv_lawyer`,
-//! `assign_developer_lawyer`, `finalize_spv_election`, `execute_deal`, and the three
-//! secondary-market transfers each record one durable
-//! `webhook_events` row -- see the table above the `webhook_events` match below.
+//! `assign_developer_lawyer`, `finalize_spv_election`, `lawyer_confirm_documents`,
+//! `resolve_silent_verdict`, `execute_deal`, and the three secondary-market transfers each
+//! record one durable `webhook_events` row -- see the table above the `webhook_events` match below.
 //! `send_property_shares` additionally records the narrow `shares_transferred`
 //! notification event (ADR-41) alongside its ADR-36 transfer event.
 
 use carbon_core::account::{AccountDecoder, DecodedAccount};
+use carbon_core::deserialize::CarbonDeserialize;
 use carbon_core::instruction::{DecodedInstruction, InstructionMetadata};
 use carbon_marketplace_decoder::accounts::MarketplaceAccount;
+use carbon_marketplace_decoder::events::{
+    documents_confirmed::DocumentsConfirmedEvent,
+    silent_verdict_resolved::SilentVerdictResolvedEvent,
+};
 use carbon_marketplace_decoder::instructions::MarketplaceInstruction;
 use carbon_marketplace_decoder::types::{
     DocumentStatus as ChainDocumentStatus, LawyerAssignment as ChainLawyerAssignment,
@@ -77,6 +82,62 @@ fn cluster() -> String {
         .ok()
         .filter(|c| !c.trim().is_empty())
         .unwrap_or_else(|| "devnet".to_string())
+}
+
+/// Carbon's log association without Borsh field decoding: the generated event's own `decode`
+/// must see the discriminator-inclusive buffer (calling `decode_log_events::<Event>` directly
+/// would run its derived field deserializer on the discriminator and shift every field).
+struct RawLogEvent(Vec<u8>);
+
+impl carbon_core::borsh::BorshDeserialize for RawLogEvent {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(reader, &mut data)?;
+        Ok(Self(data))
+    }
+}
+
+impl CarbonDeserialize for RawLogEvent {
+    const DISCRIMINATOR: &'static [u8] = &[];
+
+    fn deserialize(data: &[u8]) -> Option<Self> {
+        Some(Self(data.to_vec()))
+    }
+}
+
+struct LogEvidence<T> {
+    event: Option<T>,
+    status: &'static str,
+}
+
+fn log_event<T>(metadata: &InstructionMetadata, decode: fn(&[u8]) -> Option<T>) -> LogEvidence<T> {
+    let logs = metadata.decode_log_events::<RawLogEvent>();
+    let event = logs.iter().find_map(|event| decode(&event.0));
+    LogEvidence {
+        status: if event.is_some() {
+            "decoded"
+        } else if logs.is_empty() {
+            "missing"
+        } else {
+            "malformed"
+        },
+        event,
+    }
+}
+
+/// What the chain's own resulting status means for the document review (ADR-52). Purely a
+/// label for the consumer: `SoldOut` is genuinely ambiguous on-chain (the second seat may
+/// still be `Pending`, or the first split verdict may have reset both seats for revision), and
+/// `None` means the log event was not decodable, so the status was not guessed. Neither case
+/// withholds the event -- see [`super::super::db::webhooks::pending_events`].
+fn document_review_outcome(status: Option<&ChainListingStatus>) -> &'static str {
+    match status {
+        Some(ChainListingStatus::Legal) => "approved",
+        Some(ChainListingStatus::Cancelled) => "cancelled",
+        // `SoldOut` and `None` (no decodable log event) both mean "no chain-final verdict yet";
+        // any other lifecycle status is one the program cannot emit from this instruction.
+        _ => "unresolved",
+    }
 }
 
 /// The marketplace program's [`ProgramMapper`] instantiation.
@@ -315,6 +376,8 @@ pub fn map_instruction(
     // | `claim_shares` | `property_claim_started` | the Listing PDA (only the FIRST claim records) |
     // | `vote_on_spv_lawyer` | `spv_lawyer_vote_cast` | the transaction + instruction path |
     // | `finalize_spv_election` | `spv_lawyer_elected` | the transaction + instruction path |
+    // | `lawyer_confirm_documents` | `documents_confirmed` | the transaction + instruction path |
+    // | `resolve_silent_verdict` | `silent_verdict_resolved` | the transaction + instruction path |
     // | `execute_deal` | `deal_executed` | the transaction + instruction path |
     // | `buy_relisted_shares` / `accept_offer` / `send_property_shares` | `property_shares_transferred` | the transaction + instruction path |
     // | `send_property_shares` | `shares_transferred` | the transaction + instruction path |
@@ -512,6 +575,74 @@ pub fn map_instruction(
                 block_time,
             }]
         }
+        // One assigned lawyer ruled on the shared document set (accounts: lawyer 0, role 1,
+        // listing 2). The event's own log carries the resulting ListingStatus, so the payload
+        // states the chain's answer when the log decoded and null when it did not. A SoldOut
+        // status stays ambiguous by design -- the second seat may still be Pending, or the
+        // first split verdict may have reset both seats -- and the consumer's ordered verdict
+        // ledger, not this payload, is what disambiguates it (ADR-52).
+        MarketplaceInstruction::LawyerConfirmDocuments(args) => {
+            let chain_event = log_event(metadata, DocumentsConfirmedEvent::decode);
+            let review_outcome =
+                document_review_outcome(chain_event.event.as_ref().map(|event| &event.status));
+            vec![WebhookEvent {
+                event_id: format!("documents_confirmed:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::DOCUMENTS_CONFIRMED,
+                payload: serde_json::json!({
+                    "event": event_type::DOCUMENTS_CONFIRMED,
+                    "payload_version": 2,
+                    "log_evidence": chain_event.status,
+                    "review_outcome": review_outcome,
+                    "listing_id": args.listing_id,
+                    "property_id": args.listing_id,
+                    "lawyer": account_at(accounts, 0, name)?,
+                    "approve": args.approve,
+                    "documents_hash": bs58::encode(args.documents_hash).into_string(),
+                    "status": chain_event.event.as_ref().map(|event| format!("{:?}", event.status)),
+                    "listing": account_at(accounts, 2, name)?,
+                    "cluster": cluster(),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "instruction_path": &ctx.index_str,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
+        // The final-window crank cancels a sale whose SPV lawyer ruled but whose developer
+        // lawyer stayed silent (accounts: cranker 0, listing 1). The cancellation itself is
+        // chain-guaranteed, so `status` is always `Cancelled`; only `silent_lawyer` needs the
+        // log event, and it is null (never guessed) when that event did not decode (ADR-52).
+        MarketplaceInstruction::ResolveSilentVerdict(args) => {
+            let chain_event = log_event(metadata, SilentVerdictResolvedEvent::decode);
+            vec![WebhookEvent {
+                event_id: format!("silent_verdict_resolved:{tx_signature}:{}", ctx.index_str),
+                event_type: event_type::SILENT_VERDICT_RESOLVED,
+                payload: serde_json::json!({
+                    "event": event_type::SILENT_VERDICT_RESOLVED,
+                    "payload_version": 2,
+                    "log_evidence": chain_event.status,
+                    "review_outcome": "cancelled",
+                    "listing_id": args.listing_id,
+                    "property_id": args.listing_id,
+                    "silent_lawyer": chain_event.event.map(|event| event.silent_lawyer.to_string()),
+                    "status": "Cancelled",
+                    "listing": account_at(accounts, 1, name)?,
+                    "cluster": cluster(),
+                    "slot": slot,
+                    "tx_signature": &tx_signature,
+                    "instruction_path": &ctx.index_str,
+                    "block_time": block_time.to_rfc3339(),
+                    "program": "marketplace",
+                }),
+                slot,
+                tx_signature,
+                block_time,
+            }]
+        }
         // The deal settles (accounts: listing 2, property 3, developer-lawyer registry 5,
         // spv-lawyer registry 6). The two registry PDAs name the lawyers whose bucket access
         // the endpoint revokes.
@@ -522,6 +653,9 @@ pub fn map_instruction(
                 payload: serde_json::json!({
                     "event": event_type::DEAL_EXECUTED,
                     "listing_id": args.listing_id,
+                    "property_id": args.listing_id,
+                    "cluster": cluster(),
+                    "status": "Finalized",
                     "listing": account_at(accounts, 2, name)?,
                     "property": account_at(accounts, 3, name)?,
                     "developer_lawyer_registry": account_at(accounts, 5, name)?,

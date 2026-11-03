@@ -69,6 +69,13 @@ where
 /// `event_id` so a cycle's batch is deterministic; bounded by `limit`. Events of
 /// unconfigured types stay pending and invisible to the work set -- they drain if their
 /// `*_WEBHOOK_URL` is ever set (same stance as a fully unset URL in ADR-28).
+///
+/// Nothing in the PAYLOAD can hold a row back (ADR-52): every recorded row is deliverable, and
+/// a payload's `log_evidence` / `review_outcome` are informational fields the consumer reads,
+/// never a filter here. A predicate on them would stall delivery forever for exactly the
+/// commonest verdicts (the first of every review, and every split reset), because nothing
+/// rewrites a recorded payload -- the row's `event_id` is its identity and the delivery loop is
+/// the only writer of the delivery-state columns.
 pub async fn pending_events<'e, E>(
     executor: E,
     limit: i64,

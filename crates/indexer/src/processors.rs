@@ -162,6 +162,24 @@ impl<M: ProgramMapper> Processor for InstructionProcessor<M> {
         // commits them idempotently (`ON CONFLICT (event_id) DO NOTHING`); the row IS the
         // delivery queue that `crate::webhooks` drains, so nothing is fired from the pipe.
         for event in &mapped.webhook_events {
+            // ADR-52: log-evidence quality is an OPERATIONAL signal only. The event is recorded
+            // and delivered either way -- a row whose expected log event was absent is still the
+            // chain's own trigger, and its payload says so through `log_evidence` /
+            // `review_outcome` / a null `status` rather than through a withheld delivery.
+            if let Some(evidence) = event.payload.get("log_evidence").and_then(|v| v.as_str()) {
+                if evidence != "decoded" {
+                    let reason = match evidence {
+                        "missing" => "missing",
+                        "malformed" => "malformed",
+                        _ => "unknown",
+                    };
+                    crate::metrics::inc_webhook_log_evidence_failure(event.event_type, reason);
+                    log::warn!(
+                        "webhook {} was recorded with {evidence} log evidence; its status fields are unconfirmed and it is delivered as-is",
+                        event.event_id
+                    );
+                }
+            }
             ops.push(WriteOp::RecordWebhookEvent {
                 event_id: event.event_id.clone(),
                 event_type: event.event_type,

@@ -48,7 +48,8 @@ pub struct MappedInstruction {
     /// producers are marketplace's `init_property_assets` (a new property asset registered),
     /// `claim_shares` (the first claim on a sold-out listing), `claim_spv_case` (an SPV
     /// candidacy), `vote_on_spv_lawyer`, `assign_developer_lawyer`, `finalize_spv_election`,
-    /// `execute_deal`, and the three secondary-market transfer instructions, plus property's
+    /// `lawyer_confirm_documents`, `resolve_silent_verdict`, `execute_deal`, and the three
+    /// secondary-market transfer instructions, plus property's
     /// `finalize_agent_election`,
     /// `claim_property`,
     /// `propose`/`finalize_proposal`, and `challenge_agent`/`finalize_challenge` -- see
@@ -76,6 +77,12 @@ pub mod event_type {
     pub const SPV_LAWYER_ELECTED: &str = "spv_lawyer_elected";
     /// marketplace `assign_developer_lawyer` -- the developer lawyer seat is filled (ADR-48).
     pub const DEVELOPER_LAWYER_ASSIGNED: &str = "developer_lawyer_assigned";
+    /// marketplace `lawyer_confirm_documents` -- one assigned lawyer ruled on the shared
+    /// document set; the decoded log event carries the resulting listing status (ADR-52).
+    pub const DOCUMENTS_CONFIRMED: &str = "documents_confirmed";
+    /// marketplace `resolve_silent_verdict` -- the developer-side silent verdict cancelled
+    /// the sale during the final verdict window (ADR-52).
+    pub const SILENT_VERDICT_RESOLVED: &str = "silent_verdict_resolved";
     /// marketplace `execute_deal` -- the sale is agreed and settled on-chain.
     pub const DEAL_EXECUTED: &str = "deal_executed";
     /// property `finalize_agent_election` -- a letting agent is appointed to the property.
