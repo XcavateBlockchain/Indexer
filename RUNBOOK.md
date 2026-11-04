@@ -426,6 +426,11 @@ that is the key a consumer must dedupe on:
       // the same numeric value. cluster comes from CLUSTER (default devnet), which Compose and
       // the deploy workflow's server.env render pass through to the indexer.
 
+Both lawyer triggers drive the same idempotent ProfileApi bucket-creation operation. Its four
+initial messages are authored by the configured bucket admin and ordered as key sharing, SPV
+PDF/fallback, developer PDF/fallback, then the `lawyer/document-review` prompt. This ordering
+and authorship are downstream message behavior; the Indexer payloads and routes stay unchanged.
+
     { "event": "documents_confirmed", "payload_version": 2,
       "log_evidence": "decoded | missing | malformed",
       "review_outcome": "approved | cancelled | unresolved",
